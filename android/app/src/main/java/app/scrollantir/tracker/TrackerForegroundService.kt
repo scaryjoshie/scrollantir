@@ -16,21 +16,25 @@ import app.scrollantir.R
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.net.CleanupWorker
 import app.scrollantir.net.ForwarderWorker
+import app.scrollantir.net.SecurePrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class TrackerForegroundService : Service() {
 
     private val supervisor = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.Default + supervisor)
     private var pollerJob: Job? = null
+    private var poller: UsageStatsPoller? = null
     private var screenWatcher: ScreenWatcher? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -52,8 +56,9 @@ class TrackerForegroundService : Service() {
         }
 
         if (pollerJob == null || pollerJob?.isActive != true) {
-            val poller = UsageStatsPoller(applicationContext, dao)
-            pollerJob = scope.launch { poller.run() }
+            val p = UsageStatsPoller(applicationContext, dao)
+            poller = p
+            pollerJob = scope.launch { p.run() }
         }
 
         ForwarderWorker.enqueuePeriodic(applicationContext)
@@ -67,6 +72,21 @@ class TrackerForegroundService : Service() {
         Log.i(TAG, "onDestroy")
         screenWatcher?.unregister()
         screenWatcher = null
+
+        // Flush any in-flight foreground session before we cancel the scope.
+        // runBlocking + NonCancellable ensures the DB write completes even
+        // though the service is tearing down.
+        poller?.let { p ->
+            try {
+                runBlocking(Dispatchers.IO + NonCancellable) {
+                    p.flushCurrent(System.currentTimeMillis())
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "final flush failed", t)
+            }
+        }
+        poller = null
+
         _running.value = false
         scope.cancel()
         super.onDestroy()
@@ -123,7 +143,14 @@ class TrackerForegroundService : Service() {
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running.asStateFlow()
 
+        /**
+         * Start the tracker service and persist "tracking should be on"
+         * so BootReceiver knows to re-start after a reboot.
+         */
         fun start(context: Context) {
+            SecurePrefs.get(context).edit()
+                .putBoolean(SecurePrefs.KEY_TRACKING_ENABLED, true)
+                .apply()
             val intent = Intent(context, TrackerForegroundService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -132,8 +159,21 @@ class TrackerForegroundService : Service() {
             }
         }
 
+        /**
+         * Stop the tracker and persist "tracking is off" so a reboot won't
+         * silently resurrect it.
+         */
         fun stop(context: Context) {
+            SecurePrefs.get(context).edit()
+                .putBoolean(SecurePrefs.KEY_TRACKING_ENABLED, false)
+                .apply()
             context.stopService(Intent(context, TrackerForegroundService::class.java))
+        }
+
+        /** For BootReceiver: was the user running tracking before reboot? */
+        fun wasTrackingEnabled(context: Context): Boolean {
+            return SecurePrefs.get(context)
+                .getBoolean(SecurePrefs.KEY_TRACKING_ENABLED, false)
         }
     }
 }

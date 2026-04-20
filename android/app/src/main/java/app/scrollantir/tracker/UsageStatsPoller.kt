@@ -60,7 +60,7 @@ class UsageStatsPoller(
         currentStartedAt = t
     }
 
-    private suspend fun flushCurrent(endMs: Long) {
+    internal suspend fun flushCurrent(endMs: Long) {
         val app = currentApp ?: return
         val durMs = (endMs - currentStartedAt).coerceAtLeast(0)
         val durS = durMs / 1000.0
