@@ -15,11 +15,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.BottomSheetDefaults
@@ -34,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,36 +38,38 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.EventRow
 import kotlinx.coroutines.delay
+import me.saket.telephoto.zoomable.ZoomSpec
+import me.saket.telephoto.zoomable.rememberZoomableState
+import me.saket.telephoto.zoomable.zoomable
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private const val DAY_MS = 24L * 3600 * 1000
+private const val DP_PER_MIN = 2f
+private val HOUR_HEIGHT = (DP_PER_MIN * 60).dp  // 120.dp
+private val DAY_HEIGHT = HOUR_HEIGHT * 24       // 2880.dp
 private val HOUR_LABEL_WIDTH = 44.dp
-
-private const val MIN_DP_PER_MIN = 0.5f
-private const val MAX_DP_PER_MIN = 8f
-private const val DEFAULT_DP_PER_MIN = 2f
+private const val DAY_MS = 24L * 3600 * 1000
 
 /**
- * Visualizes today's foreground sessions as colored blocks stacked top-to-bottom.
+ * Today's foreground sessions as colored blocks stacked top-to-bottom.
  *
- * - Y axis: time of day, 0:00 at top, 24:00 at bottom.
- * - Block height: duration of that session (clipped to today).
- * - Block color: stable hash of package name.
- * - Red horizontal line: "now".
- * - Tap any block to open a details sheet.
- * - Zoom in/out icons scale dp/minute between [0.5, 8].
+ * Gestures via telephoto's Modifier.zoomable:
+ *  - one-finger drag     = pan (vertical scroll)
+ *  - two-finger pinch    = zoom (anchored at centroid)
+ *  - tap on a block      = opens a details sheet
+ *
+ * The content has a fixed logical size (2dp/min × 60min × 24h = 2880dp).
+ * Telephoto handles the pan/zoom transformation as a graphics layer, so
+ * blocks and text scale together. "Now" line and hour labels ride along.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,44 +101,19 @@ fun TimelineScreen(
         }
     }
 
-    // dp per minute. DEFAULT is starting point; zoom in goes up, out goes down.
-    var dpPerMin by remember { mutableFloatStateOf(DEFAULT_DP_PER_MIN) }
-    // Pending scrollTo value applied by a LaunchedEffect, so zoom handlers
-    // can request a scroll target that takes effect after the new height
-    // has been laid out.
-    var pendingScrollPx by remember { mutableStateOf<Int?>(null) }
-
     val blocks = remember(foregroundEvents, startOfDayMs, nowMs) {
         buildBlocks(foregroundEvents, startOfDayMs, nowMs)
     }
 
     var selected by remember { mutableStateOf<TimelineBlock?>(null) }
 
-    val scrollState = rememberScrollState()
-    val density = LocalDensity.current
-
-    // Scroll to "now" on first render at the initial zoom.
-    LaunchedEffect(Unit) {
-        val nowMinute = ((System.currentTimeMillis() - startOfDayMs) / 60_000f)
-        val targetPx = with(density) { (nowMinute * DEFAULT_DP_PER_MIN).dp.toPx() } - 400f
-        scrollState.scrollTo(targetPx.toInt().coerceAtLeast(0))
-    }
-
-    LaunchedEffect(pendingScrollPx) {
-        pendingScrollPx?.let {
-            scrollState.scrollTo(it)
-            pendingScrollPx = null
-        }
-    }
-
-    val hourHeightDp = (dpPerMin * 60).dp
-    val timelineHeightDp = hourHeightDp * 24
+    val zoomableState = rememberZoomableState(
+        zoomSpec = ZoomSpec(maxZoomFactor = 6f)
+    )
 
     Column(
-        modifier = modifier
-            .fillMaxSize()
+        modifier = modifier.fillMaxSize()
     ) {
-        // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -159,7 +131,7 @@ fun TimelineScreen(
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "Pinch to zoom",
+                text = "Drag · pinch",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 12.dp)
@@ -169,49 +141,16 @@ fun TimelineScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
-                .pointerInput(Unit) {
-                    // Manual pinch detector that coexists with verticalScroll:
-                    // we only consume events when 2+ pointers are down AND
-                    // the zoom factor has changed. Single-finger drags fall
-                    // straight through to verticalScroll with nothing consumed.
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.changes.count { it.pressed } < 2) continue
-
-                            val zoom = event.calculateZoom()
-                            if (zoom == 1f || zoom.isNaN()) continue
-
-                            val centroid = event.calculateCentroid(useCurrent = true)
-                            val currentPxPerMin = dpPerMin.dp.toPx()
-                            val centroidMinute =
-                                (scrollState.value + centroid.y) / currentPxPerMin
-                            val newDpPerMin = (dpPerMin * zoom)
-                                .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
-                            if (newDpPerMin != dpPerMin) {
-                                dpPerMin = newDpPerMin
-                                val newPxPerMin = newDpPerMin.dp.toPx()
-                                pendingScrollPx =
-                                    (centroidMinute * newPxPerMin - centroid.y)
-                                        .toInt()
-                                        .coerceAtLeast(0)
-                            }
-                            // Consume so verticalScroll doesn't treat this
-                            // as a scroll gesture on the same frame.
-                            event.changes.forEach {
-                                if (it.pressed) it.consume()
-                            }
-                        }
-                    }
-                }
+                .zoomable(state = zoomableState)
         ) {
+            // Natural-size timeline content. Telephoto applies the pan+zoom
+            // transform as a graphics layer on this Box's children.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(timelineHeightDp)
+                    .height(DAY_HEIGHT)
             ) {
-                HourLabels(hourHeightDp = hourHeightDp)
+                HourLabels()
                 Spacer(Modifier.width(6.dp))
                 Box(
                     modifier = Modifier
@@ -222,25 +161,27 @@ fun TimelineScreen(
                     for (h in 0..23) {
                         Box(
                             modifier = Modifier
-                                .offset(y = hourHeightDp * h)
+                                .offset(y = HOUR_HEIGHT * h)
                                 .fillMaxWidth()
                                 .height(1.dp)
-                                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                                .background(
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                                )
                         )
                     }
                     // Event blocks
                     blocks.forEach { b ->
                         TimelineBlockBox(
                             block = b,
-                            dpPerMin = dpPerMin,
                             onClick = { selected = b }
                         )
                     }
                     // "Now" line
-                    val nowOffsetMin = ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f)
+                    val nowOffsetMin =
+                        ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f)
                     Box(
                         modifier = Modifier
-                            .offset(y = (nowOffsetMin * dpPerMin).dp)
+                            .offset(y = (nowOffsetMin * DP_PER_MIN).dp)
                             .fillMaxWidth()
                             .height(2.dp)
                             .background(Color(0xFFEF4444))
@@ -250,7 +191,6 @@ fun TimelineScreen(
         }
     }
 
-    // Details sheet
     selected?.let { block ->
         val sheetState = rememberModalBottomSheetState()
         ModalBottomSheet(
@@ -265,7 +205,7 @@ fun TimelineScreen(
 }
 
 @Composable
-private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
+private fun HourLabels() {
     Column(
         modifier = Modifier
             .width(HOUR_LABEL_WIDTH)
@@ -275,7 +215,7 @@ private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(hourHeightDp),
+                    .height(HOUR_HEIGHT),
                 contentAlignment = Alignment.TopEnd
             ) {
                 Text(
@@ -292,11 +232,10 @@ private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
 @Composable
 private fun TimelineBlockBox(
     block: TimelineBlock,
-    dpPerMin: Float,
     onClick: () -> Unit
 ) {
-    val topDp = (block.startOfDayOffsetMinutes * dpPerMin).dp
-    val heightDp = (block.durationMinutes * dpPerMin).dp.coerceAtLeast(2.dp)
+    val topDp = (block.startOfDayOffsetMinutes * DP_PER_MIN).dp
+    val heightDp = (block.durationMinutes * DP_PER_MIN).dp.coerceAtLeast(2.dp)
 
     Box(
         modifier = Modifier
