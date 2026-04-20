@@ -84,6 +84,15 @@ class ScreenWatcher(
             }
         }
         unlockedSince = null
+
+        // Close out the in-flight foreground session. Without this, the
+        // poller would keep `currentApp` set to whatever was last
+        // foregrounded — e.g. Messages at 14:00, screen off at 14:05 — and
+        // when the user unlocks two hours later, flushCurrent would emit
+        // a bogus 2h+ Messages session.
+        scope.launch {
+            UsageStatsPoller.flushActiveSession(t.toEpochMilli())
+        }
     }
 
     private fun onUserPresent(t: Instant) {

@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import kotlin.coroutines.coroutineContext
 
@@ -22,23 +24,32 @@ class UsageStatsPoller(
     private val usm: UsageStatsManager =
         context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
+    // Mutex guards currentApp / currentStartedAt so external callers
+    // (ScreenWatcher on SCREEN_OFF, service onDestroy) can safely flush
+    // without racing the poll loop.
+    private val mutex = Mutex()
     private var lastQuery: Long = System.currentTimeMillis() - INITIAL_LOOKBACK_MS
     private var currentApp: String? = null
     private var currentStartedAt: Long = 0L
 
     suspend fun run() {
         Log.i(TAG, "starting (lookback ${INITIAL_LOOKBACK_MS / 1000}s, poll every ${POLL_INTERVAL_MS}ms)")
-        while (coroutineContext.isActive) {
-            try {
-                pollOnce()
-            } catch (t: Throwable) {
-                Log.e(TAG, "pollOnce failed", t)
+        activeInstance = this
+        try {
+            while (coroutineContext.isActive) {
+                try {
+                    pollOnce()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "pollOnce failed", t)
+                }
+                delay(POLL_INTERVAL_MS)
             }
-            delay(POLL_INTERVAL_MS)
+            // Graceful stop
+            flushCurrent(System.currentTimeMillis())
+        } finally {
+            activeInstance = null
+            Log.i(TAG, "stopping")
         }
-        // Close out any in-flight session on graceful stop
-        flushCurrent(System.currentTimeMillis())
-        Log.i(TAG, "stopping")
     }
 
     private suspend fun pollOnce() {
@@ -46,25 +57,38 @@ class UsageStatsPoller(
         val events = usm.queryEvents(lastQuery, now)
         val ev = UsageEvents.Event()
 
-        while (events.getNextEvent(ev)) {
-            if (ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                handleResumed(ev.packageName, ev.timeStamp)
+        mutex.withLock {
+            while (events.getNextEvent(ev)) {
+                if (ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                    handleResumedLocked(ev.packageName, ev.timeStamp)
+                }
             }
+            lastQuery = now
         }
-
-        lastQuery = now
     }
 
-    private suspend fun handleResumed(pkg: String?, t: Long) {
+    /** Must be called with [mutex] held. */
+    private suspend fun handleResumedLocked(pkg: String?, t: Long) {
         if (pkg == null || pkg == currentApp) return
-        flushCurrent(t)
+        flushCurrentLocked(t)
         Log.i(TAG, "FG start:  $pkg")
         currentApp = pkg
         currentStartedAt = t
         _currentForeground.value = CurrentForeground(pkg, t)
     }
 
+    /**
+     * Close out the in-flight foreground session, if any. Safe to call
+     * from any coroutine — mutex-guarded.
+     */
     internal suspend fun flushCurrent(endMs: Long) {
+        mutex.withLock {
+            flushCurrentLocked(endMs)
+        }
+    }
+
+    /** Must be called with [mutex] held. */
+    private suspend fun flushCurrentLocked(endMs: Long) {
         val app = currentApp ?: return
         val durMs = (endMs - currentStartedAt).coerceAtLeast(0)
         val durS = durMs / 1000.0
@@ -76,9 +100,6 @@ class UsageStatsPoller(
             durationS = durS,
             data = mapOf("app" to app)
         )
-        // If we just left a content-detector target app, tell the detector
-        // to close its session — AccessibilityService stops getting events
-        // as soon as the foreground app is outside its package filter.
         if (app in ContentDetection.TARGET_PACKAGES) {
             ContentDetectorService.notifyForegroundLeft()
         }
@@ -97,5 +118,18 @@ class UsageStatsPoller(
         /** Live "what's foregrounded right now" for the Today dashboard. */
         private val _currentForeground = MutableStateFlow<CurrentForeground?>(null)
         val currentForeground: StateFlow<CurrentForeground?> = _currentForeground.asStateFlow()
+
+        /**
+         * Pointer to the poller currently running inside the foreground
+         * service, or null if none. Set in run(), cleared on return.
+         * Exposed so ScreenWatcher can signal session-close on screen-off
+         * without plumbing a direct reference through.
+         */
+        @Volatile private var activeInstance: UsageStatsPoller? = null
+
+        /** Flush the active poller's in-flight session, if any. */
+        suspend fun flushActiveSession(atMs: Long = System.currentTimeMillis()) {
+            activeInstance?.flushCurrent(atMs)
+        }
     }
 }
