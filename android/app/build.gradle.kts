@@ -41,6 +41,16 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Android 15 Enhanced Confirmation Mode treats any app whose installer
+    // isn't Play Store as "sideloaded" and silently blocks accessibility
+    // event delivery. Passing -i com.android.vending to adb sets the
+    // installer-record to Play Store, which satisfies the check. This makes
+    // Android Studio's Run button also use the flag (otherwise only our
+    // installDebugSpoofed Gradle task would).
+    installation {
+        installOptions.addAll(listOf("-r", "-i", "com.android.vending"))
+    }
 }
 
 // --- Android 15 workaround ---
