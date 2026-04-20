@@ -15,13 +15,12 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ZoomIn
-import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -43,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -157,43 +157,41 @@ fun TimelineScreen(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(
-                onClick = {
-                    // Preserve the visible top-of-viewport across zoom changes.
-                    val currentTopMinute = with(density) {
-                        scrollState.value / dpPerMin.dp.toPx()
-                    }
-                    val newDpPerMin = (dpPerMin / 1.5f).coerceAtLeast(MIN_DP_PER_MIN)
-                    dpPerMin = newDpPerMin
-                    pendingScrollPx = with(density) {
-                        (currentTopMinute * newDpPerMin).dp.toPx()
-                    }.toInt().coerceAtLeast(0)
-                },
-                enabled = dpPerMin > MIN_DP_PER_MIN
-            ) {
-                Icon(Icons.Filled.ZoomOut, contentDescription = "Zoom out")
-            }
-            IconButton(
-                onClick = {
-                    val currentTopMinute = with(density) {
-                        scrollState.value / dpPerMin.dp.toPx()
-                    }
-                    val newDpPerMin = (dpPerMin * 1.5f).coerceAtMost(MAX_DP_PER_MIN)
-                    dpPerMin = newDpPerMin
-                    pendingScrollPx = with(density) {
-                        (currentTopMinute * newDpPerMin).dp.toPx()
-                    }.toInt().coerceAtLeast(0)
-                },
-                enabled = dpPerMin < MAX_DP_PER_MIN
-            ) {
-                Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
-            }
+            Text(
+                text = "Pinch to zoom",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 12.dp)
+            )
         }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
+                .pointerInput(Unit) {
+                    // Pinch zoom. detectTransformGestures only fires on
+                    // multi-pointer gestures, so single-finger drags still
+                    // flow through to verticalScroll naturally.
+                    detectTransformGestures { centroid, _, zoom, _ ->
+                        if (zoom == 1f) return@detectTransformGestures
+                        val currentPxPerMin = dpPerMin.dp.toPx()
+                        // Time-of-day currently under the centroid:
+                        val centroidMinute =
+                            (scrollState.value + centroid.y) / currentPxPerMin
+                        val newDpPerMin = (dpPerMin * zoom)
+                            .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
+                        if (newDpPerMin == dpPerMin) return@detectTransformGestures
+                        dpPerMin = newDpPerMin
+                        // Rescroll so the centroid-minute stays under the
+                        // user's fingers at the new scale.
+                        val newPxPerMin = newDpPerMin.dp.toPx()
+                        pendingScrollPx =
+                            (centroidMinute * newPxPerMin - centroid.y)
+                                .toInt()
+                                .coerceAtLeast(0)
+                    }
+                }
         ) {
             Row(
                 modifier = Modifier
