@@ -1,0 +1,89 @@
+diff --git a/src/background/heartbeat.ts b/src/background/heartbeat.ts
+index d013f1b..598e265 100644
+--- a/src/background/heartbeat.ts
++++ b/src/background/heartbeat.ts
+@@ -6,6 +6,33 @@ import { getBucketId, sendHeartbeat } from './client'
+ import { getEnabled, getHeartbeatData, setHeartbeatData } from '../storage'
+ import deepEqual from 'deep-equal'
+ 
++// scrollantir zen fork: resolve a Firefox Container's name from its
++// cookieStoreId. Josh uses one container per Zen workspace, so container
++// name == workspace name. Returns 'no-container' for the default store
++// or when resolution fails (identity deleted, non-Firefox, etc).
++const CONTAINER_NAME_CACHE = new Map<string, string>()
++async function resolveContainerName(
++  cookieStoreId: string | undefined,
++): Promise<string> {
++  if (!cookieStoreId || cookieStoreId === 'firefox-default') {
++    return 'no-container'
++  }
++  const cached = CONTAINER_NAME_CACHE.get(cookieStoreId)
++  if (cached !== undefined) return cached
++  // `contextualIdentities` is Firefox-only. Guard so Chrome/Safari builds
++  // don't throw on missing API — they just won't have this field.
++  const api = (browser as any).contextualIdentities
++  if (!api || typeof api.get !== 'function') return 'no-container'
++  try {
++    const identity = await api.get(cookieStoreId)
++    const name = identity?.name ?? 'no-container'
++    CONTAINER_NAME_CACHE.set(cookieStoreId, name)
++    return name
++  } catch {
++    return 'no-container'
++  }
++}
++
+ async function heartbeat(
+   client: AWClient,
+   tab: browser.Tabs.Tab | undefined,
+@@ -31,7 +58,8 @@ async function heartbeat(
+   // full Tab object (which includes favIconUrl — a potentially large base64
+   // data URI).  Over thousands of heartbeats the retained Tab references
+   // cause unbounded memory growth (see #222).
+-  const { url, title, audible, incognito } = tab
++  const { url, title, audible, incognito, cookieStoreId } = tab
++  const container = await resolveContainerName(cookieStoreId)
+   const now = new Date()
+   const data: IEvent['data'] = {
+     url,
+@@ -39,6 +67,7 @@ async function heartbeat(
+     audible: audible ?? false,
+     incognito,
+     tabCount: tabCount,
++    container,
+   }
+   const previousData = await getHeartbeatData()
+   if (previousData && !deepEqual(previousData, data)) {
+diff --git a/src/manifest.json b/src/manifest.json
+index 6ddd21c..817b32a 100644
+--- a/src/manifest.json
++++ b/src/manifest.json
+@@ -3,8 +3,8 @@
+     "{{firefox}}.manifest_version": 2,
+     "{{safari}}.manifest_version": 3,
+ 
+-    "name": "ActivityWatch Web Watcher",
+-    "description": "Log the current tab and your browser activity with ActivityWatch.",
++    "name": "aw-watcher-web (scrollantir zen fork)",
++    "description": "Scrollantir fork of aw-watcher-web — adds the Firefox container name to tab events so Zen workspaces are queryable.",
+     "version": "0.5.3",
+     "icons": {
+         "128": "logo-128.png"
+@@ -40,6 +40,8 @@
+         "notifications",
+         "activeTab",
+         "storage",
++        "contextualIdentities",
++        "cookies",
+         "http://127.0.0.1:5600/api/*",
+         "http://127.0.0.1:5666/api/*"
+     ],
+@@ -63,7 +65,7 @@
+ 
+     "{{firefox}}.browser_specific_settings": {
+         "gecko": {
+-            "id": "{ef87d84c-2127-493f-b952-5b4e744245bc}"
++            "id": "aw-watcher-web-zen@scrollantir.local"
+         }
+     }
+ }
