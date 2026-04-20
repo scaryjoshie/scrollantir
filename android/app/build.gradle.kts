@@ -43,6 +43,28 @@ android {
     }
 }
 
+// --- Android 15 workaround ---
+// Sideloaded apps (installed via plain `adb install` / Android Studio Run)
+// are blocked from actually binding accessibility services on Android 15+
+// by Enhanced Confirmation Mode. Installing with -i com.android.vending
+// spoofs "installed from Play Store" and satisfies the check.
+//
+// Run manually after each new build:
+//   ./gradlew :app:installDebugSpoofed
+tasks.register("installDebugSpoofed") {
+    group = "install"
+    description = "adb install with -i com.android.vending (bypasses Android 15 Enhanced Confirmation for accessibility)"
+    dependsOn(":app:assembleDebug")
+    doLast {
+        val adb = android.sdkDirectory.resolve("platform-tools/adb").absolutePath
+        val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+        if (!apk.exists()) throw GradleException("APK not found at $apk")
+        exec {
+            commandLine(adb, "install", "-r", "-i", "com.android.vending", apk.absolutePath)
+        }
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
