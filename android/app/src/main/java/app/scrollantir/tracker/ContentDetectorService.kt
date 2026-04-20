@@ -18,31 +18,77 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 
 /**
- * Detects which view-mode is showing within YouTube, Instagram, and TikTok,
- * and emits sources like `youtube.shorts`, `instagram.reels`, etc.
+ * Detects which view-mode is active inside target apps. Emits sources like
+ * `youtube.shorts`, `instagram.reels`, `instagram.stories`, `tiktok.feed`.
  *
- * Session lifecycle:
- *  - A detected mode opens a session (stored in memory as [current])
- *  - The session closes when:
- *      (a) a different mode is detected in the same app
- *      (b) [onForegroundLeftTarget] is called by UsageStatsPoller after
- *          the user leaves a target app (Android stops delivering events
- *          to this service once the foreground app is outside the filter)
+ * Detection is only emitted for short-form modes. "Regular YouTube" /
+ * "Instagram feed" time is derivable by subtracting the detected mode
+ * duration from the total `system.foreground` duration for that package.
  *
- * Detection heuristics are based on DigiPaws' published detector patterns
- * (see CREDITS.md). Resource IDs drift across app redesigns; `detector.miss`
- * diagnostic events are emitted whenever a target app is on-screen but no
- * rule matches, so we can spot regressions and update detectors.
+ * Detection patterns follow DigiPaws (GPL-3.0, see CREDITS.md): a primary
+ * viewId must be present, optionally along with a set of `requiresPresent`
+ * corroborating views. The event types we listen to also follow their
+ * config — YouTube fires CONTENT_CHANGED, Instagram fires VIEW_SCROLLED.
  */
 class ContentDetectorService : AccessibilityService() {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var dao: EventDao
 
+    private data class DetectorRule(
+        val source: String,                              // e.g. "youtube.shorts"
+        val primaryViewId: String,                       // must be present
+        val requiresPresent: List<String> = emptyList(), // all must be present
+        val eventTypeMask: Int                           // which event types can trigger detection
+    )
+
+    /**
+     * Ordered rules per package. First match wins. Default AccessibilityEvent
+     * type masks match DigiPaws' ReelAppConfig values.
+     */
+    private val rulesByPackage: Map<String, List<DetectorRule>> = mapOf(
+        ContentDetection.PKG_YOUTUBE to listOf(
+            DetectorRule(
+                source = "youtube.shorts",
+                primaryViewId = "com.google.android.youtube:id/reel_recycler",
+                eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            )
+        ),
+        ContentDetection.PKG_INSTAGRAM to listOf(
+            DetectorRule(
+                source = "instagram.reels",
+                primaryViewId = "com.instagram.android:id/clips_viewer_view_pager",
+                requiresPresent = listOf("com.instagram.android:id/clips_ufi_component"),
+                eventTypeMask = AccessibilityEvent.TYPE_VIEW_SCROLLED or
+                                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            ),
+            DetectorRule(
+                source = "instagram.stories",
+                primaryViewId = "com.instagram.android:id/reel_viewer_root",
+                eventTypeMask = AccessibilityEvent.TYPE_VIEW_SCROLLED or
+                                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            )
+        ),
+        ContentDetection.PKG_TIKTOK to listOf(
+            // TikTok is functionally all-feed, all-the-time. Any accessibility
+            // event from this package while the service is active = user is in
+            // the feed.
+            DetectorRule(
+                source = "tiktok.feed",
+                primaryViewId = "*",  // sentinel — skip viewId check
+                eventTypeMask = AccessibilityEvent.TYPES_ALL_MASK
+            )
+        )
+    )
+
     private data class CurrentMode(val source: String, val startMs: Long)
 
     @Volatile private var current: CurrentMode? = null
     @Volatile private var lastCheckMs: Long = 0L
+    @Volatile private var missCount: Int = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -54,8 +100,7 @@ class ContentDetectorService : AccessibilityService() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
-        // Close out any in-flight mode before we go away
-        closeCurrentSessionBlocking()
+        closeCurrentSessionBestEffort()
         instance = null
         _enabled.value = false
         scope.cancel()
@@ -72,148 +117,100 @@ class ContentDetectorService : AccessibilityService() {
         lastCheckMs = now
 
         val pkg = event.packageName?.toString() ?: return
-        if (pkg !in ContentDetection.TARGET_PACKAGES) return
+        val rules = rulesByPackage[pkg] ?: return
 
-        val root = rootInActiveWindow ?: return
-
-        val detected = when (pkg) {
-            ContentDetection.PKG_YOUTUBE -> detectYouTube(root)
-            ContentDetection.PKG_INSTAGRAM -> detectInstagram(root)
-            ContentDetection.PKG_TIKTOK -> "tiktok.feed"
-            else -> null
-        }
-
-        if (detected == null) {
-            // Target app is foreground but no rule matched — diagnostic
-            val ids = topLevelViewIds(root, max = 20)
-            scope.launch {
-                emit(
-                    dao = dao,
-                    source = "detector.miss",
-                    durationS = 0.0,
-                    data = mapOf(
-                        "package" to pkg,
-                        "view_ids" to ids
-                    )
-                )
-            }
+        // TikTok short-circuit: any qualifying event = feed active.
+        // No tree-walk needed.
+        if (pkg == ContentDetection.PKG_TIKTOK) {
+            val rule = rules.first()
+            if (event.eventType and rule.eventTypeMask == 0) return
+            onDetected(rule.source, now)
             return
         }
 
-        val c = current
-        if (c != null && c.source == detected) return  // still in same mode
+        val root = rootInActiveWindow ?: return
 
-        // Transition: close previous, open new
+        var matched: String? = null
+        for (rule in rules) {
+            if (event.eventType and rule.eventTypeMask == 0) continue
+            if (!hasNodeId(root, rule.primaryViewId)) continue
+            if (rule.requiresPresent.any { !hasNodeId(root, it) }) continue
+            matched = rule.source
+            break
+        }
+
+        if (matched != null) {
+            onDetected(matched, now)
+        } else {
+            onMiss(now)
+        }
+    }
+
+    private fun onDetected(source: String, now: Long) {
+        missCount = 0
+        val c = current
+        if (c != null && c.source == source) return  // same mode, no transition
+
         c?.let { prev ->
             val durS = (now - prev.startMs) / 1000.0
             scope.launch {
-                emit(
-                    dao = dao,
-                    source = prev.source,
-                    start = Instant.ofEpochMilli(prev.startMs),
-                    durationS = durS
-                )
+                emit(dao = dao, source = prev.source,
+                     start = Instant.ofEpochMilli(prev.startMs), durationS = durS)
             }
             Log.i(TAG, "MODE end:   ${prev.source}  (${"%.1f".format(durS)}s)")
         }
-        Log.i(TAG, "MODE start: $detected")
-        current = CurrentMode(detected, now)
+        Log.i(TAG, "MODE start: $source")
+        current = CurrentMode(source, now)
+    }
+
+    private fun onMiss(now: Long) {
+        val c = current ?: return
+        missCount++
+        if (missCount >= MAX_MISSES_BEFORE_CLOSE) {
+            val durS = (now - c.startMs) / 1000.0
+            scope.launch {
+                emit(dao = dao, source = c.source,
+                     start = Instant.ofEpochMilli(c.startMs), durationS = durS)
+            }
+            Log.i(TAG, "MODE end:   ${c.source}  (${"%.1f".format(durS)}s, ${missCount} misses)")
+            current = null
+            missCount = 0
+        }
     }
 
     /**
-     * Called by UsageStatsPoller when the foreground app leaves a target
-     * package. AccessibilityService doesn't get background events, so this
-     * is the only way to close a session cleanly.
+     * Called from UsageStatsPoller when the user leaves a target package.
+     * AccessibilityService stops receiving events outside its filter,
+     * so this is the only reliable close-signal.
      */
     fun onForegroundLeftTarget() {
         val c = current ?: return
         val now = System.currentTimeMillis()
         val durS = (now - c.startMs) / 1000.0
         scope.launch {
-            emit(
-                dao = dao,
-                source = c.source,
-                start = Instant.ofEpochMilli(c.startMs),
-                durationS = durS
-            )
+            emit(dao = dao, source = c.source,
+                 start = Instant.ofEpochMilli(c.startMs), durationS = durS)
         }
         Log.i(TAG, "MODE end:   ${c.source}  (${"%.1f".format(durS)}s, foreground-left)")
         current = null
+        missCount = 0
     }
 
-    private fun closeCurrentSessionBlocking() {
-        // Called from onDestroy — scope may be about to cancel. Best effort.
+    private fun closeCurrentSessionBestEffort() {
         val c = current ?: return
         val now = System.currentTimeMillis()
         val durS = (now - c.startMs) / 1000.0
         scope.launch {
             try {
-                emit(
-                    dao = dao,
-                    source = c.source,
-                    start = Instant.ofEpochMilli(c.startMs),
-                    durationS = durS
-                )
+                emit(dao = dao, source = c.source,
+                     start = Instant.ofEpochMilli(c.startMs), durationS = durS)
             } catch (_: Throwable) {}
         }
         current = null
     }
 
-    // ---------- Detectors ----------
-
-    private fun detectYouTube(root: AccessibilityNodeInfo): String? {
-        val shortsIds = listOf(
-            "com.google.android.youtube:id/reel_recycler",
-            "com.google.android.youtube:id/reel_watch_player",
-            "com.google.android.youtube:id/shorts_container",
-            "com.google.android.youtube:id/reel_player_page_container"
-        )
-        if (anyNodeIdPresent(root, shortsIds)) return "youtube.shorts"
-
-        val videoIds = listOf(
-            "com.google.android.youtube:id/watch_player",
-            "com.google.android.youtube:id/player_fragment_container",
-            "com.google.android.youtube:id/player_control_overlay"
-        )
-        if (anyNodeIdPresent(root, videoIds)) return "youtube.video"
-
-        return null
-    }
-
-    private fun detectInstagram(root: AccessibilityNodeInfo): String? {
-        val reelsIds = listOf(
-            "com.instagram.android:id/clips_viewer_view_pager",
-            "com.instagram.android:id/clips_viewer",
-            "com.instagram.android:id/reels_viewer"
-        )
-        if (anyNodeIdPresent(root, reelsIds)) return "instagram.reels"
-
-        val storiesIds = listOf(
-            "com.instagram.android:id/reel_viewer_root",
-            "com.instagram.android:id/reel_viewer_texture_view_container"
-        )
-        if (anyNodeIdPresent(root, storiesIds)) return "instagram.stories"
-
-        val feedIds = listOf(
-            "com.instagram.android:id/feed_fragment_main_recyclerview",
-            "com.instagram.android:id/main_feed_recycler_view",
-            "com.instagram.android:id/rv_feed"
-        )
-        if (anyNodeIdPresent(root, feedIds)) return "instagram.feed"
-
-        return null
-    }
-
-    // ---------- Helpers ----------
-
-    private fun anyNodeIdPresent(root: AccessibilityNodeInfo, ids: List<String>): Boolean {
-        for (id in ids) {
-            if (hasNodeId(root, id)) return true
-        }
-        return false
-    }
-
     private fun hasNodeId(root: AccessibilityNodeInfo, id: String): Boolean {
+        if (id == "*") return true
         val nodes = try {
             root.findAccessibilityNodeInfosByViewId(id)
         } catch (_: Throwable) {
@@ -224,37 +221,16 @@ class ContentDetectorService : AccessibilityService() {
         return found
     }
 
-    /**
-     * Cheap diagnostic: return up to [max] resource IDs seen in a BFS from root.
-     * Used by detector.miss to log what we're looking at when rules don't match.
-     */
-    private fun topLevelViewIds(root: AccessibilityNodeInfo, max: Int): List<String> {
-        val out = mutableListOf<String>()
-        val queue: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
-        queue.addLast(root)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < 200 && out.size < max) {
-            val n = queue.removeFirst()
-            visited++
-            val rid = n.viewIdResourceName
-            if (!rid.isNullOrBlank()) out.add(rid)
-            for (i in 0 until n.childCount) {
-                n.getChild(i)?.let { queue.addLast(it) }
-            }
-        }
-        return out
-    }
-
     companion object {
         const val TAG = "ScrollantirDetect"
         private const val THROTTLE_MS = 500L
+        private const val MAX_MISSES_BEFORE_CLOSE = 3  // ~1.5s at 500ms throttle
 
         @Volatile private var instance: ContentDetectorService? = null
 
         private val _enabled = MutableStateFlow(false)
         val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
-        /** Called from UsageStatsPoller when user leaves a target package. */
         fun notifyForegroundLeft() {
             instance?.onForegroundLeftTarget()
         }

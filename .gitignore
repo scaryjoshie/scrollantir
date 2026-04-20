@@ -25,6 +25,9 @@ dist/
 android-testing/received/
 android-testing/.venv/
 
+# Vendored reference code — clone locally, don't commit
+vendor/
+
 # Secrets / local config — never commit
 secrets/
 *.local
