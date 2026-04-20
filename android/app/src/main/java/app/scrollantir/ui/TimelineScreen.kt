@@ -336,6 +336,9 @@ private fun TimelineBlockBox(
 ) {
     val topDp = (block.startOfDayOffsetMinutes * dpPerMin).dp
     val heightDp = (block.durationMinutes * dpPerMin).dp.coerceAtLeast(2.dp)
+    // PackageManager-resolved label (e.g. "PayPal" instead of humanizePackage's
+    // "P2pmobile"). AppIconCache handles caching + off-main resolution.
+    val (_, displayLabel) = AppIconCache.rememberAppInfo(block.pkg)
 
     Box(
         modifier = Modifier
@@ -349,7 +352,7 @@ private fun TimelineBlockBox(
     ) {
         if (heightDp >= 14.dp) {
             Text(
-                text = block.label,
+                text = displayLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = block.textColor,
                 modifier = Modifier
@@ -363,7 +366,7 @@ private fun TimelineBlockBox(
 
 @Composable
 private fun BlockDetails(block: TimelineBlock) {
-    val (icon, _) = AppIconCache.rememberAppInfo(block.pkg)
+    val (icon, displayLabel) = AppIconCache.rememberAppInfo(block.pkg)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -387,7 +390,7 @@ private fun BlockDetails(block: TimelineBlock) {
         Spacer(Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = block.label,
+                text = displayLabel,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
