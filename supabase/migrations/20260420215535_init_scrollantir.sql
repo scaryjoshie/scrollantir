@@ -143,9 +143,9 @@ alter table "public"."events" add constraint "events_device_fkey" FOREIGN KEY (d
 
 alter table "public"."events" validate constraint "events_device_fkey";
 
-alter table "public"."events" add constraint "events_duration_nonneg" CHECK ((duration_s >= (0)::double precision)) not valid;
+alter table "public"."events" add constraint "events_duration_finite_nonneg" CHECK (((duration_s >= (0)::double precision) AND (duration_s < 'Infinity'::double precision))) not valid;
 
-alter table "public"."events" validate constraint "events_duration_nonneg";
+alter table "public"."events" validate constraint "events_duration_finite_nonneg";
 
 alter table "public"."events" add constraint "events_schema_version_pos" CHECK ((schema_version > 0)) not valid;
 
@@ -154,6 +154,10 @@ alter table "public"."events" validate constraint "events_schema_version_pos";
 alter table "public"."events" add constraint "events_source_nonempty" CHECK ((length(btrim(source)) > 0)) not valid;
 
 alter table "public"."events" validate constraint "events_source_nonempty";
+
+alter table "public"."prompts" add constraint "prompts_answered_xor_dismissed" CHECK (((answered_at IS NULL) OR (dismissed_at IS NULL))) not valid;
+
+alter table "public"."prompts" validate constraint "prompts_answered_xor_dismissed";
 
 alter table "public"."prompts" add constraint "prompts_kind_nonempty" CHECK ((length(btrim(kind)) > 0)) not valid;
 
@@ -362,13 +366,12 @@ using (true);
 
 
 
-  create policy "user_role_all_devices"
+  create policy "user_role_read_devices"
   on "public"."devices"
   as permissive
-  for all
+  for select
   to user_role
-using (true)
-with check (true);
+using (true);
 
 
 
@@ -381,13 +384,12 @@ using (true);
 
 
 
-  create policy "user_role_all_events"
+  create policy "user_role_read_events"
   on "public"."events"
   as permissive
-  for all
+  for select
   to user_role
-using (true)
-with check (true);
+using (true);
 
 
 
@@ -546,6 +548,16 @@ BEGIN
       v_device_id, p_device USING ERRCODE = '28000';
   END IF;
 
+  -- Retired-device guard. A device can be retired via admin CLI
+  -- without revoking its tokens (to preserve history); explicit
+  -- reject here means retired-device events never land.
+  IF EXISTS (
+    SELECT 1 FROM public.devices
+     WHERE device_id = p_device AND retired_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'device % is retired', p_device USING ERRCODE = '28000';
+  END IF;
+
   -- Fixed-window rate limit.
   INSERT INTO private.ingest_rate_limit (token_hash, window_start, hits)
   VALUES (v_hash, v_window, 1)
@@ -634,17 +646,19 @@ BEGIN
 
   v_source := 'prompt.' || v_kind;
 
-  -- Transactional: update prompt + insert answer event.
-  UPDATE public.prompts SET answered_at = NOW() WHERE id = p_prompt_id;
-
-  UPDATE private.tokens SET last_used_at = NOW() WHERE token_hash = v_hash;
-
+  -- Order matters: INSERT the answer event FIRST, without ON CONFLICT,
+  -- so a UUID collision raises and rolls back the whole transaction.
+  -- If we did the prompt UPDATE first and INSERT second, a silent
+  -- ON CONFLICT DO NOTHING would leave the prompt marked answered
+  -- with no answer event on record.
   INSERT INTO public.events (
     id, device, source, timestamp_utc, duration_s, data, schema_version
   ) VALUES (
     p_answer_event_id, v_device_id, v_source, NOW(), 0, p_data, 1
-  )
-  ON CONFLICT (id) DO NOTHING;
+  );
+
+  UPDATE public.prompts   SET answered_at   = NOW() WHERE id = p_prompt_id;
+  UPDATE private.tokens   SET last_used_at  = NOW() WHERE token_hash = v_hash;
 
   RETURN p_answer_event_id;
 END
@@ -822,6 +836,42 @@ $function$
 ;
 
 
+
+
+-- ─────────────────────────────────────────────────────────────────
+-- Schema USAGE + function EXECUTE grants. The declarative diff
+-- tool doesn't capture these, so we append explicitly to make the
+-- migration self-contained and reproducible from a fresh Supabase
+-- project without relying on `--include-seed` of the schemas/ tree.
+-- Mirrors 50_grants.sql.
+-- ─────────────────────────────────────────────────────────────────
+
+GRANT USAGE ON SCHEMA ingest_api TO ingest_role;
+
+GRANT EXECUTE ON FUNCTION ingest_api.accept_event(
+    TEXT, UUID, TEXT, TEXT, TIMESTAMPTZ, DOUBLE PRECISION, JSONB, SMALLINT
+  ) TO ingest_role;
+GRANT EXECUTE ON FUNCTION ingest_api.accept_prompt_answer(TEXT, UUID, UUID, JSONB)
+  TO ingest_role;
+GRANT EXECUTE ON FUNCTION ingest_api.pending_prompts(TEXT) TO ingest_role;
+
+GRANT USAGE ON SCHEMA public TO user_role;
+GRANT USAGE ON SCHEMA public, agent_api TO agent_role;
+
+GRANT EXECUTE ON FUNCTION agent_api.upsert_report(
+    UUID, TEXT, TEXT, TEXT[], TIMESTAMPTZ, TIMESTAMPTZ
+  ) TO agent_role;
+GRANT EXECUTE ON FUNCTION agent_api.soft_delete_report(UUID) TO agent_role;
+
+GRANT EXECUTE ON FUNCTION agent_api.upsert_annotation(UUID, TEXT, TEXT, TEXT)
+  TO agent_role;
+GRANT EXECUTE ON FUNCTION agent_api.soft_delete_annotation(UUID) TO agent_role;
+
+GRANT EXECUTE ON FUNCTION agent_api.create_prompt(
+    TEXT, TEXT, JSONB, JSONB, TIMESTAMPTZ, TEXT
+  ) TO agent_role;
+
+REVOKE ALL ON SCHEMA private FROM user_role, agent_role, anon, authenticated, PUBLIC;
 
 
 -- security_invoker on events_enriched: declarative diff tool doesn't

@@ -68,6 +68,16 @@ BEGIN
       v_device_id, p_device USING ERRCODE = '28000';
   END IF;
 
+  -- Retired-device guard. A device can be retired via admin CLI
+  -- without revoking its tokens (to preserve history); explicit
+  -- reject here means retired-device events never land.
+  IF EXISTS (
+    SELECT 1 FROM public.devices
+     WHERE device_id = p_device AND retired_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'device % is retired', p_device USING ERRCODE = '28000';
+  END IF;
+
   -- Fixed-window rate limit.
   INSERT INTO private.ingest_rate_limit (token_hash, window_start, hits)
   VALUES (v_hash, v_window, 1)
@@ -170,17 +180,19 @@ BEGIN
 
   v_source := 'prompt.' || v_kind;
 
-  -- Transactional: update prompt + insert answer event.
-  UPDATE public.prompts SET answered_at = NOW() WHERE id = p_prompt_id;
-
-  UPDATE private.tokens SET last_used_at = NOW() WHERE token_hash = v_hash;
-
+  -- Order matters: INSERT the answer event FIRST, without ON CONFLICT,
+  -- so a UUID collision raises and rolls back the whole transaction.
+  -- If we did the prompt UPDATE first and INSERT second, a silent
+  -- ON CONFLICT DO NOTHING would leave the prompt marked answered
+  -- with no answer event on record.
   INSERT INTO public.events (
     id, device, source, timestamp_utc, duration_s, data, schema_version
   ) VALUES (
     p_answer_event_id, v_device_id, v_source, NOW(), 0, p_data, 1
-  )
-  ON CONFLICT (id) DO NOTHING;
+  );
+
+  UPDATE public.prompts   SET answered_at   = NOW() WHERE id = p_prompt_id;
+  UPDATE private.tokens   SET last_used_at  = NOW() WHERE token_hash = v_hash;
 
   RETURN p_answer_event_id;
 END

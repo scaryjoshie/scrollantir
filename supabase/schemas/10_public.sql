@@ -48,7 +48,10 @@ CREATE TABLE public.events (
   received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   is_backfill     BOOLEAN NOT NULL DEFAULT FALSE,
 
-  CONSTRAINT events_duration_nonneg   CHECK (duration_s >= 0),
+  -- NaN, Infinity, -Infinity are all rejected: NaN >= 0 is FALSE,
+  -- Infinity < Infinity is FALSE, -Infinity >= 0 is FALSE.
+  CONSTRAINT events_duration_finite_nonneg
+    CHECK (duration_s >= 0 AND duration_s < 'Infinity'::double precision),
   CONSTRAINT events_source_nonempty   CHECK (length(btrim(source)) > 0),
   CONSTRAINT events_schema_version_pos CHECK (schema_version > 0)
 );
@@ -141,7 +144,10 @@ CREATE TABLE public.prompts (
   dismissed_at   TIMESTAMPTZ,
 
   CONSTRAINT prompts_kind_nonempty     CHECK (length(btrim(kind)) > 0),
-  CONSTRAINT prompts_question_nonempty CHECK (length(btrim(question)) > 0)
+  CONSTRAINT prompts_question_nonempty CHECK (length(btrim(question)) > 0),
+  -- A prompt can be answered OR dismissed, but not both. Null both = pending.
+  CONSTRAINT prompts_answered_xor_dismissed
+    CHECK (answered_at IS NULL OR dismissed_at IS NULL)
 );
 
 CREATE INDEX prompts_pending
@@ -196,29 +202,44 @@ ALTER VIEW public.events_enriched SET (security_invoker = true);
 
 
 -- ─────────────────────────────────────────────────────────────────
--- Permissive RLS policies. The real auth layer in this project is
--- Postgres role grants (see 50_grants.sql); these policies exist
--- only because RLS is ENABLE'd on every table and must permit
--- something for role-level access to resolve into rows. Each policy
--- is a blanket USING (true) for user_role and agent_role — the grant
--- table defines what each role can actually do, while these keep
--- RLS from turning every SELECT into an empty result.
+-- RLS policies. The real auth layer is Postgres role grants
+-- (50_grants.sql); these policies shape each role's RLS-visible
+-- surface to match intent.
+--
+-- Pattern:
+--   events, devices        — read-only for user_role + agent_role.
+--                            Writes go through ingest_api.accept_event
+--                            (SECURITY DEFINER bypasses RLS).
+--   source_tags            — user_role can curate directly; agent
+--                            proposes via reports.
+--   reports, annotations,
+--   prompts                — user_role can CRUD directly; agent writes
+--                            go through agent_api.* SECURITY DEFINER
+--                            singletons.
+--
+-- Grants (in 50_grants.sql) still enforce the hard rules; policies
+-- just narrow the RLS-visible surface so a grant drift doesn't widen
+-- blast radius more than necessary.
 -- ─────────────────────────────────────────────────────────────────
 
-CREATE POLICY user_role_all_events       ON public.events       FOR ALL TO user_role  USING (true) WITH CHECK (true);
-CREATE POLICY agent_role_read_events     ON public.events       FOR SELECT TO agent_role USING (true);
+-- events: both roles read-only.
+CREATE POLICY user_role_read_events   ON public.events FOR SELECT TO user_role  USING (true);
+CREATE POLICY agent_role_read_events  ON public.events FOR SELECT TO agent_role USING (true);
 
-CREATE POLICY user_role_all_devices      ON public.devices      FOR ALL TO user_role  USING (true) WITH CHECK (true);
-CREATE POLICY agent_role_read_devices    ON public.devices      FOR SELECT TO agent_role USING (true);
+-- devices: both roles read-only.
+CREATE POLICY user_role_read_devices  ON public.devices FOR SELECT TO user_role  USING (true);
+CREATE POLICY agent_role_read_devices ON public.devices FOR SELECT TO agent_role USING (true);
 
-CREATE POLICY user_role_all_source_tags  ON public.source_tags  FOR ALL TO user_role  USING (true) WITH CHECK (true);
+-- source_tags: user curates, agent reads.
+CREATE POLICY user_role_all_source_tags   ON public.source_tags FOR ALL    TO user_role  USING (true) WITH CHECK (true);
 CREATE POLICY agent_role_read_source_tags ON public.source_tags FOR SELECT TO agent_role USING (true);
 
-CREATE POLICY user_role_all_reports      ON public.reports      FOR ALL TO user_role  USING (true) WITH CHECK (true);
-CREATE POLICY agent_role_read_reports    ON public.reports      FOR SELECT TO agent_role USING (true);
+-- reports / annotations / prompts: user CRUD, agent reads (writes via agent_api).
+CREATE POLICY user_role_all_reports       ON public.reports     FOR ALL    TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_reports     ON public.reports     FOR SELECT TO agent_role USING (true);
 
-CREATE POLICY user_role_all_annotations  ON public.annotations  FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY user_role_all_annotations   ON public.annotations FOR ALL    TO user_role  USING (true) WITH CHECK (true);
 CREATE POLICY agent_role_read_annotations ON public.annotations FOR SELECT TO agent_role USING (true);
 
-CREATE POLICY user_role_all_prompts      ON public.prompts      FOR ALL TO user_role  USING (true) WITH CHECK (true);
-CREATE POLICY agent_role_read_prompts    ON public.prompts      FOR SELECT TO agent_role USING (true);
+CREATE POLICY user_role_all_prompts       ON public.prompts     FOR ALL    TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_prompts     ON public.prompts     FOR SELECT TO agent_role USING (true);
