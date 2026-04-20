@@ -100,6 +100,7 @@ class ContentDetectorService : AccessibilityService() {
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
     @Volatile private var totalEventsSeen: Long = 0L
+    @Volatile private var lastAllEventDebugMs: Long = 0L
     private val lastMissEmitByPkg: MutableMap<String, Long> = mutableMapOf()
 
     override fun onServiceConnected() {
@@ -124,19 +125,39 @@ class ContentDetectorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        val pkg = event.packageName?.toString() ?: return
+        val pkgRaw = event.packageName?.toString()
+        totalEventsSeen++
 
+        // Diagnostic: write a debug.all_events row to Room at most once every
+        // 10 seconds. If the Events card in the UI never shows these, we know
+        // zero events are being delivered to our service (independent of
+        // logcat, filters, detector rules, etc.).
+        val now = System.currentTimeMillis()
+        if (now - lastAllEventDebugMs > 10_000L) {
+            lastAllEventDebugMs = now
+            val typeStr = AccessibilityEvent.eventTypeToString(event.eventType)
+            scope.launch {
+                emit(
+                    dao = dao,
+                    source = "debug.all_events",
+                    durationS = 0.0,
+                    data = mapOf(
+                        "pkg" to (pkgRaw ?: "null"),
+                        "type" to typeStr,
+                        "total" to totalEventsSeen
+                    )
+                )
+            }
+        }
+
+        val pkg = pkgRaw ?: return
         // Filter by package BEFORE throttling, otherwise non-target apps
         // (we now listen to everything — no packageNames filter in XML)
         // could fill up our throttle window and starve real target events.
         val rules = rulesByPackage[pkg] ?: return
 
-        // Log target-app events at Info. Silent for non-target packages
-        // so we don't flood logcat with every system/keyboard event.
-        totalEventsSeen++
         Log.i(TAG, "event #$totalEventsSeen type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg")
 
-        val now = System.currentTimeMillis()
         if (now - lastCheckMs < THROTTLE_MS) return
         lastCheckMs = now
 
