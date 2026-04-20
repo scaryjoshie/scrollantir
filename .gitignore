@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python (future: mac-forwarder, server)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Node (future: dashboard)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Build artifacts
+build/
+dist/
+*.log
+
+# Secrets / local config — never commit
+secrets/
+*.local
+local.properties
