@@ -72,6 +72,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.net.ForwarderWorker
 import app.scrollantir.net.SecurePrefs
+import app.scrollantir.tracker.ContentDetectorService
 import app.scrollantir.tracker.TrackerForegroundService
 import app.scrollantir.ui.theme.ScrollantirTheme
 import kotlinx.coroutines.flow.Flow
@@ -110,6 +111,7 @@ fun MainScreen(modifier: Modifier = Modifier) {
     val notifGranted = remember(refreshTick) { hasNotificationPermission(context) }
     val usageGranted = remember(refreshTick) { hasUsageStatsPermission(context) }
     val batteryOK = remember(refreshTick) { isIgnoringBatteryOptimizations(context) }
+    val a11yGranted = remember(refreshTick) { isAccessibilityEnabled(context) }
     val canStart = notifGranted && usageGranted
 
     val running by TrackerForegroundService.running.collectAsState()
@@ -144,11 +146,12 @@ fun MainScreen(modifier: Modifier = Modifier) {
 
         SyncCard(context = context, refreshKey = refreshTick)
 
-        if (!canStart || !batteryOK) {
+        if (!canStart || !batteryOK || !a11yGranted) {
             PermissionsSection(
                 notifGranted = notifGranted,
                 usageGranted = usageGranted,
                 batteryOK = batteryOK,
+                a11yGranted = a11yGranted,
                 onGrantNotif = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -166,6 +169,12 @@ fun MainScreen(modifier: Modifier = Modifier) {
                         Uri.parse("package:${context.packageName}")
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(intent)
+                },
+                onGrantA11y = {
+                    context.startActivity(
+                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
                 }
             )
         } else {
@@ -282,9 +291,11 @@ private fun PermissionsSection(
     notifGranted: Boolean,
     usageGranted: Boolean,
     batteryOK: Boolean,
+    a11yGranted: Boolean,
     onGrantNotif: () -> Unit,
     onGrantUsage: () -> Unit,
-    onGrantBattery: () -> Unit
+    onGrantBattery: () -> Unit,
+    onGrantA11y: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
@@ -295,6 +306,7 @@ private fun PermissionsSection(
         PermissionRow("Notifications", notifGranted, onGrantNotif)
         PermissionRow("Usage access", usageGranted, onGrantUsage)
         PermissionRow("Ignore battery optimization", batteryOK, onGrantBattery)
+        PermissionRow("Accessibility (Shorts/Reels detection)", a11yGranted, onGrantA11y)
     }
 }
 
@@ -507,4 +519,14 @@ private fun hasUsageStatsPermission(context: Context): Boolean {
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     return pm.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+private fun isAccessibilityEnabled(context: Context): Boolean {
+    val enabled = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ) ?: return false
+    val serviceId = "${context.packageName}/${ContentDetectorService::class.java.name}"
+    val shortId = "${context.packageName}/.tracker.ContentDetectorService"
+    return enabled.contains(serviceId) || enabled.contains(shortId)
 }

@@ -21,6 +21,10 @@ build/
 dist/
 *.log
 
+# Runtime test output from the stub server
+android-testing/received/
+android-testing/.venv/
+
 # Secrets / local config — never commit
 secrets/
 *.local

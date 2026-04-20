@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Scrollantir</string>
+    <string name="content_detector_description">Detects which view (Shorts/Reels/feed/etc.) is showing in YouTube, Instagram, and TikTok so tracking can distinguish content modes. Reads UI text from those three apps only.</string>
 </resources>

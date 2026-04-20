@@ -72,6 +72,12 @@ class UsageStatsPoller(
             durationS = durS,
             data = mapOf("app" to app)
         )
+        // If we just left a content-detector target app, tell the detector
+        // to close its session — AccessibilityService stops getting events
+        // as soon as the foreground app is outside its package filter.
+        if (app in ContentDetection.TARGET_PACKAGES) {
+            ContentDetectorService.notifyForegroundLeft()
+        }
         currentApp = null
         currentStartedAt = 0L
     }

@@ -72,4 +72,9 @@ async def ingest(events: list[Event], authorization: str = Header(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    print("─" * 60)
+    print(f"  scrollantir stub — listening on 0.0.0.0:8069")
+    print(f"  token:    {TOKEN}")
+    print(f"  log dir:  {LOG_DIR}")
+    print("─" * 60, flush=True)
+    uvicorn.run(app, host="0.0.0.0", port=8069, log_level="info")
