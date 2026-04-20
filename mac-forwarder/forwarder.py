@@ -157,23 +157,26 @@ def detect_schema(conn: sqlite3.Connection) -> Schema:
             ev_start_col="starttime",
             ev_end_or_dur_col="endtime",
         )
-    if "bucket" in tabs and "event" in tabs:
-        # older Python aw-server
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(event)")}
-        if "timestamp" in cols and "duration" in cols and "bucket_id" in cols:
-            return Schema(
-                buckets_table="bucket",
-                events_table="event",
-                bucket_key_col="id",
-                bucket_id_col="id",
-                event_fk_col="bucket_id",
-                time_mode="iso_duration",
-                ev_start_col="timestamp",
-                ev_end_or_dur_col="duration",
-            )
+    # Python aw-server uses peewee → bucketmodel / eventmodel. Older docs
+    # sometimes say bucket / event. Same column layout in both cases.
+    for buckets_t, events_t in (("bucketmodel", "eventmodel"), ("bucket", "event")):
+        if buckets_t in tabs and events_t in tabs:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({events_t})")}
+            if {"timestamp", "duration", "bucket_id"} <= cols:
+                return Schema(
+                    buckets_table=buckets_t,
+                    events_table=events_t,
+                    bucket_key_col="key" if buckets_t == "bucketmodel" else "id",
+                    bucket_id_col="id",
+                    event_fk_col="bucket_id",
+                    time_mode="iso_duration",
+                    ev_start_col="timestamp",
+                    ev_end_or_dur_col="duration",
+                )
     raise RuntimeError(
         f"cannot recognise AW schema (tables={sorted(tabs)}); "
-        "supported: aw-server-rust (buckets+events) or aw-server python (bucket+event)"
+        "supported: aw-server-rust (buckets+events) or aw-server python "
+        "(bucketmodel+eventmodel or bucket+event)"
     )
 
 
