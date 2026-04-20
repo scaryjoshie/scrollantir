@@ -6,4 +6,4 @@
     android:canRetrieveWindowContent="true"
     android:description="@string/content_detector_description"
     android:notificationTimeout="100"
-    android:packageNames="com.google.android.youtube|com.instagram.android|com.zhiliaoapp.musically" />
+    android:packageNames="com.google.android.youtube|app.revanced.android.youtube|com.instagram.android|com.zhiliaoapp.musically" />

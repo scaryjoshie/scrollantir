@@ -55,6 +55,16 @@ class ContentDetectorService : AccessibilityService() {
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             )
         ),
+        ContentDetection.PKG_YOUTUBE_REVANCED to listOf(
+            DetectorRule(
+                // Emit under the same source as stock YouTube so downstream
+                // queries don't have to handle "YouTube" vs "YouTube Revanced"
+                source = "youtube.shorts",
+                primaryViewId = "app.revanced.android.youtube:id/reel_recycler",
+                eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            )
+        ),
         ContentDetection.PKG_INSTAGRAM to listOf(
             DetectorRule(
                 source = "instagram.reels",
@@ -89,6 +99,7 @@ class ContentDetectorService : AccessibilityService() {
     @Volatile private var current: CurrentMode? = null
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
+    private val lastMissEmitByPkg: MutableMap<String, Long> = mutableMapOf()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -143,7 +154,47 @@ class ContentDetectorService : AccessibilityService() {
             onDetected(matched, now)
         } else {
             onMiss(now)
+            maybeEmitMissDiagnostic(pkg, root, now)
         }
+    }
+
+    /**
+     * When a target app is foreground but no rule matched, emit a
+     * `detector.miss` point event once per [MISS_DIAGNOSTIC_COOLDOWN_MS]
+     * per package. Carries up to 20 view IDs seen in the tree so we can
+     * see what the app actually exposes and update detectors if needed.
+     */
+    private fun maybeEmitMissDiagnostic(pkg: String, root: AccessibilityNodeInfo, now: Long) {
+        val last = lastMissEmitByPkg[pkg] ?: 0L
+        if (now - last < MISS_DIAGNOSTIC_COOLDOWN_MS) return
+        lastMissEmitByPkg[pkg] = now
+
+        val ids = topLevelViewIds(root, max = 20)
+        scope.launch {
+            emit(
+                dao = dao,
+                source = "detector.miss",
+                durationS = 0.0,
+                data = mapOf("package" to pkg, "view_ids" to ids)
+            )
+        }
+    }
+
+    private fun topLevelViewIds(root: AccessibilityNodeInfo, max: Int): List<String> {
+        val out = mutableListOf<String>()
+        val queue: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
+        queue.addLast(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 300 && out.size < max) {
+            val n = queue.removeFirst()
+            visited++
+            val rid = n.viewIdResourceName
+            if (!rid.isNullOrBlank()) out.add(rid)
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let { queue.addLast(it) }
+            }
+        }
+        return out
     }
 
     private fun onDetected(source: String, now: Long) {
@@ -225,6 +276,7 @@ class ContentDetectorService : AccessibilityService() {
         const val TAG = "ScrollantirDetect"
         private const val THROTTLE_MS = 500L
         private const val MAX_MISSES_BEFORE_CLOSE = 3  // ~1.5s at 500ms throttle
+        private const val MISS_DIAGNOSTIC_COOLDOWN_MS = 60_000L  // 1 per minute per pkg
 
         @Volatile private var instance: ContentDetectorService? = null
 

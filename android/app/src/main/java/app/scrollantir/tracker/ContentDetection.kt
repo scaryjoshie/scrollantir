@@ -7,8 +7,14 @@ package app.scrollantir.tracker
  */
 object ContentDetection {
     const val PKG_YOUTUBE = "com.google.android.youtube"
+    const val PKG_YOUTUBE_REVANCED = "app.revanced.android.youtube"
     const val PKG_INSTAGRAM = "com.instagram.android"
     const val PKG_TIKTOK = "com.zhiliaoapp.musically"
 
-    val TARGET_PACKAGES: Set<String> = setOf(PKG_YOUTUBE, PKG_INSTAGRAM, PKG_TIKTOK)
+    val TARGET_PACKAGES: Set<String> = setOf(
+        PKG_YOUTUBE,
+        PKG_YOUTUBE_REVANCED,
+        PKG_INSTAGRAM,
+        PKG_TIKTOK
+    )
 }
