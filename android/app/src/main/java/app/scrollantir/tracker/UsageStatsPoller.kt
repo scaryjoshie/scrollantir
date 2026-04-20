@@ -24,13 +24,20 @@ class UsageStatsPoller(
     private val usm: UsageStatsManager =
         context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
 
-    // Mutex guards currentApp / currentStartedAt so external callers
-    // (ScreenWatcher on SCREEN_OFF, service onDestroy) can safely flush
-    // without racing the poll loop.
+    // Mutex serializes pollOnce (processes UsageEvents) and flushCurrent
+    // (external caller). All writes to currentApp / currentStartedAt /
+    // lastQuery happen under this lock.
     private val mutex = Mutex()
     private var lastQuery: Long = System.currentTimeMillis() - INITIAL_LOOKBACK_MS
     private var currentApp: String? = null
     private var currentStartedAt: Long = 0L
+
+    // Set synchronously by ScreenWatcher on SCREEN_OFF. The next pollOnce
+    // processes this under the mutex BEFORE reading new UsageEvents — this
+    // ensures the flush happens before any ACTIVITY_RESUMED for the same
+    // app (user unlocking back to the same app) is observed and skipped
+    // because the state still said "already in this app."
+    @Volatile private var pendingScreenOffFlushMs: Long? = null
 
     suspend fun run() {
         Log.i(TAG, "starting (lookback ${INITIAL_LOOKBACK_MS / 1000}s, poll every ${POLL_INTERVAL_MS}ms)")
@@ -44,7 +51,6 @@ class UsageStatsPoller(
                 }
                 delay(POLL_INTERVAL_MS)
             }
-            // Graceful stop
             flushCurrent(System.currentTimeMillis())
         } finally {
             activeInstance = null
@@ -53,11 +59,24 @@ class UsageStatsPoller(
     }
 
     private suspend fun pollOnce() {
-        val now = System.currentTimeMillis()
-        val events = usm.queryEvents(lastQuery, now)
-        val ev = UsageEvents.Event()
-
         mutex.withLock {
+            // If a screen-off flush was scheduled since the last poll,
+            // process it FIRST and rewind lastQuery to the screen-off
+            // moment. That way any RESUMED event that fired between
+            // screen-off and now gets seen against a freshly-null
+            // currentApp and starts a new session correctly — instead of
+            // being skipped because currentApp still equalled the app
+            // the user was in before locking.
+            val pending = pendingScreenOffFlushMs
+            if (pending != null) {
+                flushCurrentLocked(pending)
+                lastQuery = pending
+                pendingScreenOffFlushMs = null
+            }
+
+            val now = System.currentTimeMillis()
+            val events = usm.queryEvents(lastQuery, now)
+            val ev = UsageEvents.Event()
             while (events.getNextEvent(ev)) {
                 if (ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
                     handleResumedLocked(ev.packageName, ev.timeStamp)
@@ -78,13 +97,11 @@ class UsageStatsPoller(
     }
 
     /**
-     * Close out the in-flight foreground session, if any. Safe to call
-     * from any coroutine — mutex-guarded.
+     * Synchronous flush — for service onDestroy via runBlocking. Mutex
+     * guarded, safe from any coroutine.
      */
     internal suspend fun flushCurrent(endMs: Long) {
-        mutex.withLock {
-            flushCurrentLocked(endMs)
-        }
+        mutex.withLock { flushCurrentLocked(endMs) }
     }
 
     /** Must be called with [mutex] held. */
@@ -101,7 +118,7 @@ class UsageStatsPoller(
             data = mapOf("app" to app)
         )
         if (app in ContentDetection.TARGET_PACKAGES) {
-            ContentDetectorService.notifyForegroundLeft()
+            ContentDetectorService.notifyForegroundLeft(endMs)
         }
         currentApp = null
         currentStartedAt = 0L
@@ -115,19 +132,22 @@ class UsageStatsPoller(
         private const val POLL_INTERVAL_MS = 2_500L
         private const val INITIAL_LOOKBACK_MS = 10_000L
 
-        /** Live "what's foregrounded right now" for the Today dashboard. */
         private val _currentForeground = MutableStateFlow<CurrentForeground?>(null)
         val currentForeground: StateFlow<CurrentForeground?> = _currentForeground.asStateFlow()
 
-        /**
-         * Pointer to the poller currently running inside the foreground
-         * service, or null if none. Set in run(), cleared on return.
-         * Exposed so ScreenWatcher can signal session-close on screen-off
-         * without plumbing a direct reference through.
-         */
         @Volatile private var activeInstance: UsageStatsPoller? = null
 
-        /** Flush the active poller's in-flight session, if any. */
+        /**
+         * Schedule a flush-at-[endMs] that runs at the start of the next
+         * pollOnce under the mutex. Returns immediately — no coroutine, no
+         * blocking. Safe to call from any thread (synchronous writes to
+         * volatile Long).
+         */
+        fun scheduleScreenOffFlush(endMs: Long) {
+            activeInstance?.pendingScreenOffFlushMs = endMs
+        }
+
+        /** Suspend flush — for service onDestroy via runBlocking. */
         suspend fun flushActiveSession(atMs: Long = System.currentTimeMillis()) {
             activeInstance?.flushCurrent(atMs)
         }

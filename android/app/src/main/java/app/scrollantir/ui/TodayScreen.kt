@@ -42,6 +42,7 @@ import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.AppTotal
 import app.scrollantir.db.EventRow
 import app.scrollantir.db.ModeTotal
+import app.scrollantir.tracker.ContentDetectorService
 import app.scrollantir.tracker.TrackerForegroundService
 import app.scrollantir.tracker.UsageStatsPoller
 import androidx.compose.runtime.LaunchedEffect
@@ -61,24 +62,10 @@ fun TodayScreen(
     val context = LocalContext.current
     val dao = remember { AppDatabase.get(context).events() }
 
-    val startOfDayMs = remember {
-        LocalDate.now(ZoneId.systemDefault())
-            .atStartOfDay(ZoneId.systemDefault())
-            .toInstant()
-            .toEpochMilli()
-    }
-    // Look back 24h before today_start so a session that began before midnight
-    // is still available for day-boundary clipping.
-    val lookbackIso = remember {
-        Instant.ofEpochMilli(startOfDayMs - 24 * 3600 * 1000)
-            .toString()
-    }
-    val startOfDayIso = remember {
-        Instant.ofEpochMilli(startOfDayMs).toString()
-    }
-
     // "Now" tick — advances every 10s so the live current-session tile and
-    // the clipping upper-bound keep moving.
+    // the clipping upper-bound keep moving. Also used as the source-of-truth
+    // for today's date, which means the dashboard correctly rolls over at
+    // midnight when the app is left open.
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -87,8 +74,23 @@ fun TodayScreen(
         }
     }
 
+    val zone = remember { ZoneId.systemDefault() }
+    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
+    // Keyed on `today` and `zone` so crossing midnight (or a timezone change)
+    // recomputes all day-boundary values.
+    val startOfDayMs = remember(today, zone) {
+        today.atStartOfDay(zone).toInstant().toEpochMilli()
+    }
+    val lookbackIso = remember(startOfDayMs) {
+        Instant.ofEpochMilli(startOfDayMs - 24 * 3600 * 1000).toString()
+    }
+    val startOfDayIso = remember(startOfDayMs) {
+        Instant.ofEpochMilli(startOfDayMs).toString()
+    }
+
     val running by TrackerForegroundService.running.collectAsState()
     val current by UsageStatsPoller.currentForeground.collectAsState()
+    val currentMode by ContentDetectorService.currentMode.collectAsState()
     val foregroundEvents by dao.foregroundEventsSince(lookbackIso)
         .collectAsState(initial = emptyList())
     val modeEvents by dao.contentModeEventsSince(lookbackIso)
@@ -106,9 +108,10 @@ fun TodayScreen(
             windowEndMs = nowMs
         ).let(EventFilter::filterAppTotals)
     }
-    val modeTotals = remember(modeEvents, startOfDayMs, nowMs) {
+    val modeTotals = remember(modeEvents, startOfDayMs, nowMs, currentMode) {
         aggregateModesClipped(
             events = modeEvents,
+            inflightMode = currentMode,
             windowStartMs = startOfDayMs,
             windowEndMs = nowMs
         )
@@ -497,23 +500,34 @@ private fun aggregateAppsClipped(
         .sortedByDescending { it.totalS }
 }
 
-/** Same clipping logic for content-mode sources. No in-flight fold — the
- *  detector already emits modes on transition; a live one that started
- *  before window start is rare and the 24h lookback picks it up. */
+/**
+ * Same clipping logic for content-mode sources. Also folds in the live
+ * in-flight mode (from ContentDetectorService.currentMode) — otherwise a
+ * Shorts session you've been scrolling for the last 15 minutes wouldn't
+ * show up on the Today card until you left YouTube.
+ */
 private fun aggregateModesClipped(
     events: List<EventRow>,
+    inflightMode: ContentDetectorService.CurrentMode?,
     windowStartMs: Long,
     windowEndMs: Long
 ): List<ModeTotal> {
     val totals = mutableMapOf<String, Double>()
+
+    fun add(source: String, startMs: Long, endMs: Long) {
+        val clipStart = maxOf(startMs, windowStartMs)
+        val clipEnd = minOf(endMs, windowEndMs)
+        if (clipEnd <= clipStart) return
+        totals[source] = (totals[source] ?: 0.0) + (clipEnd - clipStart) / 1000.0
+    }
+
     for (e in events) {
         val start = parseInstantMillis(e.timestampUtc) ?: continue
         val end = start + (e.durationS * 1000).toLong()
-        val clipStart = maxOf(start, windowStartMs)
-        val clipEnd = minOf(end, windowEndMs)
-        if (clipEnd <= clipStart) continue
-        totals[e.source] = (totals[e.source] ?: 0.0) + (clipEnd - clipStart) / 1000.0
+        add(e.source, start, end)
     }
+    inflightMode?.let { add(it.source, it.startMs, windowEndMs) }
+
     return totals.entries
         .map { (source, totalS) -> ModeTotal(source, totalS) }
         .sortedByDescending { it.totalS }

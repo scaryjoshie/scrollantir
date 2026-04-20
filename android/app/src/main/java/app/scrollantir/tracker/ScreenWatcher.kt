@@ -90,9 +90,13 @@ class ScreenWatcher(
         // foregrounded — e.g. Messages at 14:00, screen off at 14:05 — and
         // when the user unlocks two hours later, flushCurrent would emit
         // a bogus 2h+ Messages session.
-        scope.launch {
-            UsageStatsPoller.flushActiveSession(t.toEpochMilli())
-        }
+        //
+        // Synchronous: sets a volatile flag that the next pollOnce consumes
+        // under the same mutex that processes ACTIVITY_RESUMED events.
+        // Guarantees the flush happens BEFORE a post-unlock RESUMED for
+        // the same app (which would otherwise be skipped as "already in
+        // this app" against stale state).
+        UsageStatsPoller.scheduleScreenOffFlush(t.toEpochMilli())
     }
 
     private fun onUserPresent(t: Instant) {

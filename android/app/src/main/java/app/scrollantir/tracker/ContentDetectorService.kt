@@ -94,8 +94,6 @@ class ContentDetectorService : AccessibilityService() {
         )
     )
 
-    private data class CurrentMode(val source: String, val startMs: Long)
-
     @Volatile private var current: CurrentMode? = null
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
@@ -220,7 +218,9 @@ class ContentDetectorService : AccessibilityService() {
             Log.i(TAG, "MODE end:   ${prev.source}  (${"%.1f".format(durS)}s)")
         }
         Log.i(TAG, "MODE start: $source")
-        current = CurrentMode(source, now)
+        val cm = CurrentMode(source, now)
+        current = cm
+        _currentMode.value = cm
     }
 
     private fun onMiss(now: Long) {
@@ -234,6 +234,7 @@ class ContentDetectorService : AccessibilityService() {
             }
             Log.i(TAG, "MODE end:   ${c.source}  (${"%.1f".format(durS)}s, ${missCount} misses)")
             current = null
+            _currentMode.value = null
             missCount = 0
         }
     }
@@ -242,17 +243,21 @@ class ContentDetectorService : AccessibilityService() {
      * Called from UsageStatsPoller when the user leaves a target package.
      * AccessibilityService stops receiving events outside its filter,
      * so this is the only reliable close-signal.
+     *
+     * [endMs] is the timestamp the poller observed the app-leave at —
+     * more accurate than System.currentTimeMillis() here because the
+     * poller is up to [POLL_INTERVAL_MS] older than "now".
      */
-    fun onForegroundLeftTarget() {
+    fun onForegroundLeftTarget(endMs: Long) {
         val c = current ?: return
-        val now = System.currentTimeMillis()
-        val durS = (now - c.startMs) / 1000.0
+        val durS = (endMs - c.startMs).coerceAtLeast(0) / 1000.0
         scope.launch {
             emit(dao = dao, source = c.source,
                  start = Instant.ofEpochMilli(c.startMs), durationS = durS)
         }
         Log.i(TAG, "MODE end:   ${c.source}  (${"%.1f".format(durS)}s, foreground-left)")
         current = null
+        _currentMode.value = null
         missCount = 0
     }
 
@@ -267,6 +272,7 @@ class ContentDetectorService : AccessibilityService() {
             } catch (_: Throwable) {}
         }
         current = null
+        _currentMode.value = null
     }
 
     private fun hasNodeId(root: AccessibilityNodeInfo, id: String): Boolean {
@@ -281,6 +287,8 @@ class ContentDetectorService : AccessibilityService() {
         return found
     }
 
+    data class CurrentMode(val source: String, val startMs: Long)
+
     companion object {
         const val TAG = "ScrollantirDetect"
         private const val THROTTLE_MS = 500L
@@ -292,8 +300,15 @@ class ContentDetectorService : AccessibilityService() {
         private val _enabled = MutableStateFlow(false)
         val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
-        fun notifyForegroundLeft() {
-            instance?.onForegroundLeftTarget()
+        /** Live in-flight mode (youtube.shorts / instagram.reels / etc.) for
+         *  the Today dashboard to fold into its totals — otherwise a mode
+         *  that's been active for the last 20 minutes wouldn't count until
+         *  the user left the app. */
+        private val _currentMode = MutableStateFlow<CurrentMode?>(null)
+        val currentMode: StateFlow<CurrentMode?> = _currentMode.asStateFlow()
+
+        fun notifyForegroundLeft(endMs: Long) {
+            instance?.onForegroundLeftTarget(endMs)
         }
     }
 }
