@@ -52,7 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -451,7 +451,12 @@ private fun hasNotificationPermission(context: Context): Boolean {
     ) == PackageManager.PERMISSION_GRANTED
 }
 
+@Suppress("DEPRECATION")
 private fun hasUsageStatsPermission(context: Context): Boolean {
+    // Both AppOps APIs (checkOpNoThrow on <Q, unsafeCheckOpNoThrow on Q+)
+    // are marked deprecated but remain the only official way for an app
+    // to inspect its own GET_USAGE_STATS grant. No non-deprecated
+    // replacement exists; suppress and move on.
     val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
     val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         appOps.unsafeCheckOpNoThrow(
@@ -460,7 +465,6 @@ private fun hasUsageStatsPermission(context: Context): Boolean {
             context.packageName
         )
     } else {
-        @Suppress("DEPRECATION")
         appOps.checkOpNoThrow(
             AppOpsManager.OPSTR_GET_USAGE_STATS,
             Process.myUid(),
