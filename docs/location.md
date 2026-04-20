@@ -79,9 +79,34 @@ This is dashboard-layer work, not collection:
    🍽 Dinner               17:45 – 19:00
    ```
 
-## Minimal implementation (first cut)
+## Two build tiers — pick at implementation time
 
-**~4 hours of work** — Activity Recognition + adaptive location sampling.
+### Tier 1: narrative-only (default, ~3 hr)
+
+Activity Recognition + **one location reading per transition**. No periodic sampling during movement.
+
+- Volume: ~40 events/day
+- Battery: ~2–4% daily overhead
+- Renders: "Walked from Home to Cafe Loma, 09:15 → 09:35, ~1.2mi straight-line"
+- No route polylines. Distance is A-to-B great-circle, which is close enough for the dashboard's "biking to the office vs. the gym" use case.
+
+This is likely all you need. Ship this; add Tier 2 later only if you find yourself wanting a map view.
+
+### Tier 2: narrative + path (~4 hr)
+
+Same as Tier 1, plus periodic sampling during movement states (20–30s depending on activity). Enables:
+
+- Accurate distance (sum of segments)
+- Route polyline rendering on a map view
+- Speed/pace per segment
+
+Volume: ~100 events/day. Battery: ~3–7% daily overhead.
+
+The cadence table below is Tier 2. For Tier 1, just ignore the "During movement" row — there is no periodic sampling.
+
+## Implementation (both tiers)
+
+**~3–4 hours of work depending on tier** — Activity Recognition + location sampling.
 
 ### Permissions (new)
 
