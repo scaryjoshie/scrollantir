@@ -21,17 +21,13 @@ object EventFilter {
         "com.android.settings.intelligence"
     )
 
-    /**
-     * Our own package — always hide from time-tracking views since scrollantir
-     * itself "foregrounds" every time the user checks the dashboard.
-     */
-    private const val SELF_PACKAGE = "app.scrollantir"
-
     /** Hide foreground visits shorter than this in the Today list. */
     const val MIN_FOREGROUND_S: Double = 2.0
 
     fun isSignalApp(pkg: String): Boolean {
-        return pkg !in NOISE_PACKAGES && pkg != SELF_PACKAGE
+        // Scrollantir's own usage is shown. If you spend 2h/day staring
+        // at your own timeline, that's useful signal. Raw data.
+        return pkg !in NOISE_PACKAGES
     }
 
     fun filterAppTotals(all: List<AppTotal>): List<AppTotal> {
