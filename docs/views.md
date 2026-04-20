@@ -1,201 +1,111 @@
-# Views — agent-authored custom dashboards
+# Views — CLI-authored dashboard pages
 
-## Motivation
+## The idea
 
-Scrollantir's raw data answers arbitrary questions, but you don't want to write SQL against Postgres every time you wonder "did I skip class this week?" or "how much of my YouTube time was Shorts?". The agent already has context (schedule, places, app usage patterns) — let it generate **views**: named, reusable chunks of dashboard UI that wrap a specific analytical question.
+Views are just React pages in the dashboard repo. You ask a CLI coding agent to make one, it writes a file, Next.js picks it up.
 
-## What a view is
+```bash
+$ claude "make me a view that shows class attendance this week"
+# → writes dashboard/app/views/class-attendance/page.tsx
+# → visible at http://localhost:3000/views/class-attendance on save
+```
 
-A named combination of:
-
-- **A data spec** — one or more SQL queries against the Supabase tables, parameterized on things like date range and user.
-- **A rendering spec** — how to turn the query result into something you can look at: number tile, bar chart, line chart, ranked list, heatmap, timeline band, emoji summary, etc.
-- **Metadata** — title, description, category, refresh cadence, who asked for it, when.
-
-Example views the agent might author:
-
-- **Class Attendance** — rows per class × week, color-coded attended / late / skipped. (Query: `places` with `schedule` × matched visits × expected day/time matrix.)
-- **Short-Form Ratio** — fraction of YouTube / Instagram time spent in Shorts/Reels, per day for last 30 days. Line chart.
-- **Focus Blocks** — stretches where no social-media app was foreground for >30 min, rendered as bands over a daily timeline. Plus a rolling 7-day total.
-- **Unexpected Places** — time spent at GPS clusters that aren't yet in `places`. Ranked list with "name this place?" affordance.
-- **Mac/Phone Overlap** — stacked area of `active_mac ∩ active_phone` vs `mac_only` vs `phone_only` over a day.
+No runtime template library, no views-as-rows-in-a-table, no "preview" pipeline. The infrastructure is **Claude Code + file system + Next.js**. What we need is good conventions so the CLI produces consistent, working pages every time.
 
 ## Status
 
-🚧 Planned. Depends on:
+🚧 Scaffolding work. Depends on the dashboard existing (see `dashboard.md`, TBD).
 
-1. Mac + phone data both flowing to the Supabase backend
-2. A baseline dashboard UI shell (native Swift or Next.js — see [dashboard](#) doc, to be written)
-3. Agent plumbing with `agent_api` RPCs (see `supabase.md`)
+## What needs to exist
 
-## Two architectural options
+1. **Directory convention:** `dashboard/app/views/<slug>/page.tsx`. One view per directory. Server components by default; client components when interactivity is needed.
+2. **A scaffold template:** `dashboard/app/views/_scaffold/page.tsx.example`. Blank page with:
+   - Supabase server-side client set up
+   - Date-range param wired (`?start=...&end=...`)
+   - User-auth session read
+   - Tremor `Card` + `Title` wrapping the content
+   - Commented placeholder: `// TODO: replace with your query + rendering`
+   The CLI copies this and modifies.
+3. **`AGENTS.md` at the dashboard repo root** with the conventions the CLI must follow:
+   - "Before writing a view, read `docs/supabase.md` and `docs/places.md`"
+   - "Queries go through the authenticated Supabase client; never bypass RLS"
+   - "Use Tremor for charts (`<AreaChart>`, `<BarList>`, `<LineChart>`), shadcn/ui for layout"
+   - "All views accept `?start=` and `?end=` params for date range"
+   - "Put heavy computation in SQL, not in JS"
+   - "Each view exports `metadata = { title, description, category }` for the nav"
+4. **Two or three hand-written reference views** so the CLI has style to mimic:
+   - `app-time-today/page.tsx` — simplest read, just a ranked list
+   - `class-attendance/page.tsx` — more complex, joins `places` + `place_visits` with schedule-awareness
+   - `short-form-ratio/page.tsx` — time-series, good LineChart example
 
-Both have honest tradeoffs. The decision is worth thinking through before building.
+## What the CLI does in practice
 
-### Option A — Views as data (safer, less flexible)
+Typical session:
 
-Views live as rows in a `views` table. Dashboard is a fixed shell that reads view rows and renders them using a small library of predefined rendering templates.
+> **You:** `claude "build a view that shows focus blocks — stretches where no social-media app was foreground for >30 min"`
 
-```sql
-CREATE TABLE views (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  description TEXT,
-  category TEXT,                     -- "attendance", "focus", "media", ...
-  template TEXT NOT NULL,            -- "ranked_list" | "line_chart" | "stacked_area" | "timeline_band" | "kpi_tile" | "heatmap" | "text_summary"
-  query_sql TEXT NOT NULL,           -- parameterized SQL, expects named params :start, :end, :user
-  render_config JSONB,               -- template-specific: which columns map to x/y/color, formatters, etc.
-  refresh_cadence_s INT DEFAULT 300, -- how often the dashboard re-runs the query
-  pinned BOOLEAN DEFAULT FALSE,      -- show on home dashboard
-  created_by TEXT,                   -- "agent" | "user"
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+> **Claude Code:**
+> 1. Reads `AGENTS.md`, `docs/supabase.md`, `docs/views.md`
+> 2. Checks existing views in `dashboard/app/views/` for style
+> 3. Copies `_scaffold/page.tsx.example` to `app/views/focus-blocks/page.tsx`
+> 4. Writes SQL against `events` + `source_tags` to identify gaps where `social_feed` / `short_form` tags weren't active for ≥30 min
+> 5. Renders with Tremor `<TimelineBand>` or similar
+> 6. Adds a nav entry
+> 7. Runs dev server (if not running) and reports the URL
 
-**Pros:**
-- Sandboxed: agent can only author queries + pick a template; can't ship arbitrary code.
-- Simple security: SQL runs via existing `agent_api` role with constrained permissions. RLS handles multi-user.
-- Dashboard has a finite, auditable rendering surface.
-- Easy to list / rename / delete views.
+## Authoring guardrails
 
-**Cons:**
-- Limited to predefined templates. Novel visualizations require new template code.
-- Query-only — can't do multi-step computation (could via SQL, but ugly).
+The CLI should:
 
-**Who picks templates:** the agent, when authoring. Agent has access to a list of available templates and their required columns.
+- **Read the schema doc before every session.** New CLI sessions don't remember prior context. `AGENTS.md` must explicitly instruct "read these files first."
+- **Name views clearly.** Slugs become URLs: `/views/class-attendance` not `/views/view-2026-04-20-abc`.
+- **Not duplicate existing views.** Before creating, `grep dashboard/app/views/` for similar pages, reuse or extend instead.
+- **Prefer composition.** If a view needs a bar chart of top-10 apps by time, and there's already a reusable `<TopAppsBar />` component, use it. Factor out common pieces as shared components over time.
 
-### Option B — Views as TypeScript files (flexible, more surface area)
+## The "update an existing view" path
 
-Each view is an auto-generated `.tsx` file in the dashboard repo. Agent writes files, commits via MCP tool or deploys via Vercel's API.
+Equally important. You've got a view that shows last 7 days and you want last 30 instead.
 
-```
-dashboard/app/views/
-├── class-attendance.tsx
-├── short-form-ratio.tsx
-├── focus-blocks.tsx
-└── ...
-```
+> **You:** `claude "change class-attendance to show the last 30 days by default"`
 
-Each file exports:
+CLI edits one file. Git diff is the audit trail.
 
-```tsx
-export const meta = {
-  name: "Class Attendance",
-  category: "attendance",
-  query: sql`SELECT ... FROM places JOIN ...`,
-};
+Views are source-controlled like any code. Breaking changes surface as build errors, not silent data corruption.
 
-export default function View({ data }: { data: Row[] }) {
-  return <Whatever />;  // any React component
-}
-```
+## What this is NOT
 
-A discovery mechanism (file glob, imports, or a registry) populates the dashboard nav.
+- **Not a runtime dashboard CMS.** No views table. No template picker. If you want a new view, the CLI writes one.
+- **Not a limited template zoo.** Anything React can render, a view can render. The "templates" are de facto Tremor/shadcn patterns that emerge naturally in the code.
+- **Not agent-authored at runtime.** Views are generated during CLI sessions, committed to git, deployed via normal pipeline. Static at runtime.
 
-**Pros:**
-- Unbounded: view can be anything React + Tremor/shadcn/recharts can render.
-- Composable: one view can embed another.
-- Full code review trail — each view is a PR.
+## Conventions for quality
 
-**Cons:**
-- Agent has to write and deploy code. Security-sensitive.
-- Requires a build/hot-reload pipeline that can pick up new files.
-- Harder to list views programmatically; needs a registry.
+- **Server components by default.** Queries happen server-side; the client receives rendered data. Keeps Supabase credentials out of the browser and reduces bundle size.
+- **Date-range as URL params.** Enables sharing a link that shows "class attendance for last semester."
+- **Empty-state handling.** When a query returns no rows, show a helpful message ("No classes tracked yet — add some in Settings"), not a blank chart.
+- **Loading states.** Next.js `loading.tsx` conventions.
+- **Reuse a shared Tremor theme** so visual consistency doesn't depend on the CLI getting colors right every time.
 
-### Recommended: start with A, escape to B as needed
+## When does this break down
 
-**Ship Option A first.** Ten or so templates cover 90% of what we'd want for a personal dashboard. Agent authoring becomes a structured tool call — `create_view(name, template, query_sql, render_config)` — which is far easier to sandbox, audit, and iterate on than "agent writes TypeScript."
+Two scenarios push beyond CLI-authored-static-pages:
 
-If a user (Josh) requests something that doesn't fit any template, add a template. If the template zoo keeps growing without plateau, that's the signal to move to Option B.
+1. **You want the dashboard to react to data it doesn't have yet** (e.g., "build me a view for every class I take this semester," which implies dynamic routing based on the `places` table). Handle with a single parameterized view, not N static views.
+2. **You want non-technical people to build views**. Not your use case. Shelf indefinitely.
 
-## Template library (starter set for Option A)
+If either becomes real, revisit a runtime system. Until then, the CLI + file system + Next.js is the system.
 
-| Template | Data shape | Looks like |
+## Starter views to hand-write
+
+Reference set worth shipping as examples:
+
+| Slug | Question | Template cue |
 |---|---|---|
-| `kpi_tile` | 1 row, numeric value + optional delta | Big number with label and trend arrow |
-| `ranked_list` | N rows, label + value (+ icon?) | Top-10 list, bar filled proportionally |
-| `line_chart` | time-series (x, y) | Line over time |
-| `stacked_area` | time-series (x, y, category) | Stacked area over time |
-| `bar_chart` | categorical (x, y) | Vertical bars |
-| `heatmap` | 2D grid (x, y, value) | Color-coded grid |
-| `timeline_band` | (start, end, color, label) rows | Horizontal bands along a time axis |
-| `text_summary` | single string (rendered Markdown) | LLM-generated natural-language summary |
-| `emoji_timeline` | rows (start, end, emoji, label) | The daily narrative from places+activity |
+| `today` | Emoji timeline of today | Horizontal bands with place-activity labels |
+| `app-time-today` | Top apps foregrounded today | Ranked list with icon + duration + bar |
+| `class-attendance` | Did I go to class this week? | Day × class grid, color-coded attended / late / skipped |
+| `short-form-ratio` | % of social time spent in Shorts/Reels, 30d | Line chart |
+| `phone-vs-mac` | Device-mix over today | Stacked area |
+| `unnamed-places` | Stationary clusters not yet named | Ranked list with "name this" affordance |
 
-`text_summary` is the escape hatch — the query can return a single LLM-generated sentence. "You attended 4 of 5 classes this week, skipped CHEM 101 on Wednesday."
-
-## Agent tool surface
-
-When the agent is composing a view, it needs these tools:
-
-```typescript
-list_templates(): TemplateSpec[]
-  // Returns template name, required columns, optional render_config fields
-
-list_tables(): TableSchema[]
-  // Returns schemas of events, places, source_tags, etc.
-
-describe_query(sql: string): { columns: Column[], estimatedRows: number }
-  // EXPLAIN-style feedback before committing
-
-create_view(name, template, query_sql, render_config, pinned): ViewId
-delete_view(view_id): void
-update_view(view_id, fields): void
-list_views(): View[]
-preview_view(view_id, date_range): RenderedResult
-  // Runs the query, returns the rendered data shape for inspection
-```
-
-Agent's typical workflow:
-
-1. User asks: "Can you build me a view that shows how often I've been skipping class?"
-2. Agent: `list_tables()` → knows about `places`, `place_visits`, scheduled-expectation view
-3. Agent: `list_templates()` → picks `heatmap` (day × class grid)
-4. Agent: drafts SQL, runs `describe_query` to sanity-check columns
-5. Agent: `create_view(...)` → commits
-6. Dashboard refreshes, view appears
-
-## Parameterization
-
-Views take a few standard params:
-
-- `:user_id` — injected by the dashboard based on auth
-- `:start` / `:end` — date range (today, this week, last 30 days, etc., toggleable per view)
-- `:timezone` — for "today" queries
-
-Agent composes queries using these placeholders. RLS on the tables means an escaped `:user_id` can't cross users.
-
-## Refresh cadence
-
-Each view sets its own `refresh_cadence_s`:
-
-- KPI tiles: 60s
-- Line charts over hours/days: 300s
-- Heatmaps over weeks: 3600s
-- Text summaries (cost money per call): 21600s (6hr) or manual
-
-Dashboard polls. A running view with a slow cadence shows "last updated Xmin ago" so you know you're looking at cached data.
-
-## Privacy / auth
-
-Views execute via `agent_api` role with constrained privileges: `SELECT` on `events`, `places`, `source_tags`, `content_items`; no other writes. RLS scopes all reads to the requesting user. Agent can't accidentally expose another user's data because there isn't one, but the scaffolding is right for future-you.
-
-## Open questions
-
-- Does the agent author views *in addition to* pinning existing ones, or only the latter? Answer: both — agent should be able to say "I built you a new attendance view" AND "I pinned the existing short-form ratio view to your dashboard."
-- Do views have permissions (sharable)? Personal system, no. Add later if needed.
-- Do we allow arbitrary text-summary LLM calls from views? Yes, via a dedicated RPC that caches results per (view_id, date_range) to avoid runaway costs.
-- Do we want view composition ("dashboard" = grid of pinned views)? Yes, likely. A `dashboard_layouts` table comes after the view model is stable.
-
-## First views to build (when we ship)
-
-To have a real shakedown of the view system:
-
-1. **Class Attendance** — ranked list or heatmap of scheduled-vs-attended
-2. **Phone-vs-Mac Today** — stacked area showing `both`, `mac_only`, `phone_only` over the day
-3. **Short-form Ratio** — line chart, % of YouTube+IG+TikTok time that was short-form, per day, 30-day window
-4. **Unexpected Places** — ranked list of stationary clusters not yet named
-5. **Today summary** — emoji timeline view of the day (see [places.md](places.md))
-
-Each one exercises a different template and proves the architecture. If we can ship these five cleanly, the rest is configuration.
+These cover the templates the CLI will most need to mimic.
