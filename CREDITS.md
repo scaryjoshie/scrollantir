@@ -25,6 +25,24 @@ header or the project should be relicensed GPL-3.0 compatible.
 - Repository: https://github.com/ActivityWatch
 - License: MPL-2.0
 
-Scrollantir uses ActivityWatch's Mac watchers (window, AFK, web) unchanged on
-the desktop side. We fork `aw-watcher-web` to add a container field for Zen
-workspace tracking.
+Scrollantir uses ActivityWatch's Mac watchers on the desktop side:
+
+- `aw-watcher-window` and `aw-watcher-afk` are installed unchanged as
+  part of the stock ActivityWatch bundle.
+- `aw-watcher-web` is forked — our patch (`mac-extension/zen-container.patch`,
+  pinned against upstream commit `50d1c1c`) adds a `container` field to
+  each tab-heartbeat's `data`, resolved from
+  `browser.contextualIdentities`. This is what lets the dashboard slice
+  Zen time by workspace. The fork is built as
+  `mac-extension/artifacts/aw-watcher-web-zen.xpi` and installed
+  directly into Zen; the official `aw-watcher-web` is not loaded
+  alongside it.
+
+Because the upstream is MPL-2.0, the patched source files stay MPL-2.0
+and are reproducible from upstream + `zen-container.patch`. The rest of
+scrollantir (the Python forwarder, the Android app) is not a derivative
+work of aw-watcher-web.
+
+The scrollantir forwarder does **not** depend on ActivityWatch's
+`aw-sync` or `aw-client`; it talks directly to AW's local SQLite
+read-only and to our own ingest endpoint.
