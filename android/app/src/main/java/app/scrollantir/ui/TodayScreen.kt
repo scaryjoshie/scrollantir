@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,6 +55,7 @@ import java.time.ZoneId
 @Composable
 fun TodayScreen(
     onOpenSettings: () -> Unit,
+    onOpenTimeline: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -128,6 +130,12 @@ fun TodayScreen(
             )
             StatusPill(running = running)
             Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onOpenTimeline) {
+                Icon(
+                    imageVector = Icons.Filled.History,
+                    contentDescription = "Timeline"
+                )
+            }
             IconButton(onClick = onOpenSettings) {
                 Icon(
                     imageVector = Icons.Filled.Settings,

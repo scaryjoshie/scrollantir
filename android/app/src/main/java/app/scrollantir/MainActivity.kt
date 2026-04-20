@@ -20,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import app.scrollantir.ui.SettingsScreen
+import app.scrollantir.ui.TimelineScreen
 import app.scrollantir.ui.TodayScreen
 import app.scrollantir.ui.theme.ScrollantirTheme
 
@@ -37,7 +38,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { TODAY, SETTINGS }
+private enum class Screen { TODAY, SETTINGS, TIMELINE }
 
 @Composable
 private fun AppRoot(modifier: Modifier = Modifier) {
@@ -53,9 +54,13 @@ private fun AppRoot(modifier: Modifier = Modifier) {
     ) { screen ->
         when (screen) {
             Screen.TODAY -> TodayScreen(
-                onOpenSettings = { current = Screen.SETTINGS }
+                onOpenSettings = { current = Screen.SETTINGS },
+                onOpenTimeline = { current = Screen.TIMELINE }
             )
             Screen.SETTINGS -> SettingsScreen(
+                onBack = { current = Screen.TODAY }
+            )
+            Screen.TIMELINE -> TimelineScreen(
                 onBack = { current = Screen.TODAY }
             )
         }
