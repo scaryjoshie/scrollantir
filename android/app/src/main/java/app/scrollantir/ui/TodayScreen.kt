@@ -142,7 +142,7 @@ fun TodayScreen(
         )
 
         current?.let { live ->
-            CurrentSessionTile(pkg = live.pkg, elapsedMs = nowMs - live.startedAtMs)
+            CurrentSessionTile(pkg = live.pkg, startedAtMs = live.startedAtMs)
         }
 
         if (modeTotals.isNotEmpty()) {
@@ -385,7 +385,20 @@ fun humanDuration(s: Double): String {
 }
 
 @Composable
-private fun CurrentSessionTile(pkg: String, elapsedMs: Long) {
+private fun CurrentSessionTile(pkg: String, startedAtMs: Long) {
+    // Own 1s ticker so the elapsed time is always computed against a
+    // fresh System.currentTimeMillis(), independent of the outer 10s tick
+    // driving aggregation. Avoids negative-elapsed flashes right after
+    // an app switch.
+    var tickMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(pkg) {
+        while (true) {
+            delay(1000)
+            tickMs = System.currentTimeMillis()
+        }
+    }
+    val elapsedMs = (tickMs - startedAtMs).coerceAtLeast(0L)
+
     val (icon, label) = AppIconCache.rememberAppInfo(pkg)
     Card(
         modifier = Modifier.fillMaxWidth(),
