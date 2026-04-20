@@ -123,15 +123,23 @@ class ContentDetectorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString()
+        // Log EVERY event that reaches us, pre-throttle, pre-filter. Tells us
+        // whether the system is delivering events at all.
+        Log.d(TAG, "event type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg")
+
         val now = System.currentTimeMillis()
         if (now - lastCheckMs < THROTTLE_MS) return
         lastCheckMs = now
 
-        val pkg = event.packageName?.toString() ?: return
-        val rules = rulesByPackage[pkg] ?: return
+        if (pkg == null) return
+        val rules = rulesByPackage[pkg]
+        if (rules == null) {
+            Log.w(TAG, "no rules for $pkg (should not happen if packageNames filter is applied)")
+            return
+        }
 
         // TikTok short-circuit: any qualifying event = feed active.
-        // No tree-walk needed.
         if (pkg == ContentDetection.PKG_TIKTOK) {
             val rule = rules.first()
             if (event.eventType and rule.eventTypeMask == 0) return
@@ -139,7 +147,11 @@ class ContentDetectorService : AccessibilityService() {
             return
         }
 
-        val root = rootInActiveWindow ?: return
+        val root = rootInActiveWindow
+        if (root == null) {
+            Log.d(TAG, "rootInActiveWindow=null for $pkg — skipping")
+            return
+        }
 
         var matched: String? = null
         for (rule in rules) {
@@ -153,6 +165,7 @@ class ContentDetectorService : AccessibilityService() {
         if (matched != null) {
             onDetected(matched, now)
         } else {
+            Log.d(TAG, "no rule matched for $pkg — emitting detector.miss diagnostic if cooldown allows")
             onMiss(now)
             maybeEmitMissDiagnostic(pkg, root, now)
         }
