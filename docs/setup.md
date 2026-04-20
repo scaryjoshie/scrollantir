@@ -41,10 +41,117 @@ Studio's green Run button.
 
 ## Mac collector
 
-Not yet built. Spec is in [mac.md](mac.md) — ActivityWatch + a forked
-`aw-watcher-web` (adds Zen container tracking) + a Python launchd
-forwarder that reads AW's SQLite and POSTs to the same ingest
-endpoint the phone uses.
+Spec in [mac.md](mac.md). Code lives in:
+
+- `mac-forwarder/` — the Python launchd forwarder + setup script
+- `mac-extension/` — the patched `aw-watcher-web` that tags tab events
+  with the Firefox container name (we use one container per Zen
+  workspace, so container ≈ workspace)
+
+### 1. Install ActivityWatch
+
+Download from [activitywatch.net](https://activitywatch.net) and
+install to `/Applications`. Launching it puts `aw-qt` in the menu bar
+and starts `aw-server-rust` + `aw-watcher-window` + `aw-watcher-afk`
+automatically. On first run macOS will prompt for Accessibility and
+Input Monitoring permissions for the watchers — grant them.
+
+AW's local SQLite lands at:
+
+```
+~/Library/Application Support/activitywatch/aw-server-rust/sqlite.db
+```
+
+The forwarder reads this file read-only.
+
+### 2. Build and install the Zen extension
+
+```bash
+cd /Users/joshua/dev/scrollantir/mac-extension
+./build.sh
+```
+
+That clones the upstream `aw-watcher-web` at a pinned commit, applies
+`zen-container.patch`, runs the Firefox vite build, and produces
+`artifacts/aw-watcher-web-zen.xpi`. A pre-built xpi is also checked in
+so you don't need Node/npm unless you're editing the patch.
+
+Install the xpi into Zen:
+
+- **Persistent:** `about:config` → set
+  `xpinstall.signatures.required` to `false`, then drag
+  `artifacts/aw-watcher-web-zen.xpi` onto a Zen window and confirm
+  the install.
+- **Temporary (dev):** `about:debugging#/runtime/this-firefox` → *Load
+  Temporary Add-on…* → pick the xpi. Cleared on restart.
+
+Open the extension's options page and point it at `http://127.0.0.1:5600`
+(the local aw-server-rust). You should see an `aw-watcher-web-firefox_<hostname>`
+bucket appear in AW shortly after browsing.
+
+### 3. Run the forwarder setup script
+
+```bash
+cd /Users/joshua/dev/scrollantir/mac-forwarder
+./setup.sh
+```
+
+It prompts for the ingest server URL and bearer token, stores the
+token in the macOS login keychain under service `scrollantir` /
+account `ingest-token`, writes the URL to `~/.scrollantir/config.json`,
+builds a venv at `mac-forwarder/.venv/`, installs `keyring`, renders
+the launchd plist, and loads the agent. Safe to re-run to change
+server URL or token.
+
+Verify it's running:
+
+```bash
+launchctl list | grep scrollantir
+tail -f ~/Library/Logs/scrollantir-forwarder.out.log
+```
+
+Expect a log line every 30 seconds. The first run against a fresh AW
+install will send a batch of backfill from the moment AW started.
+
+### 4. Point at the stub server for dev
+
+For local testing the stub server from `android-testing/` accepts Mac
+events unchanged. Start it with the command in the next section, then
+run setup.sh with `http://127.0.0.1:8069` + token `dev-token`. Events
+appear in the server's stdout within ~30 seconds.
+
+### Verification checklist
+
+- **Window events:** switch between apps on the Mac → within 30s the
+  stub server logs `mac  system.window` rows with `app` + `title`.
+- **AFK events:** lock the screen for >4 minutes (AW's afk threshold),
+  unlock → the stub server logs `mac  system.afk` rows flipping
+  `status` between `not-afk` and `afk`.
+- **Zen tabs:** visit tabs in a container-backed workspace → stub
+  server logs `mac  zen.tab` rows with `container` populated with
+  the workspace name.
+- **URL sanitation:** visit any URL with `?utm_source=...` → the server
+  row shows the URL with the query string stripped.
+- **Crash recovery:** `launchctl unload` the agent mid-run → `launchctl
+  load -w` it again → no duplicate events on the server because event
+  IDs are derived from `uuid5(NAMESPACE_URL, "{bucket}:{rowid}")`.
+- **Server offline:** stop the stub server → forwarder logs
+  `Connection refused`, keeps the checkpoint untouched, AW's DB
+  untouched → start the server → next run drains cleanly.
+
+### Troubleshooting
+
+- **No buckets detected.** The forwarder only considers buckets whose
+  `id` starts with `aw-watcher-window`, `aw-watcher-afk`, or
+  `aw-watcher-web-firefox`. If AW's running but no events are
+  forwarded, check bucket IDs via the AW web UI at
+  `http://127.0.0.1:5600`.
+- **Bad token.** The forwarder logs `ingest rejected (HTTP 401…)` and
+  does not advance the checkpoint. Re-run `mac-forwarder/setup.sh` to
+  update the keychain entry.
+- **Rotating the token.** `security delete-generic-password -s
+  scrollantir -a ingest-token` then re-run setup.sh (or just re-run
+  setup.sh — it overwrites).
 
 ## Starting the stub server (current dev ingest)
 
