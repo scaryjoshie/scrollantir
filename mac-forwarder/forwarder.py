@@ -17,11 +17,17 @@ Design notes:
   dedupes within same-timestamp collisions and is what the uuid5 is
   keyed on.
 - On any error (4xx / 5xx / network), we do NOT advance the checkpoint.
-  Next run retries from the same point. On bad token we log and exit —
-  launchd fires us again in 30s, so no retry storm.
+  Next run retries from the same point. On bad token we exit 1; launchd
+  still re-fires every 30s, so the pace of retry is 2 req/min/bucket —
+  not a storm, but not zero either.
 - We rely on aw-server running on localhost:5600. If it's down,
   watchers queue locally (AW's own persist-queue) and drain when it
   comes back. No events are lost.
+- `Event.id` is assumed unique per bucket for the lifetime of AW's
+  SQLite file. If a user deletes and recreates a bucket, ids restart
+  from 1 and this checkpoint's stored id would be larger than the new
+  events' ids → those events would be skipped. Not worth defending
+  against in code; delete the checkpoint file if you ever wipe AW.
 """
 from __future__ import annotations
 
@@ -109,15 +115,11 @@ def load_checkpoint() -> dict[str, dict]:
     except json.JSONDecodeError as e:
         err(f"checkpoint file corrupt ({e}); starting from scratch")
         return {}
-    out: dict[str, dict] = {}
-    for bucket, v in data.items():
-        # Upgrade legacy scalar format ({bucket: int}) if any checkpoint
-        # files from before the aw-client refactor survive.
-        if isinstance(v, int):
-            out[bucket] = {"id": v, "ts": "1970-01-01T00:00:00Z"}
-        elif isinstance(v, dict) and "id" in v and "ts" in v:
-            out[bucket] = {"id": int(v["id"]), "ts": str(v["ts"])}
-    return out
+    return {
+        bucket: {"id": int(v["id"]), "ts": str(v["ts"])}
+        for bucket, v in data.items()
+        if isinstance(v, dict) and "id" in v and "ts" in v
+    }
 
 
 def save_checkpoint(cp: dict[str, dict]) -> None:
@@ -141,8 +143,11 @@ NAMESPACE = uuid.NAMESPACE_URL
 
 
 def iso_z(dt: datetime) -> str:
-    dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+    return (
+        dt.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def build_event(bucket_id: str, source: str, aw_event) -> dict:
@@ -212,11 +217,14 @@ def post_batch(server_url: str, token: str, events: list[dict]) -> None:
 
 # ─── main loop ────────────────────────────────────────────────────────────
 
+EPOCH_ISO = "1970-01-01T00:00:00Z"
+
+
 def drain_bucket(
     aw: ActivityWatchClient,
     bucket_id: str,
     source: str,
-    cp: dict,
+    cp: dict | None,
     server_url: str,
     token: str,
 ) -> tuple[int, dict | None]:
@@ -226,31 +234,34 @@ def drain_bucket(
     Raises IngestError on network/HTTP failure — caller decides whether to
     bail the whole run (we do, so the next launchd tick retries).
     """
-    last_id = cp["id"] if cp else 0
-    last_ts_str = cp["ts"] if cp else "1970-01-01T00:00:00Z"
-    last_ts = datetime.fromisoformat(last_ts_str.replace("Z", "+00:00"))
+    cp = cp or {"id": 0, "ts": EPOCH_ISO}
+    last_id = cp["id"]
+    last_ts = datetime.fromisoformat(cp["ts"].replace("Z", "+00:00"))
 
     # Pull everything since last_ts. aw-client returns newest-first.
     # On a 30s cadence this is a handful of events in steady state; on
     # a long backfill it's bounded by how long the forwarder was down.
     aw_events = aw.get_events(bucket_id, start=last_ts, limit=-1)
-    fresh = [e for e in aw_events if e.id > last_id]
+    fresh = sorted(
+        (e for e in aw_events if e.id > last_id),
+        key=lambda e: e.id,
+    )
     if not fresh:
         return 0, None
-    fresh.sort(key=lambda e: e.id)
 
-    sent = 0
-    new_max_id = last_id
-    new_max_ts = last_ts
     for chunk_start in range(0, len(fresh), BATCH_SIZE):
         chunk = fresh[chunk_start:chunk_start + BATCH_SIZE]
         payload = [build_event(bucket_id, source, e) for e in chunk]
         post_batch(server_url, token, payload)
-        sent += len(chunk)
-        new_max_id = max(new_max_id, max(e.id for e in chunk))
-        new_max_ts = max(new_max_ts, max(e.timestamp for e in chunk))
 
-    return sent, {"id": new_max_id, "ts": iso_z(new_max_ts)}
+    # fresh is sorted ascending by id, so fresh[-1].id is the new high-water.
+    # Timestamp is NOT monotonic with id (watchers can emit for a past moment),
+    # so take an actual max across the batch.
+    new_cp = {
+        "id": fresh[-1].id,
+        "ts": iso_z(max(e.timestamp for e in fresh)),
+    }
+    return len(fresh), new_cp
 
 
 def run_once() -> int:
