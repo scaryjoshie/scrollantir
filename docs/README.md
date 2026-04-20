@@ -8,14 +8,16 @@ Read in this order:
 |---|---|
 | [architecture.md](architecture.md) | System diagram, event schema, source naming, collection pattern, pipeline. Start here. |
 | [android.md](android.md) | Implementation reference for the phone app. What's built, how it works, toolchain versions, known tradeoffs. |
-| [mac.md](mac.md) | **Spec to be implemented.** ActivityWatch + forked `aw-watcher-web` (for Zen container tracking) + Python launchd forwarder. |
-| [setup.md](setup.md) | Runbook: stub-server start, Android install dance (Android 15 spoof), permission grants. |
+| [mac.md](mac.md) | Mac collector: ActivityWatch + forked `aw-watcher-web` (for Zen container tracking) + Python launchd forwarder. |
+| [supabase.md](supabase.md) | The backend: schemas, roles, RPCs (`ingest_api`, `agent_api`), trust boundaries, lifecycle flows, security posture. |
+| [setup.md](setup.md) | Runbook: Android install dance, Mac collector install, Supabase CLI install + link. |
+| [location.md](location.md) | **Planned module.** Location tracking on Android — event schema, minimal-vs-full implementation, privacy considerations, Google Takeout alternative, prerequisites (real HTTPS, usage validation). |
 
 ## Not yet written
 
-- `server.md` — FastAPI ingest spec for the production server (Cloud Run / VM + Neon Postgres), auth, rate limits, deployment
-- `dashboard.md` — Next.js + Tremor dashboard, query templates, view designs
+- `dashboard.md` — dashboard UI (Swift on Mac + possibly Next.js web), read paths via Supabase JS client + RLS
 - `queries.md` — reusable SQL snippets for core cross-source joins (mac-vs-phone, workspace breakdown, content-mode ratios)
+- `agent.md` — the local Claude Code agent: what it does, prompt scaffolding, convention for `reports` / `insights`
 
 ## Principles
 
