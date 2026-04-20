@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    scrollantir Mac forwarder — launchd agent template.
+
+    `setup.sh` renders this template by replacing:
+        @@VENV_PY@@   → /…/mac-forwarder/.venv/bin/python3
+        @@FORWARDER@@ → /…/mac-forwarder/forwarder.py
+        @@LOG_DIR@@   → /Users/<you>/Library/Logs
+    and writes the result to ~/Library/LaunchAgents/com.scrollantir.forwarder.plist.
+
+    StartInterval is 30s. Mac stays plugged in, so we don't need the
+    15-minute phone cadence. If you want the agent to settle faster after
+    login, set RunAtLoad=true (default below) — that fires one run at
+    session start in addition to the interval schedule.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scrollantir.forwarder</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@VENV_PY@@</string>
+        <string>@@FORWARDER@@</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <!-- Avoid overlapping runs if a previous instance is still draining. -->
+    <key>AbandonProcessGroup</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>@@LOG_DIR@@/scrollantir-forwarder.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>@@LOG_DIR@@/scrollantir-forwarder.err.log</string>
+
+    <!-- Keep the process nice — this is a background poller. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>LowPriorityIO</key>
+    <true/>
+</dict>
+</plist>
