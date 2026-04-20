@@ -124,23 +124,21 @@ class ContentDetectorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        val pkg = event.packageName?.toString()
-        // Log EVERY event that reaches us, pre-throttle. If nothing ever shows
-        // up here while a target app is foreground, the system is not routing
-        // events to our service (config issue), not a detector bug.
+        val pkg = event.packageName?.toString() ?: return
+
+        // Filter by package BEFORE throttling, otherwise non-target apps
+        // (we now listen to everything — no packageNames filter in XML)
+        // could fill up our throttle window and starve real target events.
+        val rules = rulesByPackage[pkg] ?: return
+
+        // Log target-app events at Info. Silent for non-target packages
+        // so we don't flood logcat with every system/keyboard event.
         totalEventsSeen++
         Log.i(TAG, "event #$totalEventsSeen type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg")
 
         val now = System.currentTimeMillis()
         if (now - lastCheckMs < THROTTLE_MS) return
         lastCheckMs = now
-
-        if (pkg == null) return
-        val rules = rulesByPackage[pkg]
-        if (rules == null) {
-            Log.w(TAG, "no rules for $pkg (packageNames filter should have blocked this)")
-            return
-        }
 
         // TikTok short-circuit: any qualifying event = feed active.
         if (pkg == ContentDetection.PKG_TIKTOK) {
