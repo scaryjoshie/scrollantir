@@ -23,4 +23,7 @@ interface EventDao {
 
     @Query("SELECT COUNT(*) FROM events")
     fun countFlow(): Flow<Int>
+
+    @Query("SELECT * FROM events ORDER BY timestamp_utc DESC LIMIT :limit")
+    fun recentFlow(limit: Int): Flow<List<EventRow>>
 }

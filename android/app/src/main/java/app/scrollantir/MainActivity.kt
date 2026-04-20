@@ -47,14 +47,19 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.Alignment
@@ -69,15 +74,20 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import app.scrollantir.BuildConfig
 import app.scrollantir.db.AppDatabase
+import app.scrollantir.db.EventRow
 import app.scrollantir.net.ForwarderWorker
 import app.scrollantir.net.SecurePrefs
 import app.scrollantir.tracker.ContentDetectorService
 import app.scrollantir.tracker.TrackerForegroundService
 import app.scrollantir.ui.theme.ScrollantirTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -144,6 +154,8 @@ fun MainScreen(modifier: Modifier = Modifier) {
             }
         )
 
+        TimelineCard(context = context)
+        EventsCard(context = context)
         SyncCard(context = context, refreshKey = refreshTick)
 
         if (!canStart || !batteryOK || !a11yGranted) {
@@ -186,6 +198,8 @@ fun MainScreen(modifier: Modifier = Modifier) {
         }
 
         ServerSettingsCard(context = context, onSaved = { refreshTick++ })
+
+        VersionFooter()
     }
 }
 
@@ -489,6 +503,291 @@ private fun humanAgo(then: Instant): String {
 @Composable
 private fun rememberQueueCountFlow(context: Context): Flow<Int> {
     return remember { AppDatabase.get(context).events().countFlow() }
+}
+
+@Composable
+private fun rememberRecentEventsFlow(context: Context, limit: Int = 50): Flow<List<EventRow>> {
+    return remember(limit) { AppDatabase.get(context).events().recentFlow(limit) }
+}
+
+@Composable
+private fun TimelineCard(context: Context) {
+    val events by rememberRecentEventsFlow(context, limit = 200).collectAsState(initial = emptyList())
+    val status by ForwarderWorker.status.collectAsState()
+
+    // Re-render every second so "now" moves
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+
+    val windowMs = 60 * 60 * 1000L  // last 1 hour
+    val windowStart = nowMs - windowMs
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Last hour",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${events.count { parseInstantMs(it.timestampUtc) >= windowStart }} events",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            val outline = MaterialTheme.colorScheme.outline
+            val primary = MaterialTheme.colorScheme.primary
+            val tertiary = MaterialTheme.colorScheme.tertiary
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+            ) {
+                val w = size.width
+                val h = size.height
+
+                // Baseline axis
+                drawLine(
+                    color = outline.copy(alpha = 0.3f),
+                    start = Offset(0f, h / 2),
+                    end = Offset(w, h / 2),
+                    strokeWidth = 1f
+                )
+
+                // Event dots
+                events.forEach { e ->
+                    val t = parseInstantMs(e.timestampUtc)
+                    if (t < windowStart) return@forEach
+                    val x = ((t - windowStart).toFloat() / windowMs) * w
+                    val row = (sourceHash(e.source) % 5) - 2  // -2..2 stacking
+                    val y = h / 2 + row * 8f
+                    drawCircle(
+                        color = colorForSource(e.source, primary, tertiary),
+                        radius = 3.5f,
+                        center = Offset(x, y)
+                    )
+                }
+
+                // Last-sync marker
+                status.lastAttempt?.let { ts ->
+                    val t = ts.toEpochMilli()
+                    if (t in windowStart..nowMs) {
+                        val x = ((t - windowStart).toFloat() / windowMs) * w
+                        drawLine(
+                            color = if (status.lastError == null) primary else outline,
+                            start = Offset(x, 0f),
+                            end = Offset(x, h),
+                            strokeWidth = 2f,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+            }
+
+            Row {
+                Text(
+                    "-1h",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "now",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventsCard(context: Context) {
+    val events by rememberRecentEventsFlow(context, limit = 30).collectAsState(initial = emptyList())
+
+    // Re-render every second so "ago" ticks
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Recent events (queued)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${events.size} shown",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (events.isEmpty()) {
+                Text(
+                    text = "No events in queue. Either nothing has been collected or everything already synced.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                val primary = MaterialTheme.colorScheme.primary
+                val tertiary = MaterialTheme.colorScheme.tertiary
+                events.take(20).forEach { e ->
+                    EventRowItem(
+                        event = e,
+                        nowMs = nowMs,
+                        color = colorForSource(e.source, primary, tertiary)
+                    )
+                }
+                if (events.size > 20) {
+                    Text(
+                        text = "… ${events.size - 20} more",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventRowItem(event: EventRow, nowMs: Long, color: androidx.compose.ui.graphics.Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color, CircleShape)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "${event.device}.${event.source}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = eventSummary(event),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        val tMs = parseInstantMs(event.timestampUtc)
+        Text(
+            text = humanAgoMs(tMs, nowMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun VersionFooter() {
+    val built = remember {
+        val instant = Instant.ofEpochMilli(BuildConfig.BUILD_TIME_MS)
+        DateTimeFormatter.ofPattern("MMM d  HH:mm:ss")
+            .withZone(ZoneId.systemDefault())
+            .format(instant)
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = "v${BuildConfig.VERSION_NAME}  ·  built $built",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+private fun eventSummary(e: EventRow): String {
+    val dur = if (e.durationS >= 1.0) "  ·  ${"%.1f".format(e.durationS)}s" else ""
+    val data = e.dataJson.let { if (it == "{}") "" else "  ·  $it" }
+    return "${formatClock(parseInstantMs(e.timestampUtc))}$dur$data"
+}
+
+private fun formatClock(ms: Long): String {
+    return DateTimeFormatter.ofPattern("HH:mm:ss")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(ms))
+}
+
+private fun parseInstantMs(iso: String): Long {
+    return try {
+        Instant.parse(iso).toEpochMilli()
+    } catch (_: Throwable) {
+        0L
+    }
+}
+
+private fun humanAgoMs(thenMs: Long, nowMs: Long): String {
+    val s = (nowMs - thenMs) / 1000
+    return when {
+        s < 60 -> "${s}s"
+        s < 3600 -> "${s / 60}m"
+        s < 86400 -> "${s / 3600}h"
+        else -> "${s / 86400}d"
+    }
+}
+
+private fun sourceHash(s: String): Int {
+    var h = 0
+    for (c in s) h = (h * 31 + c.code) and 0x7fffffff
+    return h
+}
+
+private fun colorForSource(
+    source: String,
+    primary: androidx.compose.ui.graphics.Color,
+    tertiary: androidx.compose.ui.graphics.Color
+): androidx.compose.ui.graphics.Color {
+    // Color-key events by their family prefix
+    return when {
+        source.startsWith("system.foreground") -> primary
+        source.startsWith("system.screen") -> tertiary
+        source.startsWith("system.unlock") -> tertiary.copy(alpha = 0.8f)
+        source.startsWith("youtube.") -> androidx.compose.ui.graphics.Color(0xFFEF4444)
+        source.startsWith("instagram.") -> androidx.compose.ui.graphics.Color(0xFFEC4899)
+        source.startsWith("tiktok.") -> androidx.compose.ui.graphics.Color(0xFF10B981)
+        source.startsWith("detector.") -> androidx.compose.ui.graphics.Color(0xFFF59E0B)
+        else -> primary.copy(alpha = 0.7f)
+    }
 }
 
 private fun hasNotificationPermission(context: Context): Boolean {
