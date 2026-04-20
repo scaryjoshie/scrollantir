@@ -105,29 +105,6 @@ CREATE TABLE public.reports (
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 
 
-CREATE TABLE public.insights (
-  id           UUID PRIMARY KEY,
-  title        TEXT NOT NULL,
-  finding      TEXT NOT NULL,                       -- short summary
-  body         TEXT,                                 -- longer explanation
-  category     TEXT,                                 -- 'trend' | 'anomaly' | 'milestone' | …
-  severity     SMALLINT NOT NULL DEFAULT 1,          -- 1 (notice) … 5 (urgent)
-  window_start TIMESTAMPTZ,
-  window_end   TIMESTAMPTZ,
-  origin       TEXT NOT NULL DEFAULT 'agent',
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  deleted_at   TIMESTAMPTZ,
-
-  CONSTRAINT insights_title_nonempty   CHECK (length(btrim(title)) > 0),
-  CONSTRAINT insights_finding_nonempty CHECK (length(btrim(finding)) > 0),
-  CONSTRAINT insights_origin_valid     CHECK (origin IN ('agent', 'user', 'system')),
-  CONSTRAINT insights_severity_range   CHECK (severity BETWEEN 1 AND 5)
-);
-
-ALTER TABLE public.insights ENABLE ROW LEVEL SECURITY;
-
-
 CREATE TABLE public.annotations (
   id         UUID PRIMARY KEY,
   scope      TEXT NOT NULL,                          -- 'event' | 'time_range' | 'source' | 'device' | 'day'
@@ -181,7 +158,16 @@ ALTER TABLE public.prompts ENABLE ROW LEVEL SECURITY;
 -- supported (use ingest_api for that).
 -- ─────────────────────────────────────────────────────────────────
 
-CREATE VIEW public.events_enriched AS
+-- security_invoker = true: the view runs with the caller's
+-- privileges, not the owner's. This means RLS on events/devices
+-- applies to the querying role (user_role, agent_role), rather
+-- than silently bypassing it via the postgres-owned view.
+-- Without this option Supabase's Security Advisor flags the view
+-- as "publicly accessible" because a definer-view is the classic
+-- way RLS gets circumvented.
+CREATE VIEW public.events_enriched
+  WITH (security_invoker = true)
+AS
 SELECT
   e.id,
   e.device,
@@ -202,3 +188,37 @@ SELECT
   ) AS tags
 FROM public.events e
 JOIN public.devices d ON d.device_id = e.device;
+
+-- The diff tool doesn't always preserve view options across
+-- CREATE-OR-REPLACE, so ALTER VIEW belt-and-suspenders sets it
+-- every migration.
+ALTER VIEW public.events_enriched SET (security_invoker = true);
+
+
+-- ─────────────────────────────────────────────────────────────────
+-- Permissive RLS policies. The real auth layer in this project is
+-- Postgres role grants (see 50_grants.sql); these policies exist
+-- only because RLS is ENABLE'd on every table and must permit
+-- something for role-level access to resolve into rows. Each policy
+-- is a blanket USING (true) for user_role and agent_role — the grant
+-- table defines what each role can actually do, while these keep
+-- RLS from turning every SELECT into an empty result.
+-- ─────────────────────────────────────────────────────────────────
+
+CREATE POLICY user_role_all_events       ON public.events       FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_events     ON public.events       FOR SELECT TO agent_role USING (true);
+
+CREATE POLICY user_role_all_devices      ON public.devices      FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_devices    ON public.devices      FOR SELECT TO agent_role USING (true);
+
+CREATE POLICY user_role_all_source_tags  ON public.source_tags  FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_source_tags ON public.source_tags FOR SELECT TO agent_role USING (true);
+
+CREATE POLICY user_role_all_reports      ON public.reports      FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_reports    ON public.reports      FOR SELECT TO agent_role USING (true);
+
+CREATE POLICY user_role_all_annotations  ON public.annotations  FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_annotations ON public.annotations FOR SELECT TO agent_role USING (true);
+
+CREATE POLICY user_role_all_prompts      ON public.prompts      FOR ALL TO user_role  USING (true) WITH CHECK (true);
+CREATE POLICY agent_role_read_prompts    ON public.prompts      FOR SELECT TO agent_role USING (true);

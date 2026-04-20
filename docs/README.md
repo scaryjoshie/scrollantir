@@ -10,6 +10,7 @@ Read in this order:
 | [android.md](android.md) | Implementation reference for the phone app. What's built, how it works, toolchain versions, known tradeoffs. |
 | [mac.md](mac.md) | Mac collector: ActivityWatch + forked `aw-watcher-web` (for Zen container tracking) + Python launchd forwarder. |
 | [supabase.md](supabase.md) | The backend: schemas, roles, RPCs (`ingest_api`, `agent_api`), trust boundaries, lifecycle flows, security posture. |
+| [roadmap.md](roadmap.md) | Living plan: what's shipped, what's next, what's idea-only. Read here to know the current implementation state without replaying git history. |
 | [setup.md](setup.md) | Runbook: Android install dance, Mac collector install, Supabase CLI install + link. |
 | [location.md](location.md) | **Planned module.** Location tracking on Android — event schema, minimal-vs-full implementation, privacy considerations, Google Takeout alternative, prerequisites (real HTTPS, usage validation). |
 | [places.md](places.md) | **Planned module.** Named-location layer on top of raw location events: schema, query-time matching, visit consolidation with bathroom-break tolerance, schedule-aware attendance derivation, chatbot-driven population. |

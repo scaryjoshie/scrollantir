@@ -43,25 +43,6 @@ alter table "public"."devices" enable row level security;
 alter table "public"."events" enable row level security;
 
 
-  create table "public"."insights" (
-    "id" uuid not null,
-    "title" text not null,
-    "finding" text not null,
-    "body" text,
-    "category" text,
-    "severity" smallint not null default 1,
-    "window_start" timestamp with time zone,
-    "window_end" timestamp with time zone,
-    "origin" text not null default 'agent'::text,
-    "created_at" timestamp with time zone not null default now(),
-    "updated_at" timestamp with time zone not null default now(),
-    "deleted_at" timestamp with time zone
-      );
-
-
-alter table "public"."insights" enable row level security;
-
-
   create table "public"."prompts" (
     "id" uuid not null,
     "asked_by" text not null,
@@ -118,8 +99,6 @@ CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id);
 
 CREATE INDEX events_time_desc ON public.events USING btree (timestamp_utc DESC);
 
-CREATE UNIQUE INDEX insights_pkey ON public.insights USING btree (id);
-
 CREATE INDEX prompts_pending ON public.prompts USING btree (created_at DESC) WHERE ((answered_at IS NULL) AND (dismissed_at IS NULL));
 
 CREATE UNIQUE INDEX prompts_pkey ON public.prompts USING btree (id);
@@ -133,8 +112,6 @@ alter table "public"."annotations" add constraint "annotations_pkey" PRIMARY KEY
 alter table "public"."devices" add constraint "devices_pkey" PRIMARY KEY using index "devices_pkey";
 
 alter table "public"."events" add constraint "events_pkey" PRIMARY KEY using index "events_pkey";
-
-alter table "public"."insights" add constraint "insights_pkey" PRIMARY KEY using index "insights_pkey";
 
 alter table "public"."prompts" add constraint "prompts_pkey" PRIMARY KEY using index "prompts_pkey";
 
@@ -177,22 +154,6 @@ alter table "public"."events" validate constraint "events_schema_version_pos";
 alter table "public"."events" add constraint "events_source_nonempty" CHECK ((length(btrim(source)) > 0)) not valid;
 
 alter table "public"."events" validate constraint "events_source_nonempty";
-
-alter table "public"."insights" add constraint "insights_finding_nonempty" CHECK ((length(btrim(finding)) > 0)) not valid;
-
-alter table "public"."insights" validate constraint "insights_finding_nonempty";
-
-alter table "public"."insights" add constraint "insights_origin_valid" CHECK ((origin = ANY (ARRAY['agent'::text, 'user'::text, 'system'::text]))) not valid;
-
-alter table "public"."insights" validate constraint "insights_origin_valid";
-
-alter table "public"."insights" add constraint "insights_severity_range" CHECK (((severity >= 1) AND (severity <= 5))) not valid;
-
-alter table "public"."insights" validate constraint "insights_severity_range";
-
-alter table "public"."insights" add constraint "insights_title_nonempty" CHECK ((length(btrim(title)) > 0)) not valid;
-
-alter table "public"."insights" validate constraint "insights_title_nonempty";
 
 alter table "public"."prompts" add constraint "prompts_kind_nonempty" CHECK ((length(btrim(kind)) > 0)) not valid;
 
@@ -300,30 +261,6 @@ grant update on table "public"."events" to "service_role";
 
 grant select on table "public"."events" to "user_role";
 
-grant select on table "public"."insights" to "agent_role";
-
-grant delete on table "public"."insights" to "service_role";
-
-grant insert on table "public"."insights" to "service_role";
-
-grant references on table "public"."insights" to "service_role";
-
-grant select on table "public"."insights" to "service_role";
-
-grant trigger on table "public"."insights" to "service_role";
-
-grant truncate on table "public"."insights" to "service_role";
-
-grant update on table "public"."insights" to "service_role";
-
-grant delete on table "public"."insights" to "user_role";
-
-grant insert on table "public"."insights" to "user_role";
-
-grant select on table "public"."insights" to "user_role";
-
-grant update on table "public"."insights" to "user_role";
-
 grant select on table "public"."prompts" to "agent_role";
 
 grant delete on table "public"."prompts" to "service_role";
@@ -395,6 +332,120 @@ grant insert on table "public"."source_tags" to "user_role";
 grant select on table "public"."source_tags" to "user_role";
 
 grant update on table "public"."source_tags" to "user_role";
+
+
+  create policy "agent_role_read_annotations"
+  on "public"."annotations"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_annotations"
+  on "public"."annotations"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
+
+
+  create policy "agent_role_read_devices"
+  on "public"."devices"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_devices"
+  on "public"."devices"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
+
+
+  create policy "agent_role_read_events"
+  on "public"."events"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_events"
+  on "public"."events"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
+
+
+  create policy "agent_role_read_prompts"
+  on "public"."prompts"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_prompts"
+  on "public"."prompts"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
+
+
+  create policy "agent_role_read_reports"
+  on "public"."reports"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_reports"
+  on "public"."reports"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
+
+
+  create policy "agent_role_read_source_tags"
+  on "public"."source_tags"
+  as permissive
+  for select
+  to agent_role
+using (true);
+
+
+
+  create policy "user_role_all_source_tags"
+  on "public"."source_tags"
+  as permissive
+  for all
+  to user_role
+using (true)
+with check (true);
+
 
 create schema if not exists "private";
 
@@ -681,27 +732,6 @@ END
 $function$
 ;
 
-CREATE OR REPLACE FUNCTION agent_api.soft_delete_insight(p_id uuid)
- RETURNS void
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public', 'pg_temp'
-AS $function$
-BEGIN
-  UPDATE public.insights
-     SET deleted_at = NOW(),
-         updated_at = NOW()
-   WHERE id = p_id
-     AND origin = 'agent'
-     AND deleted_at IS NULL;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'insight % not deletable by agent', p_id;
-  END IF;
-END
-$function$
-;
-
 CREATE OR REPLACE FUNCTION agent_api.soft_delete_report(p_id uuid)
  RETURNS void
  LANGUAGE plpgsql
@@ -756,48 +786,6 @@ END
 $function$
 ;
 
-CREATE OR REPLACE FUNCTION agent_api.upsert_insight(p_id uuid, p_title text, p_finding text, p_body text DEFAULT NULL::text, p_category text DEFAULT NULL::text, p_severity smallint DEFAULT 1, p_window_start timestamp with time zone DEFAULT NULL::timestamp with time zone, p_window_end timestamp with time zone DEFAULT NULL::timestamp with time zone)
- RETURNS uuid
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public', 'pg_temp'
-AS $function$
-DECLARE
-  v_id UUID;
-BEGIN
-  IF p_id IS NULL THEN
-    INSERT INTO public.insights (
-      id, title, finding, body, category, severity,
-      window_start, window_end, origin
-    ) VALUES (
-      gen_random_uuid(), p_title, p_finding, p_body, p_category, p_severity,
-      p_window_start, p_window_end, 'agent'
-    )
-    RETURNING id INTO v_id;
-    RETURN v_id;
-  END IF;
-
-  UPDATE public.insights
-     SET title        = p_title,
-         finding      = p_finding,
-         body         = p_body,
-         category     = p_category,
-         severity     = p_severity,
-         window_start = p_window_start,
-         window_end   = p_window_end,
-         updated_at   = NOW()
-   WHERE id = p_id
-     AND origin = 'agent'
-     AND deleted_at IS NULL;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'insight % not mutable by agent', p_id;
-  END IF;
-  RETURN p_id;
-END
-$function$
-;
-
 CREATE OR REPLACE FUNCTION agent_api.upsert_report(p_id uuid, p_title text, p_body text, p_tags text[] DEFAULT ARRAY[]::text[], p_window_start timestamp with time zone DEFAULT NULL::timestamp with time zone, p_window_end timestamp with time zone DEFAULT NULL::timestamp with time zone)
  RETURNS uuid
  LANGUAGE plpgsql
@@ -834,3 +822,10 @@ $function$
 ;
 
 
+
+
+-- security_invoker on events_enriched: declarative diff tool doesn't
+-- capture view options, so we set it explicitly here. Makes the view
+-- run with the caller's privileges (so RLS on underlying tables
+-- applies to the querying role).
+ALTER VIEW "public"."events_enriched" SET (security_invoker = true);

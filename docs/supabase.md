@@ -12,11 +12,12 @@ future-you, so it leans explicit over narrative.
 
 | Topic | Files |
 |---|---|
-| Declarative schema | `supabase/schemas/public.sql`, `supabase/schemas/private.sql` |
-| Generated migration | `supabase/migrations/<ts>_init_scrollantir.sql` (regenerate, don't hand-edit) |
+| Declarative schema | `supabase/schemas/10_public.sql` (devices, events, source_tags, derived, view, RLS policies), `20_private.sql` (tokens, rate_limit), `30_ingest_api.sql` (accept_event, accept_prompt_answer, pending_prompts), `40_agent_api.sql` (upsert_report/annotation, soft_delete_*, create_prompt), `50_grants.sql` (role grants) |
+| Custom roles | `supabase/roles.sql` — ingest_role, user_role, agent_role (applied via `--include-roles`) |
+| Generated migration | `supabase/migrations/<ts>_init_scrollantir.sql` (regenerate when schemas change; hand-append only for things the diff tool misses like `ALTER VIEW … SET (security_invoker = true)`) |
 | Seed (tag ontology) | `supabase/seed.sql` |
-| Ingest edge function | `supabase/functions/ingest/index.ts` |
-| Admin CLI (devices + tokens) | `scripts/admin.py` (local only; never deployed) |
+| Ingest edge function | `supabase/functions/ingest/index.ts` (planned, not yet written) |
+| Admin CLI (devices + tokens) | `scripts/admin.py` (planned, not yet written) |
 | Project ref + config | `supabase/config.toml` |
 
 Project ref: `feijpewzqgqczkxmvdng`. Edge function URL pattern:
@@ -167,9 +168,8 @@ ALTER ROLE agent_role SET statement_timeout = '5s';
 - **`events`** — append-only fact stream. See "data contract" above.
 - **`devices`** — device registry. `(device_id TEXT PK, label, platform, note, created_at, retired_at)`. FK target for `events.device` and `tokens.device_id`.
 - **`source_tags`** — cross-cutting labels. `(device, source, tag, created_at)` composite PK. Seeded with `short_form`, `social_feed`, `activity_signal`. Free-text `tag`; new tags added via `INSERT`.
-- **`reports`** — agent-generated summaries. `(id, title, body, origin, created_at, updated_at, deleted_at)`.
-- **`insights`** — small structured findings. Same lifecycle columns as `reports`.
-- **`annotations`** — human or agent notes on time ranges or individual events.
+- **`reports`** — agent-generated summaries. Any length — a one-paragraph "pattern finding" and a full weekly narrative both live here, distinguished by `tags`. `(id, title, body, origin, window_start, window_end, tags, created_at, updated_at, deleted_at)`.
+- **`annotations`** — scoped notes attached to events, time ranges, days, sources, or devices. Polymorphic via `scope` + `scope_ref`. Agent corrections, user commentary, context additions.
 - **`prompts`** — agent-initiated questions. `(id, created_at, asked_by, question, context JSONB, answer_schema JSONB, expires_at, answered_at, dismissed_at)`. When answered, the *answer* is emitted as an event with `source='prompt.<kind>'`; the prompt row tracks lifecycle only.
 - **`events_enriched`** (view) — events JOINed with devices (label, platform) and source_tags (as array). LLM-friendly query surface.
 
@@ -205,11 +205,10 @@ ALTER ROLE agent_role SET statement_timeout = '5s';
 Every function operates on **one row at a time**. Mass mutation is
 structurally impossible from `agent_role`.
 
-- **`upsert_report(id uuid, title text, body text) → uuid`** — create or update; if `id` provided, must be agent-origin and not deleted.
-- **`upsert_insight(id, ...)`** — same pattern.
-- **`upsert_annotation(id, ...)`** — same.
-- **`create_prompt(kind text, question text, context jsonb, expires_at timestamptz) → uuid`** — agent-initiated questions.
-- **`soft_delete_report(id)` / `soft_delete_insight(id)` / `soft_delete_annotation(id)`** — sets `deleted_at` on one row. Hard deletion requires admin CLI.
+- **`upsert_report(id uuid, title text, body text, tags text[], window_start timestamptz, window_end timestamptz) → uuid`** — create or update; if `id` provided, must be agent-origin and not deleted.
+- **`upsert_annotation(id, scope, scope_ref, body)`** — same pattern, for scoped notes.
+- **`create_prompt(kind text, question text, context jsonb, answer_schema jsonb, expires_at timestamptz, asked_by text) → uuid`** — agent-initiated questions.
+- **`soft_delete_report(id)` / `soft_delete_annotation(id)`** — sets `deleted_at` on one row. Hard deletion requires admin CLI.
 
 Hard-delete intentionally unavailable to agents.
 
@@ -340,7 +339,8 @@ SELECT agent_api.create_prompt('sleep_latency',
 - **Ingest writes come only from one RPC.** `ingest_role` can only call `ingest_api.accept_event` and `ingest_api.accept_prompt_answer`. Nothing else.
 - **No Supabase Auth.** Dashboard and agent are local Mac processes; their credentials live in Mac Keychain. Add Supabase Auth only if a public web dashboard ever materializes.
 - **Location precision reduced at write time**, not read. 4 decimals (~11m) inside `accept_event` for `phone.location`. Raw precision never hits storage.
-- **RLS is enabled everywhere**, default-deny. Dashboard access is via Postgres-role credentials, not `auth.uid()` policies — roles are the auth layer, RLS is just additional defense-in-depth.
+- **RLS is enabled everywhere**, default-deny, with permissive `USING (true)` policies scoped to `user_role` and `agent_role`. The real auth layer is Postgres role grants; the policies exist only so RLS — which is required on all tables by Supabase best practice — doesn't drop everything on SELECT.
+- **`events_enriched` view is SECURITY INVOKER**. Forces the view to run with the caller's privileges so RLS on underlying tables applies. The diff tool doesn't track view options, so we `ALTER VIEW` explicitly in each migration.
 - **Declarative schema.** Edit `supabase/schemas/*.sql`, regenerate migrations. Hand-written migrations only for RLS policies (which the declarative tool doesn't track) and other imperative needs.
 - **`source_tags` stays a lightweight many-to-many classifier.** If you need richer per-source metadata (display name, expected `data` fields, retention hints), add a `sources` table — don't stretch `source_tags` to carry it. The tag table is for orthogonal categories applied at query time, nothing more.
 - **Strict `source` naming and `schema_version` discipline.** `events` stays a well-behaved table, not a junk drawer. When a source's `data` shape changes meaningfully, bump `schema_version`. When a new collector comes online, pick a stable name (`<namespace>.<specifier>`) that won't need to be renamed later.

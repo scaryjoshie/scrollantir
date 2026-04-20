@@ -51,12 +51,12 @@ GRANT USAGE ON SCHEMA public TO user_role;
 
 GRANT SELECT ON public.events, public.devices, public.events_enriched
   TO user_role;
-GRANT SELECT ON public.reports, public.insights, public.annotations,
+GRANT SELECT ON public.reports, public.annotations,
                 public.prompts, public.source_tags
   TO user_role;
 
 GRANT INSERT, UPDATE, DELETE
-  ON public.reports, public.insights, public.annotations,
+  ON public.reports, public.annotations,
      public.prompts, public.source_tags
   TO user_role;
 
@@ -70,7 +70,7 @@ GRANT USAGE ON SCHEMA public, agent_api TO agent_role;
 
 GRANT SELECT ON public.events, public.devices, public.events_enriched
   TO agent_role;
-GRANT SELECT ON public.reports, public.insights, public.annotations,
+GRANT SELECT ON public.reports, public.annotations,
                 public.prompts, public.source_tags
   TO agent_role;
 
@@ -78,11 +78,6 @@ GRANT EXECUTE ON FUNCTION agent_api.upsert_report(
     UUID, TEXT, TEXT, TEXT[], TIMESTAMPTZ, TIMESTAMPTZ
   ) TO agent_role;
 GRANT EXECUTE ON FUNCTION agent_api.soft_delete_report(UUID) TO agent_role;
-
-GRANT EXECUTE ON FUNCTION agent_api.upsert_insight(
-    UUID, TEXT, TEXT, TEXT, TEXT, SMALLINT, TIMESTAMPTZ, TIMESTAMPTZ
-  ) TO agent_role;
-GRANT EXECUTE ON FUNCTION agent_api.soft_delete_insight(UUID) TO agent_role;
 
 GRANT EXECUTE ON FUNCTION agent_api.upsert_annotation(UUID, TEXT, TEXT, TEXT)
   TO agent_role;
