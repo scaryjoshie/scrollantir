@@ -502,7 +502,7 @@ private fun humanAgo(then: Instant): String {
 
 @Composable
 private fun rememberQueueCountFlow(context: Context): Flow<Int> {
-    return remember { AppDatabase.get(context).events().countFlow() }
+    return remember { AppDatabase.get(context).events().pendingCountFlow() }
 }
 
 @Composable

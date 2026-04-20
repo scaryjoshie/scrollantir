@@ -49,8 +49,9 @@ class ForwarderWorker(
             val client = IngestClient(serverUrl, token)
             val ok = client.postBatch(batch)
             if (ok) {
-                dao.deleteByIds(batch.map { it.id })
-                Log.i(TAG, "forwarded ${batch.size} events; deleted from queue")
+                val nowIso = Instant.now().toString()
+                dao.markForwarded(batch.map { it.id }, nowIso)
+                Log.i(TAG, "forwarded ${batch.size} events; marked in queue at $nowIso")
                 updateStatus(success = true, count = batch.size, error = null)
                 Result.success()
             } else {

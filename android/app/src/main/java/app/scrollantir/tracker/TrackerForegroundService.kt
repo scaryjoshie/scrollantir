@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import app.scrollantir.MainActivity
 import app.scrollantir.R
 import app.scrollantir.db.AppDatabase
+import app.scrollantir.net.CleanupWorker
 import app.scrollantir.net.ForwarderWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +57,7 @@ class TrackerForegroundService : Service() {
         }
 
         ForwarderWorker.enqueuePeriodic(applicationContext)
+        CleanupWorker.enqueuePeriodic(applicationContext)
 
         _running.value = true
         return START_STICKY
