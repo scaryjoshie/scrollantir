@@ -49,20 +49,20 @@ android {
 // by Enhanced Confirmation Mode. Installing with -i com.android.vending
 // spoofs "installed from Play Store" and satisfies the check.
 //
-// Run manually after each new build:
+// Run after each new build:
 //   ./gradlew :app:installDebugSpoofed
-tasks.register("installDebugSpoofed") {
+tasks.register<Exec>("installDebugSpoofed") {
     group = "install"
     description = "adb install with -i com.android.vending (bypasses Android 15 Enhanced Confirmation for accessibility)"
-    dependsOn(":app:assembleDebug")
-    doLast {
-        val adb = android.sdkDirectory.resolve("platform-tools/adb").absolutePath
-        val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
-        if (!apk.exists()) throw GradleException("APK not found at $apk")
-        exec {
-            commandLine(adb, "install", "-r", "-i", "com.android.vending", apk.absolutePath)
-        }
-    }
+    dependsOn("assembleDebug")
+
+    val adbPath = System.getenv("ANDROID_HOME")?.let { "$it/platform-tools/adb" }
+        ?: "${System.getProperty("user.home")}/Library/Android/sdk/platform-tools/adb"
+    val apkPath = layout.buildDirectory
+        .file("outputs/apk/debug/app-debug.apk")
+        .get().asFile.absolutePath
+
+    commandLine(adbPath, "install", "-r", "-i", "com.android.vending", apkPath)
 }
 
 dependencies {
