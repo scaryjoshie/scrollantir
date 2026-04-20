@@ -12,6 +12,8 @@ Read in this order:
 | [supabase.md](supabase.md) | The backend: schemas, roles, RPCs (`ingest_api`, `agent_api`), trust boundaries, lifecycle flows, security posture. |
 | [setup.md](setup.md) | Runbook: Android install dance, Mac collector install, Supabase CLI install + link. |
 | [location.md](location.md) | **Planned module.** Location tracking on Android — event schema, minimal-vs-full implementation, privacy considerations, Google Takeout alternative, prerequisites (real HTTPS, usage validation). |
+| [places.md](places.md) | **Planned module.** Named-location layer on top of raw location events: schema, query-time matching, visit consolidation with bathroom-break tolerance, schedule-aware attendance derivation, chatbot-driven population. |
+| [views.md](views.md) | **Planned module.** Agent-authored custom dashboards — architecture options (views-as-data vs views-as-TypeScript), starter template library, agent tool surface. |
 
 ## Not yet written
 
