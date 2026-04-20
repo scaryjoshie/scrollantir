@@ -16,6 +16,7 @@ Captures where the phone is throughout the day, joined against app usage on the 
 - Time at home vs. out-of-house
 - Frequently-visited places (gym, coffee shops, friends' houses)
 - Cross-reference: "Reddit time at office vs. cafe"
+- **Narrative timeline**: "Home 07:30–09:15 → walked 09:15–09:35 → Cafe Loma 09:35–11:10 → biked 11:10–11:45 → Office 11:45–17:30 → ..."
 
 ## Fit with the schema
 
@@ -29,15 +30,65 @@ Same event shape as everywhere else. Proposed sources:
 
 Points come from FusedLocationProviderClient; visits are computed later either on-device (v2) or server-side by clustering nearby readings.
 
+## Core architectural insight: activity drives location cadence
+
+Naive continuous GPS at 10s = ~8,640 samples/day + ~25% daily battery. Overkill for a narrative view.
+
+Instead, pair **ActivityRecognitionClient** (event-driven, near-zero battery, sensor-fused by the OS) with **demand-driven location sampling**:
+
+```
+Activity Recognition: always on, fires only on state transitions.
+  States: STILL, WALKING, RUNNING, IN_VEHICLE, ON_BICYCLE, UNKNOWN
+  Volume: ~20–50 transitions/day
+  Cost: ~negligible (OS sensor fusion, no app polling)
+
+Location sampling policy — driven by current activity:
+  On every state transition → take one location reading.
+    (Anchors the endpoints of walk/bike/drive segments.)
+  During movement states (WALKING/RUNNING/BICYCLE/VEHICLE):
+    Sample every 20–30s for path shape.
+  During STILL:
+    No sampling. Next reading comes at the transition out of STILL.
+```
+
+Result: ~80–150 location events/day instead of 8,640. Daily battery overhead: ~3–7%. Same narrative richness.
+
+### Why not dense GPS alone
+
+Raw GPS at 10s with no activity signal still requires inferring activity from speed/path heuristics, which is error-prone (walking vs. biking slowly, sitting in a cafe vs. stuck in traffic). The API-provided activity state is authoritative and costs nothing.
+
+### Narrative-rendering pipeline
+
+This is dashboard-layer work, not collection:
+
+1. Segment the day by activity-state transitions.
+2. For each segment:
+   - `STILL` + stable location cluster (readings within 100m) → "Visit at [place]"
+   - `WALKING/BIKING/DRIVING` → "Traveled from A to B"
+3. Name places via:
+   - User-configured geofences (home, work, gym)
+   - Auto-inferred (the 5 locations where you've spent >30min on 5+ different days get auto-named)
+   - Last resort: reverse-geocode to street address
+4. Render emoji timeline:
+   ```
+   🏠 Home                 07:30 – 09:15
+   🚶 Walk  1.2mi          09:15 – 09:35
+   ☕ Cafe Loma             09:35 – 11:10
+   🚴 Bike  4.5mi          11:10 – 11:45
+   🏢 Office               11:45 – 17:30
+   🍽 Dinner               17:45 – 19:00
+   ```
+
 ## Minimal implementation (first cut)
 
-**~3 hours of work.**
+**~4 hours of work** — Activity Recognition + adaptive location sampling.
 
 ### Permissions (new)
 
 ```xml
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 ```
 
 `ACCESS_BACKGROUND_LOCATION` is Google's most-restricted runtime permission. On Pixel, it appears as a separate "Allow all the time" toggle reached via Settings → Location → App permissions. Compound gauntlet on top of the existing Restricted Settings / accessibility dance.
@@ -54,6 +105,31 @@ Our `TrackerForegroundService` currently declares `dataSync`. Add `location`:
 
 Pipe-separator lets us declare both; location access from an FGS with `location` type bypasses some background-location restrictions.
 
+### ActivityWatcher
+
+Companion of `LocationWatcher`, also owned by `TrackerForegroundService`. Subscribes to `ActivityRecognitionClient.requestActivityTransitionUpdates`, emits `phone.activity.state` duration events on enter/exit. Holds the "current state" in memory so LocationWatcher can consult it for its sampling policy.
+
+```kotlin
+class ActivityWatcher(
+    private val context: Context,
+    private val dao: EventDao,
+    private val scope: CoroutineScope,
+    private val onStateChange: (ActivityState) -> Unit
+) {
+    private val client = ActivityRecognition.getClient(context)
+    @Volatile var current: ActivityState = ActivityState.UNKNOWN
+        private set
+    private var currentStartedAt: Instant = Instant.now()
+
+    // On each transition ENTER: emit a closed duration event for the
+    // previous state spanning [currentStartedAt, now], then update
+    // current + currentStartedAt.
+    // Notify LocationWatcher so it can change its sampling cadence.
+}
+
+enum class ActivityState { STILL, WALKING, RUNNING, ON_BICYCLE, IN_VEHICLE, UNKNOWN }
+```
+
 ### LocationWatcher
 
 Class inside `app.scrollantir.tracker`, owned by `TrackerForegroundService` alongside the existing `UsageStatsPoller` and `ScreenWatcher`.
@@ -65,46 +141,44 @@ class LocationWatcher(
     private val scope: CoroutineScope
 ) {
     private val client = LocationServices.getFusedLocationProviderClient(context)
-    private var lastLat: Double? = null
-    private var lastLng: Double? = null
-    private val DEDUP_METERS = 50.0
+    private val DEDUP_METERS = 30.0
 
-    private val callback = object : LocationCallback() {
-        override fun onLocationResult(result: LocationResult) {
-            val loc = result.lastLocation ?: return
-            val moved = lastLat?.let { distanceM(it, lastLng!!, loc.latitude, loc.longitude) }
-            if (moved != null && moved < DEDUP_METERS) return
-
-            lastLat = loc.latitude
-            lastLng = loc.longitude
-            scope.launch {
-                emit(
-                    dao = dao,
-                    source = "phone.location.reading",
-                    durationS = 0.0,
-                    data = mapOf(
-                        "lat" to loc.latitude,
-                        "lng" to loc.longitude,
-                        "accuracy_m" to loc.accuracy,
-                        "provider" to "fused"
-                    )
-                )
-            }
+    // Called by ActivityWatcher on every transition. Triggers an
+    // immediate single-shot location request to anchor the segment
+    // endpoint, then reconfigures the update cadence for the new state.
+    fun onActivityChange(newState: ActivityState) {
+        requestSingleReading()  // anchor the transition
+        val interval = when (newState) {
+            ActivityState.WALKING, ActivityState.RUNNING -> 30_000L
+            ActivityState.ON_BICYCLE -> 20_000L
+            ActivityState.IN_VEHICLE -> 30_000L
+            ActivityState.STILL, ActivityState.UNKNOWN -> null  // no periodic sampling
         }
+        if (interval == null) stopPeriodic() else startPeriodic(interval)
     }
 
-    fun register() {
-        val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY, 60_000L
-        ).setMinUpdateDistanceMeters(DEDUP_METERS.toFloat()).build()
+    private fun startPeriodic(intervalMs: Long) {
+        val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, intervalMs)
+            .setMinUpdateDistanceMeters(DEDUP_METERS.toFloat())
+            .build()
         client.requestLocationUpdates(request, callback, Looper.getMainLooper())
     }
 
-    fun unregister() { client.removeLocationUpdates(callback) }
+    // ... stopPeriodic, requestSingleReading, callback emitting phone.location.reading
 }
 ```
 
-Cadence: `PRIORITY_BALANCED_POWER_ACCURACY` at 60s is the sweet spot — ~100m accuracy, wifi-assisted, ~5–10% daily battery overhead. `PRIORITY_LOW_POWER` is near-free but ~1km accuracy (mostly useless). `PRIORITY_HIGH_ACCURACY` burns battery aggressively.
+Cadence summary:
+
+| Activity | Sampling | Rationale |
+|---|---|---|
+| STILL | Only at transition | Nothing interesting between start-still and next move |
+| WALKING / RUNNING | 30s | Human walking speed → 30m per sample → clean path |
+| ON_BICYCLE | 20s | Higher speed needs denser samples for path fidelity |
+| IN_VEHICLE | 30s | Vehicle covers enough that 30s is fine for commute paths |
+| UNKNOWN | None | Don't waste samples if the OS can't classify |
+
+Always at `PRIORITY_BALANCED_POWER_ACCURACY` (~100m accuracy, wifi-assisted). `PRIORITY_HIGH_ACCURACY` uses GPS aggressively and burns battery; we don't need room-level precision for the narrative.
 
 ### Settings UI
 
