@@ -19,10 +19,10 @@ class IngestClient(
         .build()
 
     /**
-     * POSTs a batch and returns true on 200, false otherwise.
-     * Throws IOException on network failure (caller treats as retryable).
+     * POSTs a batch. Returns the HTTP status code. Throws IOException on
+     * network failure (caller treats as retryable transport error).
      */
-    fun postBatch(batch: List<EventRow>): Boolean {
+    fun postBatch(batch: List<EventRow>): Int {
         val json = JSONArray().apply {
             batch.forEach { row ->
                 put(
@@ -49,7 +49,7 @@ class IngestClient(
             .build()
 
         client.newCall(request).execute().use { response ->
-            return response.isSuccessful
+            return response.code
         }
     }
 }

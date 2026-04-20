@@ -47,20 +47,33 @@ class ForwarderWorker(
 
         return try {
             val client = IngestClient(serverUrl, token)
-            val ok = client.postBatch(batch)
-            if (ok) {
-                val nowIso = Instant.now().toString()
-                dao.markForwarded(batch.map { it.id }, nowIso)
-                Log.i(TAG, "forwarded ${batch.size} events; marked in queue at $nowIso")
-                updateStatus(success = true, count = batch.size, error = null)
-                Result.success()
-            } else {
-                Log.w(TAG, "server returned non-2xx; will retry")
-                updateStatus(success = false, count = batch.size, error = "non-2xx response")
-                Result.retry()
+            val code = client.postBatch(batch)
+            when {
+                code in 200..299 -> {
+                    val nowIso = Instant.now().toString()
+                    dao.markForwarded(batch.map { it.id }, nowIso)
+                    Log.i(TAG, "forwarded ${batch.size} events; marked in queue at $nowIso")
+                    updateStatus(success = true, count = batch.size, error = null)
+                    Result.success()
+                }
+                code in 400..499 && code != 408 && code != 429 -> {
+                    // Client-side problem (bad token, malformed payload, etc.).
+                    // Retrying won't fix it — user must reconfigure. Mark this
+                    // run "success" so WorkManager backs off instead of
+                    // infinitely retrying and burning battery/bandwidth.
+                    Log.e(TAG, "non-retryable $code — queue preserved, fix server config in Settings")
+                    updateStatus(success = false, count = batch.size, error = "HTTP $code (non-retryable)")
+                    Result.success()
+                }
+                else -> {
+                    // 5xx or 408/429 — transient. Retry with backoff.
+                    Log.w(TAG, "transient $code — will retry")
+                    updateStatus(success = false, count = batch.size, error = "HTTP $code")
+                    Result.retry()
+                }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "forward failed", t)
+            Log.e(TAG, "forward failed (network/IO)", t)
             updateStatus(success = false, count = batch.size, error = t.message ?: "unknown")
             Result.retry()
         }

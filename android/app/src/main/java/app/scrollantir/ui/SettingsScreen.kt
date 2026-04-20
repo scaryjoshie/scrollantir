@@ -397,6 +397,7 @@ private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth()
             )
+            val savedCtx = LocalContext.current
             Button(
                 onClick = {
                     prefs.edit()
@@ -405,6 +406,9 @@ private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
                         .apply()
                     saved = true
                     onSaved()
+                    // Don't make the user wait up to 15min for the first
+                    // periodic run — kick a one-shot sync immediately.
+                    ForwarderWorker.syncNow(savedCtx)
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
