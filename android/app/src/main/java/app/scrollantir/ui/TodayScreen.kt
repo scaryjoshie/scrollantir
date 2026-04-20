@@ -39,8 +39,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.AppTotal
+import app.scrollantir.db.EventRow
 import app.scrollantir.db.ModeTotal
 import app.scrollantir.tracker.TrackerForegroundService
+import app.scrollantir.tracker.UsageStatsPoller
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -52,19 +59,58 @@ fun TodayScreen(
     val context = LocalContext.current
     val dao = remember { AppDatabase.get(context).events() }
 
-    val startOfDayIso = remember {
+    val startOfDayMs = remember {
         LocalDate.now(ZoneId.systemDefault())
             .atStartOfDay(ZoneId.systemDefault())
             .toInstant()
+            .toEpochMilli()
+    }
+    // Look back 24h before today_start so a session that began before midnight
+    // is still available for day-boundary clipping.
+    val lookbackIso = remember {
+        Instant.ofEpochMilli(startOfDayMs - 24 * 3600 * 1000)
             .toString()
+    }
+    val startOfDayIso = remember {
+        Instant.ofEpochMilli(startOfDayMs).toString()
+    }
+
+    // "Now" tick — advances every 10s so the live current-session tile and
+    // the clipping upper-bound keep moving.
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(10_000)
+            nowMs = System.currentTimeMillis()
+        }
     }
 
     val running by TrackerForegroundService.running.collectAsState()
-    val appTotals by dao.foregroundTotalsSince(startOfDayIso).collectAsState(initial = emptyList())
-    val modeTotals by dao.contentModeTotalsSince(startOfDayIso).collectAsState(initial = emptyList())
+    val current by UsageStatsPoller.currentForeground.collectAsState()
+    val foregroundEvents by dao.foregroundEventsSince(lookbackIso)
+        .collectAsState(initial = emptyList())
+    val modeEvents by dao.contentModeEventsSince(lookbackIso)
+        .collectAsState(initial = emptyList())
     val unlockCount by dao.unlockCountSince(startOfDayIso).collectAsState(initial = 0)
 
-    val signalApps = remember(appTotals) { EventFilter.filterAppTotals(appTotals) }
+    // Day-clip every session to [startOfDay, now], then group + sum + filter noise.
+    // Also fold in the current in-flight foreground session (not yet in DB)
+    // so the Today view reflects what's happening RIGHT NOW.
+    val signalApps = remember(foregroundEvents, startOfDayMs, nowMs, current) {
+        aggregateAppsClipped(
+            events = foregroundEvents,
+            inflight = current,
+            windowStartMs = startOfDayMs,
+            windowEndMs = nowMs
+        ).let(EventFilter::filterAppTotals)
+    }
+    val modeTotals = remember(modeEvents, startOfDayMs, nowMs) {
+        aggregateModesClipped(
+            events = modeEvents,
+            windowStartMs = startOfDayMs,
+            windowEndMs = nowMs
+        )
+    }
 
     Column(
         modifier = modifier
@@ -94,6 +140,10 @@ fun TodayScreen(
             totalSeconds = signalApps.sumOf { it.totalS },
             unlocks = unlockCount
         )
+
+        current?.let { live ->
+            CurrentSessionTile(pkg = live.pkg, elapsedMs = nowMs - live.startedAtMs)
+        }
 
         if (modeTotals.isNotEmpty()) {
             ContentModesCard(modes = modeTotals)
@@ -333,3 +383,120 @@ fun humanDuration(s: Double): String {
         else -> "${sec}s"
     }
 }
+
+@Composable
+private fun CurrentSessionTile(pkg: String, elapsedMs: Long) {
+    val (icon, label) = AppIconCache.rememberAppInfo(pkg)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (icon != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(7.dp)),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            androidx.compose.foundation.shape.RoundedCornerShape(7.dp)
+                        )
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Now",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Text(
+                text = humanDuration(elapsedMs / 1000.0),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+    }
+}
+
+/**
+ * Sum foreground-session time per app, clipped to [windowStart, windowEnd].
+ * Folds in the in-flight session (from UsageStatsPoller.currentForeground)
+ * since it's not yet in the DB.
+ */
+private fun aggregateAppsClipped(
+    events: List<EventRow>,
+    inflight: UsageStatsPoller.CurrentForeground?,
+    windowStartMs: Long,
+    windowEndMs: Long
+): List<AppTotal> {
+    data class Acc(var totalS: Double = 0.0, var count: Int = 0)
+    val totals = mutableMapOf<String, Acc>()
+
+    fun add(pkg: String, startMs: Long, endMs: Long) {
+        val clipStart = maxOf(startMs, windowStartMs)
+        val clipEnd = minOf(endMs, windowEndMs)
+        if (clipEnd <= clipStart) return
+        val acc = totals.getOrPut(pkg) { Acc() }
+        acc.totalS += (clipEnd - clipStart) / 1000.0
+        acc.count++
+    }
+
+    for (e in events) {
+        val pkg = EventFilter.extractApp(e.dataJson) ?: continue
+        val start = parseInstantMillis(e.timestampUtc) ?: continue
+        val end = start + (e.durationS * 1000).toLong()
+        add(pkg, start, end)
+    }
+    inflight?.let { add(it.pkg, it.startedAtMs, windowEndMs) }
+
+    return totals.entries
+        .map { (pkg, acc) -> AppTotal(pkg, acc.totalS, acc.count) }
+        .sortedByDescending { it.totalS }
+}
+
+/** Same clipping logic for content-mode sources. No in-flight fold — the
+ *  detector already emits modes on transition; a live one that started
+ *  before window start is rare and the 24h lookback picks it up. */
+private fun aggregateModesClipped(
+    events: List<EventRow>,
+    windowStartMs: Long,
+    windowEndMs: Long
+): List<ModeTotal> {
+    val totals = mutableMapOf<String, Double>()
+    for (e in events) {
+        val start = parseInstantMillis(e.timestampUtc) ?: continue
+        val end = start + (e.durationS * 1000).toLong()
+        val clipStart = maxOf(start, windowStartMs)
+        val clipEnd = minOf(end, windowEndMs)
+        if (clipEnd <= clipStart) continue
+        totals[e.source] = (totals[e.source] ?: 0.0) + (clipEnd - clipStart) / 1000.0
+    }
+    return totals.entries
+        .map { (source, totalS) -> ModeTotal(source, totalS) }
+        .sortedByDescending { it.totalS }
+}
+
+private fun parseInstantMillis(iso: String): Long? =
+    try { Instant.parse(iso).toEpochMilli() } catch (_: Throwable) { null }

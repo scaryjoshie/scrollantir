@@ -7,6 +7,9 @@ import android.util.Log
 import app.scrollantir.db.EventDao
 import app.scrollantir.db.emit
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import java.time.Instant
 import kotlin.coroutines.coroutineContext
@@ -58,6 +61,7 @@ class UsageStatsPoller(
         Log.i(TAG, "FG start:  $pkg")
         currentApp = pkg
         currentStartedAt = t
+        _currentForeground.value = CurrentForeground(pkg, t)
     }
 
     internal suspend fun flushCurrent(endMs: Long) {
@@ -80,11 +84,18 @@ class UsageStatsPoller(
         }
         currentApp = null
         currentStartedAt = 0L
+        _currentForeground.value = null
     }
+
+    data class CurrentForeground(val pkg: String, val startedAtMs: Long)
 
     companion object {
         const val TAG = "ScrollantirPoll"
         private const val POLL_INTERVAL_MS = 2_500L
         private const val INITIAL_LOOKBACK_MS = 10_000L
+
+        /** Live "what's foregrounded right now" for the Today dashboard. */
+        private val _currentForeground = MutableStateFlow<CurrentForeground?>(null)
+        val currentForeground: StateFlow<CurrentForeground?> = _currentForeground.asStateFlow()
     }
 }

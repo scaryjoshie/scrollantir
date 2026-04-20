@@ -33,30 +33,30 @@ interface EventDao {
 
     // --- Aggregates for Today dashboard ---
 
+    /**
+     * Raw foreground sessions that *might* overlap with the [lookbackIso ..]
+     * window. Returns events whose (start + duration) is still after the
+     * window start — i.e., any session that contributes any time to today.
+     * Kotlin-side clips each session to the day boundary before summing.
+     *
+     * SQLite string comparison works because timestamps are ISO-8601 UTC
+     * (lexicographically ordered). Duration is added by comparing the
+     * start of the session plus its seconds against the window.
+     */
     @Query("""
-        SELECT
-            json_extract(data_json, '$.app') AS app,
-            SUM(duration_s) AS totalS,
-            COUNT(*) AS sessionCount
-        FROM events
+        SELECT * FROM events
         WHERE source = 'system.foreground'
-          AND timestamp_utc >= :sinceIso
-          AND json_extract(data_json, '$.app') IS NOT NULL
-        GROUP BY json_extract(data_json, '$.app')
-        ORDER BY totalS DESC
+          AND timestamp_utc >= :lookbackIso
     """)
-    fun foregroundTotalsSince(sinceIso: String): Flow<List<AppTotal>>
+    fun foregroundEventsSince(lookbackIso: String): Flow<List<EventRow>>
 
     @Query("""
-        SELECT source AS source, SUM(duration_s) AS totalS
-        FROM events
-        WHERE timestamp_utc >= :sinceIso
-          AND (source LIKE 'youtube.%' OR source LIKE 'instagram.%' OR source LIKE 'tiktok.%')
+        SELECT * FROM events
+        WHERE (source LIKE 'youtube.%' OR source LIKE 'instagram.%' OR source LIKE 'tiktok.%')
           AND duration_s > 0
-        GROUP BY source
-        ORDER BY totalS DESC
+          AND timestamp_utc >= :lookbackIso
     """)
-    fun contentModeTotalsSince(sinceIso: String): Flow<List<ModeTotal>>
+    fun contentModeEventsSince(lookbackIso: String): Flow<List<EventRow>>
 
     @Query("SELECT COUNT(*) FROM events WHERE source = 'system.unlock' AND timestamp_utc >= :sinceIso")
     fun unlockCountSince(sinceIso: String): Flow<Int>
