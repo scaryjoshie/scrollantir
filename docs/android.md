@@ -246,6 +246,10 @@ If leaving Reels produces 1-2 non-matching events and then the app becomes quiet
 
 If tracking starts while screen is already on, `screenOnSince` stays null and the current span never emits. Service-stop mid-unlocked leaves the span open. Fix: seed from `PowerManager.isInteractive()` / `KeyguardManager.isKeyguardLocked()` on register; flush open spans in `TrackerForegroundService.onDestroy` alongside the existing poller flush.
 
+### #9 Stale / unresolvable packages in Today's Apps list
+
+Occasional apps appear in Today's Apps card with no icon and a humanized-package-name label (e.g. "YouTube" when the user actually runs ReVanced, or "Android" for the literal `"android"` system package). Usually self-corrects on re-open (either because they were briefly emitted by UsageStatsManager for system bookkeeping and cleaned up, or because `AppIconCache`'s first lookup failed and returned the placeholder label). Fix: extend `EventFilter.NOISE_PACKAGES` to cover stock YouTube when ReVanced is installed, and tighten the `"android"` match. Also: if `PackageManager.getApplicationInfo(pkg, 0)` throws `NameNotFoundException`, hide the row entirely rather than showing a humanized placeholder — the app almost certainly isn't real.
+
 ### #8 ISO timestamp lexicographic sort edge cases
 
 `Instant.toString()` has variable fractional precision. Lexicographic comparisons can misclassify rows at exact-second boundaries. Speculative — modern Android Instants are usually well-behaved — but if we see drift, normalize to fixed-width format or epoch millis.
