@@ -127,42 +127,75 @@ def save_checkpoint(cp: dict[str, int]) -> None:
 
 @dataclass
 class Schema:
-    buckets_table: str     # "buckets" (rust) or "bucket" (python)
-    events_table: str      # "events" (rust) or "event" (python)
-    bucket_key_col: str    # "key" (rust, integer rowid) or "id" (python)
-    bucket_id_col: str     # "id" (rust, text) or "id" (python, text) — same name different tables
-    event_fk_col: str      # "bucketrow" (rust) or "bucket_id" (python)
-    time_mode: str         # "rust_int_us" or "iso_duration"
-    # Column names in the events table (vary by schema):
-    ev_start_col: str      # "starttime" or "timestamp"
-    ev_end_or_dur_col: str # "endtime" or "duration"
+    buckets_table: str
+    events_table: str
+    bucket_key_col: str      # integer PK column on the buckets table
+    bucket_id_col: str       # text column with the AW-reported bucket id (e.g. "aw-watcher-window_host")
+    event_fk_col: str        # FK on events pointing to buckets.<bucket_key_col>
+    time_mode: str           # "rust_int_us" | "rust_int_ns" | "iso_duration"
+    ev_start_col: str        # starttime | timestamp
+    ev_end_or_dur_col: str   # endtime | duration
+    ev_data_col: str         # data | datastr
 
 
 def detect_schema(conn: sqlite3.Connection) -> Schema:
+    """Introspect whichever AW schema variant we've landed on.
+
+    Known variants in the wild as of 2026-04:
+      - aw-server-rust (new, current DMG): tables buckets/events,
+        events.data column, buckets.name column (text), int nanosecond
+        starttime/endtime.
+      - aw-server-rust (older): events.datastr column, buckets.id
+        (text), int microsecond starttime/endtime.
+      - aw-server (python, peewee): bucketmodel/eventmodel, ISO-8601
+        timestamp + float duration + datastr.
+      - aw-server (python, legacy): bucket/event — same columns as
+        peewee variant.
+    """
     tabs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
+
+    # aw-server-rust variants — match on table names and introspect columns.
     if "buckets" in tabs and "events" in tabs:
-        # aw-server-rust
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
-        if not {"bucketrow", "starttime", "endtime", "datastr"} <= cols:
-            raise RuntimeError(f"unexpected events columns: {cols}")
+        ev_cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+        bk_cols = {r[1] for r in conn.execute("PRAGMA table_info(buckets)")}
+        if not {"bucketrow", "starttime", "endtime"} <= ev_cols:
+            raise RuntimeError(f"unexpected events columns: {ev_cols}")
+        data_col = "data" if "data" in ev_cols else "datastr"
+        if data_col not in ev_cols:
+            raise RuntimeError(f"no data/datastr column on events: {ev_cols}")
+        # Bucket text id: `name` in current rust, `id` in older rust.
+        # If both present (migration), prefer `name`.
+        if "name" in bk_cols and "id" in bk_cols:
+            text_col = "name"
+        elif "name" in bk_cols:
+            text_col = "name"
+        elif "id" in bk_cols:
+            text_col = "id"
+        else:
+            raise RuntimeError(f"no bucket name/id column: {bk_cols}")
+        key_col = "id" if text_col != "id" else "key"
+        if key_col not in bk_cols:
+            raise RuntimeError(f"no bucket PK column: {bk_cols}")
+        time_mode = _sniff_rust_time_mode(conn)
         return Schema(
             buckets_table="buckets",
             events_table="events",
-            bucket_key_col="key",
-            bucket_id_col="id",
+            bucket_key_col=key_col,
+            bucket_id_col=text_col,
             event_fk_col="bucketrow",
-            time_mode="rust_int_us",
+            time_mode=time_mode,
             ev_start_col="starttime",
             ev_end_or_dur_col="endtime",
+            ev_data_col=data_col,
         )
-    # Python aw-server uses peewee → bucketmodel / eventmodel. Older docs
-    # sometimes say bucket / event. Same column layout in both cases.
+
+    # Python aw-server (peewee or legacy).
     for buckets_t, events_t in (("bucketmodel", "eventmodel"), ("bucket", "event")):
         if buckets_t in tabs and events_t in tabs:
-            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({events_t})")}
-            if {"timestamp", "duration", "bucket_id"} <= cols:
+            ev_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({events_t})")}
+            if {"timestamp", "duration", "bucket_id", "datastr"} <= ev_cols:
                 return Schema(
                     buckets_table=buckets_t,
                     events_table=events_t,
@@ -172,12 +205,27 @@ def detect_schema(conn: sqlite3.Connection) -> Schema:
                     time_mode="iso_duration",
                     ev_start_col="timestamp",
                     ev_end_or_dur_col="duration",
+                    ev_data_col="datastr",
                 )
     raise RuntimeError(
         f"cannot recognise AW schema (tables={sorted(tabs)}); "
         "supported: aw-server-rust (buckets+events) or aw-server python "
         "(bucketmodel+eventmodel or bucket+event)"
     )
+
+
+def _sniff_rust_time_mode(conn: sqlite3.Connection) -> str:
+    """Rust has shipped both microsecond and nanosecond integer timestamps
+    in different versions. Peek at one starttime value to decide.
+    """
+    row = conn.execute("SELECT starttime FROM events LIMIT 1").fetchone()
+    if row is None:
+        # Empty DB — assume nanoseconds (current rust). First real run
+        # will be fine; the forwarder would see no events anyway.
+        return "rust_int_ns"
+    v = row[0]
+    # Year-2001..2262 in ns is ~1e18; in us is ~1e15. Clean split.
+    return "rust_int_ns" if v > 10**17 else "rust_int_us"
 
 
 def list_buckets(conn: sqlite3.Connection, s: Schema) -> list[tuple[Any, str]]:
@@ -206,27 +254,26 @@ def fetch_events(
 ) -> list[tuple[int, str, float, dict]]:
     """Return [(row_id, iso_timestamp, duration_s, data_dict)] ordered by row_id asc."""
     q = (
-        f"SELECT id, {s.ev_start_col}, {s.ev_end_or_dur_col}, datastr "
+        f"SELECT id, {s.ev_start_col}, {s.ev_end_or_dur_col}, {s.ev_data_col} "
         f"FROM {s.events_table} "
         f"WHERE {s.event_fk_col} = ? AND id > ? "
         f"ORDER BY id ASC LIMIT ?"
     )
     rows = []
-    for row_id, t_start, t_end_or_dur, datastr in conn.execute(
+    for row_id, t_start, t_end_or_dur, data_str in conn.execute(
         q, (bucket_key, after_row_id, limit)
     ):
-        if s.time_mode == "rust_int_us":
-            # microseconds since epoch → ISO-8601 UTC
-            start_dt = datetime.fromtimestamp(t_start / 1_000_000, tz=timezone.utc)
-            duration_s = max(0.0, (t_end_or_dur - t_start) / 1_000_000)
+        if s.time_mode == "rust_int_ns":
+            start_dt = datetime.fromtimestamp(t_start / 1e9, tz=timezone.utc)
+            duration_s = max(0.0, (t_end_or_dur - t_start) / 1e9)
+        elif s.time_mode == "rust_int_us":
+            start_dt = datetime.fromtimestamp(t_start / 1e6, tz=timezone.utc)
+            duration_s = max(0.0, (t_end_or_dur - t_start) / 1e6)
         else:
-            # ISO string + float seconds
-            iso = t_start
-            # AW stores with microsecond precision, sometimes with 'Z', sometimes offset
-            start_dt = _parse_iso(iso)
+            start_dt = _parse_iso(t_start)
             duration_s = float(t_end_or_dur)
         try:
-            data = json.loads(datastr) if datastr else {}
+            data = json.loads(data_str) if data_str else {}
         except json.JSONDecodeError:
             data = {}
         rows.append((row_id, _iso_z(start_dt), duration_s, data))
