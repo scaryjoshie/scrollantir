@@ -99,6 +99,7 @@ class ContentDetectorService : AccessibilityService() {
     @Volatile private var current: CurrentMode? = null
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
+    @Volatile private var totalEventsSeen: Long = 0L
     private val lastMissEmitByPkg: MutableMap<String, Long> = mutableMapOf()
 
     override fun onServiceConnected() {
@@ -124,9 +125,11 @@ class ContentDetectorService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString()
-        // Log EVERY event that reaches us, pre-throttle, pre-filter. Tells us
-        // whether the system is delivering events at all.
-        Log.d(TAG, "event type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg")
+        // Log EVERY event that reaches us, pre-throttle. If nothing ever shows
+        // up here while a target app is foreground, the system is not routing
+        // events to our service (config issue), not a detector bug.
+        totalEventsSeen++
+        Log.i(TAG, "event #$totalEventsSeen type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg")
 
         val now = System.currentTimeMillis()
         if (now - lastCheckMs < THROTTLE_MS) return
@@ -135,7 +138,7 @@ class ContentDetectorService : AccessibilityService() {
         if (pkg == null) return
         val rules = rulesByPackage[pkg]
         if (rules == null) {
-            Log.w(TAG, "no rules for $pkg (should not happen if packageNames filter is applied)")
+            Log.w(TAG, "no rules for $pkg (packageNames filter should have blocked this)")
             return
         }
 
@@ -149,7 +152,7 @@ class ContentDetectorService : AccessibilityService() {
 
         val root = rootInActiveWindow
         if (root == null) {
-            Log.d(TAG, "rootInActiveWindow=null for $pkg — skipping")
+            Log.i(TAG, "rootInActiveWindow=null for $pkg — skipping")
             return
         }
 
@@ -165,7 +168,7 @@ class ContentDetectorService : AccessibilityService() {
         if (matched != null) {
             onDetected(matched, now)
         } else {
-            Log.d(TAG, "no rule matched for $pkg — emitting detector.miss diagnostic if cooldown allows")
+            Log.i(TAG, "no rule matched for $pkg — emitting detector.miss if cooldown allows")
             onMiss(now)
             maybeEmitMissDiagnostic(pkg, root, now)
         }
