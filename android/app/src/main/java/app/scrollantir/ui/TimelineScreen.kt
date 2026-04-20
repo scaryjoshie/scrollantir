@@ -3,8 +3,11 @@ package app.scrollantir.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -135,6 +138,21 @@ fun TimelineScreen(
         if (scrollPx > maxScrollPx) scrollPx = maxScrollPx
     }
 
+    // Compose's built-in scroll + fling detector. Its callback hands us
+    // raw drag/fling deltas which we apply to scrollPx. Fling momentum
+    // comes free via ScrollableDefaults.flingBehavior (physics-based
+    // DecayAnimation internally).
+    val scrollableState = rememberScrollableState { delta ->
+        // Convention: positive delta in vertical scrollable = "scroll
+        // forward" = reveal content further down = scrollPx increases.
+        // Finger-drag-down → negative delta → scrollPx decreases (reveal
+        // content above).
+        val before = scrollPx
+        val after = (scrollPx - delta).coerceIn(0f, maxScrollPx)
+        scrollPx = after
+        before - after
+    }
+
     // Scroll to "now" on first render (once viewport height is known).
     var initialScrolled by remember { mutableStateOf(false) }
     LaunchedEffect(viewportHeightPx) {
@@ -180,60 +198,46 @@ fun TimelineScreen(
                 .onSizeChanged { size: IntSize ->
                     viewportHeightPx = size.height.toFloat()
                 }
+                // Pinch handler runs *before* scrollable in the chain so
+                // multi-pointer events get consumed before scrollable sees
+                // them as a weird drag.
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val pressedCount = event.changes.count { it.pressed }
+                            if (event.changes.count { it.pressed } < 2) continue
+                            val zoom = event.calculateZoom()
+                            if (zoom == 1f || zoom.isNaN()) continue
 
-                            when {
-                                pressedCount >= 2 -> {
-                                    val zoom = event.calculateZoom()
-                                    if (zoom != 1f && !zoom.isNaN()) {
-                                        val centroid = event.calculateCentroid(useCurrent = true)
-                                        val currentPxPerMin = with(density) {
-                                            dpPerMin.dp.toPx()
-                                        }
-                                        val centroidMinute =
-                                            (scrollPx + centroid.y) / currentPxPerMin
-                                        val newDpPerMin = (dpPerMin * zoom)
-                                            .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
-                                        if (newDpPerMin != dpPerMin) {
-                                            dpPerMin = newDpPerMin
-                                            val newPxPerMin = with(density) {
-                                                newDpPerMin.dp.toPx()
-                                            }
-                                            val newDayHeightPx =
-                                                newPxPerMin * 60 * 24
-                                            val newMaxScrollPx =
-                                                (newDayHeightPx - viewportHeightPx)
-                                                    .coerceAtLeast(0f)
-                                            scrollPx = (centroidMinute * newPxPerMin - centroid.y)
-                                                .coerceIn(0f, newMaxScrollPx)
-                                        }
-                                        event.changes.forEach {
-                                            if (it.pressed) it.consume()
-                                        }
-                                    }
-                                }
-
-                                pressedCount == 1 -> {
-                                    val change = event.changes.first { it.pressed }
-                                    val deltaY = change.positionChange().y
-                                    if (deltaY != 0f) {
-                                        scrollPx = (scrollPx - deltaY)
-                                            .coerceIn(0f, maxScrollPx)
-                                        change.consume()
-                                    }
-                                    // deltaY == 0 (e.g. pointer down without
-                                    // movement) — don't consume; clickable on
-                                    // a block below still gets to register
-                                    // its tap.
-                                }
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            val currentPxPerMin = with(density) { dpPerMin.dp.toPx() }
+                            val centroidMinute =
+                                (scrollPx + centroid.y) / currentPxPerMin
+                            val newDpPerMin = (dpPerMin * zoom)
+                                .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
+                            if (newDpPerMin != dpPerMin) {
+                                dpPerMin = newDpPerMin
+                                val newPxPerMin = with(density) { newDpPerMin.dp.toPx() }
+                                val newDayHeightPx = newPxPerMin * 60 * 24
+                                val newMaxScrollPx =
+                                    (newDayHeightPx - viewportHeightPx).coerceAtLeast(0f)
+                                scrollPx = (centroidMinute * newPxPerMin - centroid.y)
+                                    .coerceIn(0f, newMaxScrollPx)
                             }
+                            event.changes.forEach { if (it.pressed) it.consume() }
                         }
                     }
                 }
+                // Compose's scrollable: drives scrollPx via callback, and
+                // runs a DecayAnimation on release velocity for fling
+                // momentum. Single-finger drags flow here naturally; the
+                // pinch handler above only consumes when 2+ pointers are
+                // down AND a zoom factor is changing, so scrollable gets
+                // clean drag events.
+                .scrollable(
+                    state = scrollableState,
+                    orientation = Orientation.Vertical
+                )
         ) {
             // Timeline content. Positioned via offset by scrollPx so the
             // whole content scrolls together without Compose's scrollState.
