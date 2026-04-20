@@ -10,6 +10,10 @@ Read in this order:
 | [android.md](android.md) | Implementation reference for the phone app. What's built, how it works, toolchain versions, known tradeoffs. |
 | [mac.md](mac.md) | Mac collector: ActivityWatch + forked `aw-watcher-web` (for Zen container tracking) + Python launchd forwarder. |
 | [supabase.md](supabase.md) | The backend: schemas, roles, RPCs (`ingest_api`, `agent_api`), trust boundaries, lifecycle flows, security posture. |
+| [admin-cli.md](admin-cli.md) | **Spec.** `scripts/admin.py` — device registry, role password setup, token mint/rotate/revoke, QR generation. |
+| [edge-functions.md](edge-functions.md) | **Spec.** `supabase/functions/*` — ingest / prompt-answer / pending-prompts / scheduled (daily-digest, weekly-report, classifier, token-cleanup). |
+| [agent.md](agent.md) | **Spec.** Local Claude Code agent: CLAUDE.md conventions, Postgres connection pattern, read/write API, examples. |
+| [projects.md](projects.md) | **Spec.** Projects + event classification layer. The "time on what" table plus a Groq/Cerebras-powered classifier. |
 | [roadmap.md](roadmap.md) | Living plan: what's shipped, what's next, what's idea-only. Read here to know the current implementation state without replaying git history. |
 | [setup.md](setup.md) | Runbook: Android install dance, Mac collector install, Supabase CLI install + link. |
 | [location.md](location.md) | **Planned module.** Location tracking on Android — event schema, minimal-vs-full implementation, privacy considerations, Google Takeout alternative, prerequisites (real HTTPS, usage validation). |

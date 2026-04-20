@@ -39,6 +39,32 @@ Studio's green Run button.
   services on Pixel; re-enable in Settings → Accessibility if you stop
   seeing `youtube.shorts` events after a system update.
 
+## Supabase backend
+
+One-time. Before any forwarder posts real data.
+
+```bash
+brew install supabase/tap/supabase
+cd /Users/joshua/dev/scrollantir
+supabase login                  # opens browser (run in your own terminal, not this shell)
+supabase link --project-ref feijpewzqgqczkxmvdng
+```
+
+Then whenever schema changes:
+
+```bash
+supabase db diff -f <migration_name> --schema public,private,ingest_api,agent_api
+# review the generated file in supabase/migrations/
+# manually append any schema USAGE / function EXECUTE grants + ALTER VIEW
+#   (the declarative diff tool doesn't capture these)
+supabase db push --include-roles --include-seed
+```
+
+For schema design details, trust boundaries, and RPC signatures, see
+[`supabase.md`](supabase.md). For admin tooling (device add, token
+mint, role password setup), see [`admin-cli.md`](admin-cli.md). For
+edge function deployment, see [`edge-functions.md`](edge-functions.md).
+
 ## Mac collector
 
 Spec in [mac.md](mac.md). Code lives in:
@@ -113,12 +139,19 @@ tail -f ~/Library/Logs/scrollantir-forwarder.out.log
 Expect a log line every 30 seconds. The first run against a fresh AW
 install will send a batch of backfill from the moment AW started.
 
-### 4. Point at the stub server for dev
+### 4. Point at Supabase (or the stub server for LAN-only dev)
 
-For local testing the stub server from `android-testing/` accepts Mac
-events unchanged. Start it with the command in the next section, then
-run setup.sh with `http://127.0.0.1:8069` + token `dev-token`. Events
-appear in the server's stdout within ~30 seconds.
+**Supabase (primary path).** After `scripts/admin.py setup-roles`
+and `admin mint --device-id mac --show-token` (see
+`docs/admin-cli.md`), re-run `mac-forwarder/setup.sh` and paste:
+- URL: `https://<project-ref>.supabase.co/functions/v1/ingest`
+- Token: the plaintext from `mint`
+
+**Stub server (optional, for debugging without touching remote).**
+`android-testing/server.py` still accepts events unchanged. Start
+it, then run `setup.sh` with `http://127.0.0.1:8069` + token
+`dev-token`. Events appear in the server's stdout within ~30
+seconds. Useful when iterating on forwarder code.
 
 ### Verification checklist
 

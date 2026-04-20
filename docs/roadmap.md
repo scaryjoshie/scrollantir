@@ -25,32 +25,28 @@ Order matters — each step unblocks the next.
 
 ### 1. Admin CLI (`scripts/admin.py`) 📋
 
-Local Python script. Uses `service_role` connection string (in `~/.config/scrollantir/.env.admin`). Subcommands:
+Full spec in [`docs/admin-cli.md`](admin-cli.md). Local Python tool for:
+- Device registry (`device add` / `list` / `rename` / `retire`)
+- Role setup (`setup-roles` — one-time, assigns passwords to custom roles, writes to Keychain)
+- Token lifecycle (`mint` with QR output, `list`, `revoke`, `rotate`, `rotate --finalize`)
 
-- `device add <device_id> --label "<label>" --platform <p>` → `INSERT INTO devices`
-- `device list` / `device rename` / `device retire`
-- `setup-roles` → assigns random passwords to `ingest_role` / `user_role` / `agent_role`, writes connection strings to Mac Keychain
-- `mint --device-id <id> [--note <n>] [--show-token]` → generates 32-byte bearer, hashes, INSERTs `private.tokens`, prints plaintext + QR
-- `list` (tokens) / `revoke --prefix <p>` / `revoke-all --device-id <id> --yes`
-- `rotate --device-id <id>` / `rotate --device-id <id> --finalize`
+~200-300 lines Python. `psycopg`, `keyring`, `qrcode`, `click`.
 
-Dependencies: `psycopg[binary]`, `qrcode`, `keyring`. ~200-300 lines.
+**Acceptance:** see `docs/admin-cli.md` — specific command sequence.
 
-**Acceptance:** mint a token for `mac`, see it in `list`, revoke it, confirm revoked. Roles have passwords and their connection strings are in Keychain.
+### 2. Ingest edge functions (`supabase/functions/*`) 📋
 
-### 2. Ingest edge function (`supabase/functions/ingest/index.ts`) 📋
+Full spec in [`docs/edge-functions.md`](edge-functions.md). Three
+functions for v1 ingest:
 
-TypeScript, runs on Supabase Edge Runtime (Deno). Connects to DB as `ingest_role` using connection string stored in Supabase secrets (via `supabase secrets set INGEST_DATABASE_URL=...`).
+- `POST /functions/v1/ingest` — events (calls `ingest_api.accept_event`)
+- `POST /functions/v1/prompt-answer` — prompt answers
+- `GET /functions/v1/pending-prompts` — phone polling
 
-Three HTTP endpoints (separate function files or one router):
+Each ~40-80 lines TS. Connects as `ingest_role` via `INGEST_DATABASE_URL`
+secret. Never uses `service_role`.
 
-- `POST /ingest` — bearer auth, calls `ingest_api.accept_event(...)`. Body: single event or array (we chunk server-side if array).
-- `POST /prompt-answer` — bearer auth, calls `ingest_api.accept_prompt_answer(...)`.
-- `GET /pending-prompts` — bearer auth, calls `ingest_api.pending_prompts(...)`.
-
-Deploys via `supabase functions deploy ingest`. ~60-80 lines of TS.
-
-**Acceptance:** Mac forwarder's existing stub-server call swapped to the edge function URL with a real bearer. Events appear in `events` table via `SELECT * FROM events_enriched LIMIT 10`.
+**Acceptance:** see `docs/edge-functions.md` — curl tests + real forwarder wire-up.
 
 ### 3. Wire Mac forwarder to Supabase 📋
 
@@ -79,13 +75,12 @@ Update:
 
 ### 6. Local Claude Code agent tooling 📋
 
-The Swift app (future) will spawn Claude Code with `agent_role` credentials, but even before the app exists, we can run Claude Code manually with the credentials. What's needed:
+Full spec in [`docs/agent.md`](agent.md). Repo-root `CLAUDE.md` with
+agent instructions, connection pattern (Keychain read), schema
+reference, conventions for reports/annotations/prompts. Optional
+`scripts/agent_helper.py` or Postgres MCP for ergonomic queries.
 
-- A `CLAUDE.md` at repo root with instructions for the agent role — "you can SELECT from events_enriched; write reports via `SELECT agent_api.upsert_report(...)`; ask questions via `agent_api.create_prompt(...)`; never touch private.*"
-- A small Postgres MCP server config so Claude Code can query directly, OR a `scripts/agent_sql.py` helper that wraps `psycopg` + reads the `agent_role` keychain entry
-- Example prompts: "summarize yesterday," "find patterns this week"
-
-**Acceptance:** Claude Code session produces a report stored in `reports` table.
+**Acceptance:** Claude Code session writes a `report` via `agent_api.upsert_report`, shows up in `SELECT * FROM reports ORDER BY created_at DESC`.
 
 ### 7. Scheduled edge functions (cron agents) 📋
 
@@ -104,21 +99,17 @@ Anthropic/Cerebras/Groq API keys stored as Supabase function secrets.
 
 ### 8. Projects + event classification 📋
 
-New schema (will be its own migration):
+Full spec in [`docs/projects.md`](projects.md). Two new tables
+(`projects`, `event_project_links`), one new view
+(`events_with_project`), one new `agent_api.classify_event` RPC, and
+a scheduled edge function that runs a cheap-LLM classifier (Groq or
+Cerebras free tier) against unclassified events every 15 minutes.
 
-- `public.projects` — `(id UUID PK, slug TEXT UNIQUE, name TEXT, description TEXT, keywords TEXT[], color, archived_at, lifecycle)`. User-curated via `user_role` UI or admin CLI; agent proposes via reports.
-- `public.event_project_links` — `(event_id FK, project_id FK, confidence REAL, classified_by TEXT, classified_at TIMESTAMPTZ)`. Many-to-many: an event can belong to >1 project.
-- `public.events_with_project` view — `events_enriched` ⋈ `event_project_links` ⋈ `projects`.
+This is the table we need before the dashboard can answer "time on
+what" meaningfully. Cmux activity without project context is too
+coarse.
 
-Classification edge function (cron, ~15 min):
-
-- Pulls events WHERE no existing classification AND `app IN ('cmux','zen','Terminal',...)`
-- Sends a batch to cheap LLM (Cerebras/Groq) with prompt "given these event titles and the following project definitions, classify each into a project id or null"
-- INSERTs into `event_project_links`
-
-Agent can also ask clarifying questions via `create_prompt('project_context', 'What is scrollantir about?')` when it needs to refine the taxonomy.
-
-**Acceptance:** dashboard can show `SELECT project_name, SUM(duration_s) FROM events_with_project GROUP BY 1 WHERE day = today`.
+**Acceptance:** see `docs/projects.md`. Dashboard query `SELECT project_name, SUM(duration_s) / 3600 AS hours FROM events_with_project WHERE timestamp_utc > NOW() - INTERVAL '7 days' GROUP BY 1` returns reasonable rollups.
 
 ### 9. Swift Mac dashboard 📋
 
