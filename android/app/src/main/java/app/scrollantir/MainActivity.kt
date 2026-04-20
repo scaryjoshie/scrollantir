@@ -35,11 +35,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,8 +52,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -63,9 +70,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.scrollantir.db.AppDatabase
+import app.scrollantir.net.ForwarderWorker
+import app.scrollantir.net.SecurePrefs
 import app.scrollantir.tracker.TrackerForegroundService
 import app.scrollantir.ui.theme.ScrollantirTheme
 import kotlinx.coroutines.flow.Flow
+import java.time.Duration
+import java.time.Instant
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,6 +122,7 @@ fun MainScreen(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -129,6 +141,8 @@ fun MainScreen(modifier: Modifier = Modifier) {
                 else TrackerForegroundService.start(context)
             }
         )
+
+        SyncCard(context = context, refreshKey = refreshTick)
 
         if (!canStart || !batteryOK) {
             PermissionsSection(
@@ -161,6 +175,8 @@ fun MainScreen(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+
+        ServerSettingsCard(context = context)
     }
 }
 
@@ -319,6 +335,141 @@ private fun PermissionRow(
                 TextButton(onClick = onGrant) { Text("Grant") }
             }
         }
+    }
+}
+
+@Composable
+private fun SyncCard(context: Context, refreshKey: Int) {
+    val status by ForwarderWorker.status.collectAsState()
+    val configured = remember(refreshKey) {
+        val prefs = SecurePrefs.get(context)
+        !prefs.getString(SecurePrefs.KEY_SERVER_URL, null).isNullOrBlank() &&
+        !prefs.getString(SecurePrefs.KEY_TOKEN, null).isNullOrBlank()
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Sync",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = buildString {
+                    if (!configured) {
+                        append("Server not configured")
+                    } else if (status.lastAttempt == null) {
+                        append("No sync yet")
+                    } else {
+                        append("Last: ")
+                        append(humanAgo(status.lastAttempt!!))
+                        append("  (")
+                        append(if (status.lastError == null) "ok" else "error")
+                        append(", ")
+                        append(status.lastBatchSize)
+                        append(" events)")
+                    }
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (status.lastError != null) {
+                Text(
+                    text = status.lastError!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            OutlinedButton(
+                enabled = configured,
+                onClick = { ForwarderWorker.syncNow(context) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (configured) "Sync now" else "Configure server below")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerSettingsCard(context: Context) {
+    val prefs = remember { SecurePrefs.get(context) }
+    var url by remember {
+        mutableStateOf(prefs.getString(SecurePrefs.KEY_SERVER_URL, "") ?: "")
+    }
+    var token by remember {
+        mutableStateOf(prefs.getString(SecurePrefs.KEY_TOKEN, "") ?: "")
+    }
+    var saved by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Server",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it; saved = false },
+                label = { Text("URL") },
+                placeholder = { Text("http://192.168.1.x:8000") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it; saved = false },
+                label = { Text("Bearer token") },
+                placeholder = { Text("dev-token") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = {
+                    prefs.edit()
+                        .putString(SecurePrefs.KEY_SERVER_URL, url.trim())
+                        .putString(SecurePrefs.KEY_TOKEN, token.trim())
+                        .apply()
+                    saved = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (saved) "Saved" else "Save")
+            }
+        }
+    }
+}
+
+private fun humanAgo(then: Instant): String {
+    val seconds = Duration.between(then, Instant.now()).seconds
+    return when {
+        seconds < 60 -> "${seconds}s ago"
+        seconds < 3600 -> "${seconds / 60}m ago"
+        seconds < 86400 -> "${seconds / 3600}h ago"
+        else -> "${seconds / 86400}d ago"
     }
 }
 

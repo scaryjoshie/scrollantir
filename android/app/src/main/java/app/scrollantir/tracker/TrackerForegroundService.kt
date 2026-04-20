@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import app.scrollantir.MainActivity
 import app.scrollantir.R
 import app.scrollantir.db.AppDatabase
+import app.scrollantir.net.ForwarderWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,6 +54,8 @@ class TrackerForegroundService : Service() {
             val poller = UsageStatsPoller(applicationContext, dao)
             pollerJob = scope.launch { poller.run() }
         }
+
+        ForwarderWorker.enqueuePeriodic(applicationContext)
 
         _running.value = true
         return START_STICKY
