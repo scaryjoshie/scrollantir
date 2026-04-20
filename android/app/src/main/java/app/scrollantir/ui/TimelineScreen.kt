@@ -15,7 +15,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -170,26 +171,38 @@ fun TimelineScreen(
                 .fillMaxSize()
                 .verticalScroll(scrollState)
                 .pointerInput(Unit) {
-                    // Pinch zoom. detectTransformGestures only fires on
-                    // multi-pointer gestures, so single-finger drags still
-                    // flow through to verticalScroll naturally.
-                    detectTransformGestures { centroid, _, zoom, _ ->
-                        if (zoom == 1f) return@detectTransformGestures
-                        val currentPxPerMin = dpPerMin.dp.toPx()
-                        // Time-of-day currently under the centroid:
-                        val centroidMinute =
-                            (scrollState.value + centroid.y) / currentPxPerMin
-                        val newDpPerMin = (dpPerMin * zoom)
-                            .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
-                        if (newDpPerMin == dpPerMin) return@detectTransformGestures
-                        dpPerMin = newDpPerMin
-                        // Rescroll so the centroid-minute stays under the
-                        // user's fingers at the new scale.
-                        val newPxPerMin = newDpPerMin.dp.toPx()
-                        pendingScrollPx =
-                            (centroidMinute * newPxPerMin - centroid.y)
-                                .toInt()
-                                .coerceAtLeast(0)
+                    // Manual pinch detector that coexists with verticalScroll:
+                    // we only consume events when 2+ pointers are down AND
+                    // the zoom factor has changed. Single-finger drags fall
+                    // straight through to verticalScroll with nothing consumed.
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } < 2) continue
+
+                            val zoom = event.calculateZoom()
+                            if (zoom == 1f || zoom.isNaN()) continue
+
+                            val centroid = event.calculateCentroid(useCurrent = true)
+                            val currentPxPerMin = dpPerMin.dp.toPx()
+                            val centroidMinute =
+                                (scrollState.value + centroid.y) / currentPxPerMin
+                            val newDpPerMin = (dpPerMin * zoom)
+                                .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
+                            if (newDpPerMin != dpPerMin) {
+                                dpPerMin = newDpPerMin
+                                val newPxPerMin = newDpPerMin.dp.toPx()
+                                pendingScrollPx =
+                                    (centroidMinute * newPxPerMin - centroid.y)
+                                        .toInt()
+                                        .coerceAtLeast(0)
+                            }
+                            // Consume so verticalScroll doesn't treat this
+                            // as a scroll gesture on the same frame.
+                            event.changes.forEach {
+                                if (it.pressed) it.consume()
+                            }
+                        }
                     }
                 }
         ) {
