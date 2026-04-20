@@ -27,9 +27,9 @@ abstract class AppDatabase : RoomDatabase() {
                     "scrollantir.db"
                 )
                     // Local DB is a buffer; server is the system of record.
-                    // On schema change, just wipe and move on.
-                    .fallbackToDestructiveMigration()
-                    .fallbackToDestructiveMigrationOnDowngrade()
+                    // On schema change, drop tables and continue.
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }
