@@ -3,6 +3,8 @@ package app.scrollantir.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,11 +17,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.BottomSheetDefaults
@@ -41,13 +39,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.EventRow
@@ -65,14 +68,21 @@ private const val MAX_DP_PER_MIN = 8f
 private const val DEFAULT_DP_PER_MIN = 2f
 
 /**
- * Visualizes today's foreground sessions as colored blocks stacked top-to-bottom.
+ * Today's foreground sessions as colored blocks stacked top-to-bottom.
  *
- * - Y axis: time of day, 0:00 at top, 24:00 at bottom.
- * - Block height: duration of that session (clipped to today).
- * - Block color: stable hash of package name.
- * - Red horizontal line: "now".
- * - Tap any block to open a details sheet.
- * - Zoom in/out icons scale dp/minute between [0.5, 8].
+ * Gestures:
+ *  - one-finger drag     = scroll
+ *  - two-finger pinch    = zoom Y-only, anchored at pinch centroid
+ *  - tap on a block      = details sheet
+ *
+ * Scroll and zoom are both plain Float states, NOT a RoomScrollState.
+ * This is the point — keeping them in local state means every pinch
+ * event can update both synchronously within the same frame, with no
+ * scrollState.maxValue lag. Result: no snappy jitter, Y-only zoom,
+ * text stays crisp.
+ *
+ * Fling momentum is skipped (would require a VelocityTracker +
+ * decayAnimation). Personal-use utility; the tradeoff is fine.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,44 +114,41 @@ fun TimelineScreen(
         }
     }
 
-    // dp per minute. DEFAULT is starting point; zoom in goes up, out goes down.
-    var dpPerMin by remember { mutableFloatStateOf(DEFAULT_DP_PER_MIN) }
-    // Pending scrollTo value applied by a LaunchedEffect, so zoom handlers
-    // can request a scroll target that takes effect after the new height
-    // has been laid out.
-    var pendingScrollPx by remember { mutableStateOf<Int?>(null) }
-
     val blocks = remember(foregroundEvents, startOfDayMs, nowMs) {
         buildBlocks(foregroundEvents, startOfDayMs, nowMs)
     }
 
     var selected by remember { mutableStateOf<TimelineBlock?>(null) }
 
-    val scrollState = rememberScrollState()
-    val density = LocalDensity.current
+    // Self-managed scroll + zoom. All in Float so a single pointer event
+    // can update both in one frame — no scrollState machinery.
+    var dpPerMin by remember { mutableFloatStateOf(DEFAULT_DP_PER_MIN) }
+    var scrollPx by remember { mutableFloatStateOf(0f) }
+    var viewportHeightPx by remember { mutableFloatStateOf(0f) }
 
-    // Scroll to "now" on first render at the initial zoom.
-    LaunchedEffect(Unit) {
-        val nowMinute = ((System.currentTimeMillis() - startOfDayMs) / 60_000f)
-        val targetPx = with(density) { (nowMinute * DEFAULT_DP_PER_MIN).dp.toPx() } - 400f
-        scrollState.scrollTo(targetPx.toInt().coerceAtLeast(0))
+    val density = LocalDensity.current
+    val dayHeightPx: Float = with(density) { (dpPerMin * 60 * 24).dp.toPx() }
+    val maxScrollPx = (dayHeightPx - viewportHeightPx).coerceAtLeast(0f)
+
+    // Clamp scroll if zoom shrinks content below what scrollPx assumed.
+    LaunchedEffect(dayHeightPx, viewportHeightPx) {
+        if (scrollPx > maxScrollPx) scrollPx = maxScrollPx
     }
 
-    LaunchedEffect(pendingScrollPx) {
-        pendingScrollPx?.let {
-            scrollState.scrollTo(it)
-            pendingScrollPx = null
+    // Scroll to "now" on first render (once viewport height is known).
+    var initialScrolled by remember { mutableStateOf(false) }
+    LaunchedEffect(viewportHeightPx) {
+        if (!initialScrolled && viewportHeightPx > 0f) {
+            val nowMinute = ((System.currentTimeMillis() - startOfDayMs) / 60_000f)
+            val nowY = with(density) { (nowMinute * DEFAULT_DP_PER_MIN).dp.toPx() }
+            scrollPx = (nowY - viewportHeightPx * 0.4f).coerceIn(0f, maxScrollPx)
+            initialScrolled = true
         }
     }
 
-    val hourHeightDp = (dpPerMin * 60).dp
-    val timelineHeightDp = hourHeightDp * 24
-
     Column(
-        modifier = modifier
-            .fillMaxSize()
+        modifier = modifier.fillMaxSize()
     ) {
-        // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -159,7 +166,7 @@ fun TimelineScreen(
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "Pinch to zoom",
+                text = "Drag · pinch",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 12.dp)
@@ -169,49 +176,74 @@ fun TimelineScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
+                .clipToBounds()
+                .onSizeChanged { size: IntSize ->
+                    viewportHeightPx = size.height.toFloat()
+                }
                 .pointerInput(Unit) {
-                    // Manual pinch detector that coexists with verticalScroll:
-                    // we only consume events when 2+ pointers are down AND
-                    // the zoom factor has changed. Single-finger drags fall
-                    // straight through to verticalScroll with nothing consumed.
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            if (event.changes.count { it.pressed } < 2) continue
+                            val pressedCount = event.changes.count { it.pressed }
 
-                            val zoom = event.calculateZoom()
-                            if (zoom == 1f || zoom.isNaN()) continue
+                            when {
+                                pressedCount >= 2 -> {
+                                    val zoom = event.calculateZoom()
+                                    if (zoom != 1f && !zoom.isNaN()) {
+                                        val centroid = event.calculateCentroid(useCurrent = true)
+                                        val currentPxPerMin = with(density) {
+                                            dpPerMin.dp.toPx()
+                                        }
+                                        val centroidMinute =
+                                            (scrollPx + centroid.y) / currentPxPerMin
+                                        val newDpPerMin = (dpPerMin * zoom)
+                                            .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
+                                        if (newDpPerMin != dpPerMin) {
+                                            dpPerMin = newDpPerMin
+                                            val newPxPerMin = with(density) {
+                                                newDpPerMin.dp.toPx()
+                                            }
+                                            val newDayHeightPx =
+                                                newPxPerMin * 60 * 24
+                                            val newMaxScrollPx =
+                                                (newDayHeightPx - viewportHeightPx)
+                                                    .coerceAtLeast(0f)
+                                            scrollPx = (centroidMinute * newPxPerMin - centroid.y)
+                                                .coerceIn(0f, newMaxScrollPx)
+                                        }
+                                        event.changes.forEach {
+                                            if (it.pressed) it.consume()
+                                        }
+                                    }
+                                }
 
-                            val centroid = event.calculateCentroid(useCurrent = true)
-                            val currentPxPerMin = dpPerMin.dp.toPx()
-                            val centroidMinute =
-                                (scrollState.value + centroid.y) / currentPxPerMin
-                            val newDpPerMin = (dpPerMin * zoom)
-                                .coerceIn(MIN_DP_PER_MIN, MAX_DP_PER_MIN)
-                            if (newDpPerMin != dpPerMin) {
-                                dpPerMin = newDpPerMin
-                                val newPxPerMin = newDpPerMin.dp.toPx()
-                                pendingScrollPx =
-                                    (centroidMinute * newPxPerMin - centroid.y)
-                                        .toInt()
-                                        .coerceAtLeast(0)
-                            }
-                            // Consume so verticalScroll doesn't treat this
-                            // as a scroll gesture on the same frame.
-                            event.changes.forEach {
-                                if (it.pressed) it.consume()
+                                pressedCount == 1 -> {
+                                    val change = event.changes.first { it.pressed }
+                                    val deltaY = change.positionChange().y
+                                    if (deltaY != 0f) {
+                                        scrollPx = (scrollPx - deltaY)
+                                            .coerceIn(0f, maxScrollPx)
+                                        change.consume()
+                                    }
+                                    // deltaY == 0 (e.g. pointer down without
+                                    // movement) — don't consume; clickable on
+                                    // a block below still gets to register
+                                    // its tap.
+                                }
                             }
                         }
                     }
                 }
         ) {
+            // Timeline content. Positioned via offset by scrollPx so the
+            // whole content scrolls together without Compose's scrollState.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(timelineHeightDp)
+                    .height((dpPerMin * 60 * 24).dp)
+                    .offset { IntOffset(0, -scrollPx.toInt()) }
             ) {
-                HourLabels(hourHeightDp = hourHeightDp)
+                HourLabels(dpPerMin = dpPerMin)
                 Spacer(Modifier.width(6.dp))
                 Box(
                     modifier = Modifier
@@ -222,10 +254,12 @@ fun TimelineScreen(
                     for (h in 0..23) {
                         Box(
                             modifier = Modifier
-                                .offset(y = hourHeightDp * h)
+                                .offset(y = (dpPerMin * 60 * h).dp)
                                 .fillMaxWidth()
                                 .height(1.dp)
-                                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                                .background(
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                                )
                         )
                     }
                     // Event blocks
@@ -237,7 +271,8 @@ fun TimelineScreen(
                         )
                     }
                     // "Now" line
-                    val nowOffsetMin = ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f)
+                    val nowOffsetMin =
+                        ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f)
                     Box(
                         modifier = Modifier
                             .offset(y = (nowOffsetMin * dpPerMin).dp)
@@ -250,7 +285,6 @@ fun TimelineScreen(
         }
     }
 
-    // Details sheet
     selected?.let { block ->
         val sheetState = rememberModalBottomSheetState()
         ModalBottomSheet(
@@ -265,7 +299,8 @@ fun TimelineScreen(
 }
 
 @Composable
-private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
+private fun HourLabels(dpPerMin: Float) {
+    val hourHeight = (dpPerMin * 60).dp
     Column(
         modifier = Modifier
             .width(HOUR_LABEL_WIDTH)
@@ -275,7 +310,7 @@ private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(hourHeightDp),
+                    .height(hourHeight),
                 contentAlignment = Alignment.TopEnd
             ) {
                 Text(
