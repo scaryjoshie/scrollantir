@@ -75,17 +75,26 @@ The `id` is client-generated. The rule a collector must follow:
  │   service_role           │───────────────── │ private.ingest_rate_limit    │
  └──────────────────────────┘                  │                              │
                                                │                              │
- ┌──────────────────────────┐                  │ reports, insights, prompts,  │
- │ Local Claude Code agent  │                  │ annotations (derived)        │
- │   (future)               │                  │                              │
- │   SELECT from ground     │───── agent ─────>│ agent_api.upsert_*           │
- │   truth, write via RPC   │                  │ agent_api.soft_delete_*      │
- └──────────────────────────┘                  │                              │
-                                               │                              │
- ┌──────────────────────────┐                  │ (eventually) RLS policies    │
- │ Dashboard (future)       │  Supabase Auth   │ for authenticated role       │
- │   web, reads only        │───────────────── │                              │
- └──────────────────────────┘                  └──────────────────────────────┘
+ ┌──────────────────────────────────────────┐  │ reports, insights, prompts,  │
+ │ Swift Mac app ("dashboard")              │  │ annotations, source_tags     │
+ │                                          │  │                              │
+ │  ┌─── user-initiated action ─────────┐   │  │  (view) events_enriched      │
+ │  │ UI buttons: reclassify, curate,   │   │  │                              │
+ │  │ bulk cleanup                      │   │  │                              │
+ │  │ → user_role via Keychain cred     │───┼─>│  direct CRUD (user-side)     │
+ │  └───────────────────────────────────┘   │  │                              │
+ │                                          │  │                              │
+ │  ┌─── spawned Claude Code agent ─────┐   │  │                              │
+ │  │ reads + reasons about data        │   │  │                              │
+ │  │ writes reports/insights one at    │   │  │                              │
+ │  │ a time                            │   │  │                              │
+ │  │ → agent_role via env var          │───┼─>│  agent_api.upsert_*          │
+ │  └───────────────────────────────────┘   │  │  agent_api.soft_delete_*     │
+ │                                          │  │                              │
+ │  Two Keychain items:                     │  │                              │
+ │    scrollantir/user-role                 │  │                              │
+ │    scrollantir/agent-role                │  │                              │
+ └──────────────────────────────────────────┘  └──────────────────────────────┘
 ```
 
 ## Trust boundaries (roles, strictly scoped)
@@ -97,12 +106,59 @@ bounded blast radius.
 |---|---|---|---|
 | `service_role` | Admin CLI only | everything | everything |
 | `ingest_role` | Ingest edge function only | nothing directly | only via `ingest_api.accept_event` |
-| `agent_role` | Local Claude Code only | `public.*` SELECT (ground truth + derived) | only via `agent_api.*` singletons |
-| `authenticated` | Dashboard (you, via Supabase Auth) | per RLS policies (defined when dashboard lands) | nothing |
+| `user_role` | Swift Mac app, user-initiated actions | `public.*` SELECT | CRUD on derived tables (`reports`, `insights`, `annotations`, `prompts`) and `source_tags`; SELECT-only on `events` and `devices` |
+| `agent_role` | Claude Code subprocess (spawned by Swift app, or invoked directly in terminal) | `public.*` SELECT (ground truth + derived) | only via `agent_api.*` singletons |
 | `anon` | nothing we control | nothing | nothing |
 
-`agent_role` has `statement_timeout = '5s'` to kill runaway queries.
-It has no access to `private.*` at all.
+**Why `user_role` vs. `agent_role` are separate, even though you control
+both.** The human at the keyboard can decide to retag 500 events or
+purge last year's reports in one statement. The agent — which might be
+prompt-injected — should never be able to do that. Keeping the two on
+separate credentials means a rogue agent session can tombstone a
+handful of rows via singleton calls, but cannot mass-corrupt derived
+data or rewrite the tag ontology.
+
+`agent_role` runs with `statement_timeout = '5s'` to kill runaway
+queries. `user_role` gets `statement_timeout = '30s'` since it's
+interactive. Neither role has any access to `private.*`.
+
+## Grants (in detail)
+
+```sql
+-- Read grants (same for both non-admin roles)
+GRANT USAGE ON SCHEMA public TO user_role, agent_role;
+GRANT SELECT ON public.events, public.devices, public.events_enriched
+  TO user_role, agent_role;
+GRANT SELECT ON public.reports, public.insights, public.annotations,
+                public.prompts, public.source_tags
+  TO user_role, agent_role;
+
+-- User can CRUD derived + source_tags directly (including batch)
+GRANT INSERT, UPDATE, DELETE ON public.reports, public.insights,
+                                 public.annotations, public.prompts,
+                                 public.source_tags
+  TO user_role;
+
+-- Agent cannot write directly; routes through singleton functions
+GRANT USAGE ON SCHEMA agent_api TO agent_role;
+GRANT EXECUTE ON FUNCTION agent_api.upsert_report,
+                          agent_api.upsert_insight,
+                          agent_api.upsert_annotation,
+                          agent_api.create_prompt,
+                          agent_api.soft_delete_report,
+                          agent_api.soft_delete_insight,
+                          agent_api.soft_delete_annotation
+  TO agent_role;
+
+-- Neither touches private or events write path
+REVOKE ALL ON SCHEMA private FROM user_role, agent_role;
+REVOKE INSERT, UPDATE, DELETE ON public.events FROM user_role, agent_role;
+REVOKE INSERT, UPDATE, DELETE ON public.devices FROM user_role, agent_role;
+
+-- Per-role settings
+ALTER ROLE user_role  SET statement_timeout = '30s';
+ALTER ROLE agent_role SET statement_timeout = '5s';
+```
 
 ## Schemas and tables
 
@@ -205,8 +261,13 @@ So forgetting to `--finalize` doesn't leave stale credentials indefinitely; the 
 
 ### Agent generates a report
 
+The Swift Mac app spawns a Claude Code subprocess with
+`SCROLLANTIR_DB_URL` in its env, pointing at the `agent_role`
+connection string pulled from Keychain entry
+`scrollantir/agent-role`.
+
 ```
--- Running as agent_role, via local Claude Code:
+-- Running as agent_role:
 SELECT * FROM events_enriched
 WHERE device_platform = 'android'
   AND 'short_form' = ANY(tags)
@@ -217,17 +278,40 @@ WHERE device_platform = 'android'
 SELECT agent_api.upsert_report(NULL, 'weekly-2026-04-20', '<markdown body>');
 ```
 
+### User curates data from the dashboard UI
+
+Swift app uses its own `user_role` credential (Keychain entry
+`scrollantir/user-role`), not the agent's.
+
+```
+-- Running as user_role, from a Swift app UI action:
+-- "bulk-retag all youtube.shorts on phone as distraction + short_form"
+DELETE FROM source_tags
+  WHERE device = 'phone' AND source = 'youtube.shorts';
+INSERT INTO source_tags (device, source, tag) VALUES
+  ('phone', 'youtube.shorts', 'short_form'),
+  ('phone', 'youtube.shorts', 'distraction');
+
+-- "archive all reports older than a year"
+UPDATE reports SET deleted_at = NOW()
+WHERE created_at < NOW() - INTERVAL '1 year' AND deleted_at IS NULL;
+```
+
+These operations are available to `user_role` but structurally
+impossible under `agent_role`, by design.
+
 ### Agent asks user a question
 
 ```
--- Agent side (local, as agent_role):
+-- Agent side (as agent_role):
 SELECT agent_api.create_prompt('sleep_latency',
                                'How long did you take to fall asleep last night?',
                                '{"trigger": "nightly"}'::jsonb,
                                NOW() + INTERVAL '2 days');
 
--- Phone: subscribed via Supabase Realtime to public.prompts where answered_at IS NULL.
--- Notification fires with {prompt_id, question}.
+-- Phone polls /functions/v1/pending-prompts every 30s (or on screen-on)
+-- with its existing bearer. Returns any unanswered prompts. No Realtime
+-- subscription; no Supabase Auth on the phone.
 
 -- User answers in phone UI; phone POSTs to a second edge function endpoint:
 --   POST /functions/v1/prompt-answer
@@ -251,9 +335,12 @@ SELECT agent_api.create_prompt('sleep_latency',
 - **Device identity is split from label.** `device_id` is the immutable stable key (carried on events); `label` is the human-readable name (renameable freely, zero auth impact).
 - **Tokens are hashed at rest.** `sha256(plaintext)`. Plaintext shown exactly once during mint.
 - **Rotation has a bounded end state.** `rotate` marks old tokens superseded; `rotate --finalize` revokes them. Not time-based auto-expiry.
-- **Writes come only from RPCs.** Both ingest (via `ingest_role`) and derived-table writes (via `agent_role`) go through `SECURITY DEFINER` functions. No raw INSERT/UPDATE/DELETE from those roles.
+- **Agent writes come only from RPCs.** `agent_role` cannot INSERT/UPDATE/DELETE directly on any table. All derived-table writes go through `agent_api.*` singleton SECURITY DEFINER functions.
+- **User writes are direct SQL.** `user_role` has CRUD on derived tables + `source_tags` so batch curation from the dashboard UI is one statement, not one call per row. The trade-off is that a bug in the Swift UI's delete path could wipe all reports; you're the human, you're trusted to not YOLO.
+- **Ingest writes come only from one RPC.** `ingest_role` can only call `ingest_api.accept_event` and `ingest_api.accept_prompt_answer`. Nothing else.
+- **No Supabase Auth.** Dashboard and agent are local Mac processes; their credentials live in Mac Keychain. Add Supabase Auth only if a public web dashboard ever materializes.
 - **Location precision reduced at write time**, not read. 4 decimals (~11m) inside `accept_event` for `phone.location`. Raw precision never hits storage.
-- **RLS is enabled everywhere**, default-deny. Policies land with the dashboard.
+- **RLS is enabled everywhere**, default-deny. Dashboard access is via Postgres-role credentials, not `auth.uid()` policies — roles are the auth layer, RLS is just additional defense-in-depth.
 - **Declarative schema.** Edit `supabase/schemas/*.sql`, regenerate migrations. Hand-written migrations only for RLS policies (which the declarative tool doesn't track) and other imperative needs.
 - **`source_tags` stays a lightweight many-to-many classifier.** If you need richer per-source metadata (display name, expected `data` fields, retention hints), add a `sources` table — don't stretch `source_tags` to carry it. The tag table is for orthogonal categories applied at query time, nothing more.
 - **Strict `source` naming and `schema_version` discipline.** `events` stays a well-behaved table, not a junk drawer. When a source's `data` shape changes meaningfully, bump `schema_version`. When a new collector comes online, pick a stable name (`<namespace>.<specifier>`) that won't need to be renamed later.
@@ -262,12 +349,14 @@ SELECT agent_api.create_prompt('sleep_latency',
 
 | Scenario | Outcome |
 |---|---|
-| Random internet bot hits `/rest/v1/events` | `[]` — RLS default-deny, no policies |
+| Random internet bot hits `/rest/v1/events` | `[]` — `anon` has no grants, RLS default-deny |
 | Random bot hits `/rest/v1/tokens` | 404 — `tokens` is in `private` schema, not in `api.schemas` |
 | Random bot hits `/functions/v1/ingest` | 401 — missing or invalid bearer |
-| Attacker extracts ingest edge function credentials | Can call only `ingest_api.accept_event`. Cannot SELECT anything, cannot touch tokens or derived tables. |
+| Attacker extracts ingest edge function credentials | Can call only `ingest_api.accept_event` / `accept_prompt_answer`. Cannot SELECT anything, cannot touch tokens or derived tables. |
 | Attacker extracts device bearer (e.g., phone compromise) | Can POST events as that device. Cannot read anything. Revocable via `admin revoke`. |
-| Attacker extracts local agent credentials | Can SELECT ground truth + derived. Can call `agent_api.*` singletons one row at a time. Cannot DELETE or mass-UPDATE. Cannot touch `private.*`. |
+| Attacker extracts `agent_role` credentials from Mac | Can SELECT ground truth + derived. Can call `agent_api.*` singletons one row at a time. Cannot DELETE, cannot mass-UPDATE, cannot modify `source_tags`. Cannot touch `private.*`. |
+| Attacker extracts `user_role` credentials from Mac | Can SELECT everything in `public.*`. Can CRUD on derived and `source_tags` in bulk. Cannot modify events or devices, cannot touch `private.*`. Damage is bounded to derived data; events are still safe. |
+| Attacker extracts `service_role` credentials from Mac | Full DB access — this is the worst case. Mitigation: `service_role` connection string lives only on your personal admin machine, never in the Swift app or agent. |
 | Database dump leaks | Token bearers are hashed; hashes are useless. Precision-reduced coordinates limit location leakage. |
 
 ## What's explicitly out of scope
@@ -281,8 +370,9 @@ SELECT agent_api.create_prompt('sleep_latency',
 ## Checklist for future agents picking this up
 
 1. Read this doc and `architecture.md`.
-2. Run `supabase db diff --linked --schema public,private` — if it reports changes, the declarative schema has drifted from remote.
-3. Check `private.tokens` via `supabase db reset` locally or `psql` — never via PostgREST.
-4. When adding a new writer (collector, UI), route through `ingest_api.accept_event`, not raw INSERT.
-5. When adding a new derived table, add singleton `agent_api.upsert_X` / `soft_delete_X` functions for it. Do not GRANT INSERT/UPDATE/DELETE directly to `agent_role`.
+2. Figure out which role you're supposed to be: `service_role` (admin), `user_role` (UI-initiated from the Mac app), `agent_role` (you, if you're a spawned analysis agent). Don't use `service_role` for anything other than token/device lifecycle.
+3. Run `supabase db diff --linked --schema public,private` — if it reports changes, the declarative schema has drifted from remote.
+4. When adding a new collector, route through `ingest_api.accept_event`. Never `GRANT INSERT ON events` to anyone.
+5. When adding a new derived table intended for agent writes, add singleton `agent_api.upsert_X` / `soft_delete_X` functions for it. Grant `user_role` direct CRUD + grant `agent_role` EXECUTE on the singletons.
 6. When adding a new source, consider whether to seed `source_tags` entries for it (not required, but often desired for dashboard queries).
+7. Never put Supabase Auth signup flows in the codebase without explicit approval — the project deliberately doesn't use it.
