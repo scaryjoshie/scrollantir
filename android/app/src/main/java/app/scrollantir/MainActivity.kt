@@ -185,7 +185,7 @@ fun MainScreen(modifier: Modifier = Modifier) {
             )
         }
 
-        ServerSettingsCard(context = context)
+        ServerSettingsCard(context = context, onSaved = { refreshTick++ })
     }
 }
 
@@ -413,7 +413,7 @@ private fun SyncCard(context: Context, refreshKey: Int) {
 }
 
 @Composable
-private fun ServerSettingsCard(context: Context) {
+private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
     val prefs = remember { SecurePrefs.get(context) }
     var url by remember {
         mutableStateOf(prefs.getString(SecurePrefs.KEY_SERVER_URL, "") ?: "")
@@ -466,6 +466,7 @@ private fun ServerSettingsCard(context: Context) {
                         .putString(SecurePrefs.KEY_TOKEN, token.trim())
                         .apply()
                     saved = true
+                    onSaved()
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
