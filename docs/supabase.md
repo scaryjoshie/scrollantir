@@ -44,6 +44,20 @@ events:
 Deduplication is by `id` (`ON CONFLICT DO NOTHING`). Retries produce
 the same UUID, so the server never double-inserts.
 
+### Event-ID contract (binding on all collectors)
+
+The `id` is client-generated. The rule a collector must follow:
+
+- **Mac forwarder** uses `uuid5(uuid.NAMESPACE_URL, f"{aw_bucket_id}:{aw_row_id}")`. Same input → same UUID. Retries after a lost response produce the same id, server dedupes. A post-crash replay of the exact same AW rows produces the same ids.
+
+- **Android app** uses `uuid4` when the row is first inserted into the local Room DB. That UUID is then fixed for the life of the event — subsequent forwarder retries of the same Room row reuse the stored UUID. The app never regenerates.
+
+- **Any future collector** must pick one of these patterns: deterministic-from-upstream-identity (preferred) or generate-once-store-locally. Never regenerate on retry.
+
+- **Backfill after forwarder outage**: re-emit the same ids. `accept_event` dedupes via `ON CONFLICT`. Idempotent by construction.
+
+- **Fixing a broken client-side bug that produced wrong ids**: the bad rows stay with their old ids; new rows get new ids; if you want to rewrite history, that's the admin CLI's job, not the collector's.
+
 ## Components and their responsibilities
 
 ```
@@ -108,16 +122,27 @@ It has no access to `private.*` at all.
 - **`tokens`** — device credentials. `(token_hash TEXT PK, token_prefix, device_id FK, note, created_at, last_used_at, superseded_at, revoked_at)`. sha256 of plaintext only; plaintext never stored.
 - **`ingest_rate_limit`** — per-minute counters. `(token_hash, window_start, hits)` PK is composite.
 
-### `ingest_api/` (the only write path for incoming events)
+### `ingest_api/` (the only write paths for incoming data)
 
-- **`accept_event(token, device, source, timestamp_utc, duration_s, data, schema_version) → uuid`** — `SECURITY DEFINER`. Does:
-  1. `sha256(token)`, look up `private.tokens`; reject if missing/revoked
+- **`accept_event(token, id, device, source, timestamp_utc, duration_s, data, schema_version) → uuid`** — `SECURITY DEFINER`. Does:
+  1. `sha256(token)`, look up `private.tokens`; reject if missing/revoked/expired-supersede
   2. Rate limit via `private.ingest_rate_limit` at 200/min/token; reject on overage
   3. Reject if `timestamp_utc > now() + 5min` or `< now() - 30 days`
   4. Flag `is_backfill = (timestamp_utc < now() - 1 day)`
   5. Reject if `device != tokens.device_id` (cross-device spoofing guard)
   6. For `source = 'phone.location'`, bucket lat/lng to 4 decimals (~11m) before insert
   7. `INSERT INTO events ... ON CONFLICT (id) DO NOTHING`; return id
+
+- **`accept_prompt_answer(token, prompt_id, answer_event_id, data) → uuid`** — `SECURITY DEFINER`. The *only* way for the phone to answer a prompt. Does:
+  1. Token validation as `accept_event`
+  2. Look up `prompts.id = prompt_id`; reject if missing, already answered, dismissed, or expired
+  3. Derive source from the prompt's `asked_by` kind (e.g., `prompt.sleep_latency`)
+  4. `UPDATE prompts SET answered_at = NOW() WHERE id = prompt_id`
+  5. `INSERT INTO events (id, device, source, timestamp_utc, duration_s, data, schema_version)` — the *answer* as an event
+  6. Both steps happen in one transaction; failure of either rolls back
+  7. Return the event.id
+
+  This is its own named function (not shoehorned into `accept_event`) because the semantics differ: it mutates two tables, validates a foreign prompt, and derives the event's `source` from the prompt row rather than taking it from the client.
 
 ### `agent_api/` (singleton write paths for derived tables)
 
@@ -163,8 +188,20 @@ server-side.
                                                    # new: minted, prints QR/plaintext
 # Update device config to use new token.
 ./admin list                                        # watch for new token's last_used_at to update
-./admin rotate --device-id mac --finalize          # revokes all superseded tokens for this device
+./admin rotate --device-id mac --finalize          # revokes all superseded tokens for this device (immediate)
 ```
+
+Superseded tokens don't live forever. A `pg_cron` job runs hourly:
+
+```sql
+UPDATE private.tokens
+SET    revoked_at = NOW()
+WHERE  superseded_at IS NOT NULL
+  AND  revoked_at IS NULL
+  AND  superseded_at < NOW() - INTERVAL '48 hours';
+```
+
+So forgetting to `--finalize` doesn't leave stale credentials indefinitely; the grace window is bounded at 48h. Manual `--finalize` is the explicit shortcut when you've already verified the new token.
 
 ### Agent generates a report
 
@@ -183,18 +220,27 @@ SELECT agent_api.upsert_report(NULL, 'weekly-2026-04-20', '<markdown body>');
 ### Agent asks user a question
 
 ```
--- Agent side (local):
+-- Agent side (local, as agent_role):
 SELECT agent_api.create_prompt('sleep_latency',
                                'How long did you take to fall asleep last night?',
-                               '{"trigger": "nightly"}'::jsonb, NOW() + INTERVAL '2 days');
+                               '{"trigger": "nightly"}'::jsonb,
+                               NOW() + INTERVAL '2 days');
 
--- Phone: subscribed via Supabase Realtime to public.prompts; notification fires.
--- User types answer in phone UI; phone POSTs to edge function with:
---   { prompt_id, answer }
--- Edge function: UPDATE prompts SET answered_at = NOW()
---                INSERT INTO events (source='prompt.sleep_latency', data={"value": 23, ...})
+-- Phone: subscribed via Supabase Realtime to public.prompts where answered_at IS NULL.
+-- Notification fires with {prompt_id, question}.
 
--- Agent next run sees that event like any other.
+-- User answers in phone UI; phone POSTs to a second edge function endpoint:
+--   POST /functions/v1/prompt-answer
+--   Authorization: Bearer <phone-token>
+--   Body: { prompt_id, answer_event_id: <uuid4>, data: {"value": 23, "unit": "minutes"} }
+
+-- Edge function (as ingest_role) calls:
+--   SELECT ingest_api.accept_prompt_answer(token, prompt_id, answer_event_id, data)
+-- which atomically:
+--   UPDATE prompts SET answered_at = NOW() WHERE id = prompt_id;
+--   INSERT INTO events (id, source='prompt.sleep_latency', data=..., device='phone', ...);
+
+-- Agent's next run sees that event like any other via events_enriched.
 ```
 
 ## Design commitments (don't re-litigate these)
@@ -209,6 +255,8 @@ SELECT agent_api.create_prompt('sleep_latency',
 - **Location precision reduced at write time**, not read. 4 decimals (~11m) inside `accept_event` for `phone.location`. Raw precision never hits storage.
 - **RLS is enabled everywhere**, default-deny. Policies land with the dashboard.
 - **Declarative schema.** Edit `supabase/schemas/*.sql`, regenerate migrations. Hand-written migrations only for RLS policies (which the declarative tool doesn't track) and other imperative needs.
+- **`source_tags` stays a lightweight many-to-many classifier.** If you need richer per-source metadata (display name, expected `data` fields, retention hints), add a `sources` table — don't stretch `source_tags` to carry it. The tag table is for orthogonal categories applied at query time, nothing more.
+- **Strict `source` naming and `schema_version` discipline.** `events` stays a well-behaved table, not a junk drawer. When a source's `data` shape changes meaningfully, bump `schema_version`. When a new collector comes online, pick a stable name (`<namespace>.<specifier>`) that won't need to be renamed later.
 
 ## Security posture
 
