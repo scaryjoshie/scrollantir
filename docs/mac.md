@@ -1,220 +1,146 @@
-# Mac — Collection Spec
+# Mac — Collection Spec (to be implemented)
 
-Uses ActivityWatch as the watcher layer. We do not use `aw-sync` or `aw-webui`. A custom forwarder drains AW's local SQLite to the server.
+This is the spec an agent should implement. The phone side is done and working; this is the other half of scrollantir's data story.
 
-## Sources emitted
+## Goal
 
-All events have `device = "mac"`. Source naming follows [architecture.md](architecture.md): `{namespace}.{specifier}`.
+Get Mac activity flowing into the same ingest endpoint the phone uses, with the same event schema, so the dashboard can reason about both devices uniformly.
 
-| Source | Type | Data schema | Component |
+## Sources to emit
+
+All events have `device = "mac"`. Source names:
+
+| Source | Type | Data schema | AW origin |
 |---|---|---|---|
-| `system.window` | duration | `{"app": "...", "title": "..."}` | aw-watcher-window (stock) |
-| `system.afk` | duration | `{"status": "afk" \| "not-afk"}` | aw-watcher-afk (stock) |
-| `zen.tab` | duration | `{"url", "title", "container", "audible", "incognito"}` | **aw-watcher-web, forked to add `container`** |
+| `system.window` | duration | `{"app": "Zen", "title": "GitHub — …"}` | `aw-watcher-window` (stock) |
+| `system.afk` | duration | `{"status": "afk" \| "not-afk"}` | `aw-watcher-afk` (stock) |
+| `zen.tab` | duration | `{"url", "title", "container", "audible", "incognito"}` | `aw-watcher-web` (**forked** to add `container`) |
 
-## ActivityWatch setup
+Matches the event schema defined in `architecture.md`. The ingest server already accepts this payload; the phone uses the same shape.
 
-1. Install the AW bundle from activitywatch.net — this gives you `aw-qt` in the menu bar, which supervises `aw-server-rust`, `aw-watcher-window`, `aw-watcher-afk`.
-2. Grant macOS permissions on first run (System Settings → Privacy & Security):
-   - **Accessibility** → aw-watcher-window (window titles)
-   - **Input Monitoring** → aw-watcher-afk (idle detection)
-3. Install the ActivityWatch Firefox extension from addons.mozilla.org inside Zen. It auto-discovers `aw-server` on `localhost:5600` and creates `aw-watcher-web-firefox_<hostname>` bucket.
-4. Verify: visit `http://localhost:5600`, check for recent events in all three buckets.
+## What to build
 
-Local AW DB path: `~/Library/Application Support/activitywatch/aw-server-rust/sqlite.db`.
+### 1. ActivityWatch installation (documentation only)
 
-## Zen workspaces via Firefox Containers
+The agent doesn't install it, but documents the user step. AW bundle from [activitywatch.net](https://activitywatch.net), installed as a Mac app. Adds `aw-qt` to the menu bar, running `aw-server-rust` + `aw-watcher-window` + `aw-watcher-afk`. AW's local SQLite lands at:
 
-Chosen over a Zen Mod approach: containers are stable WebExtension API, not Zen internals that can shift between versions.
+```
+~/Library/Application Support/activitywatch/aw-server-rust/sqlite.db
+```
 
-1. Zen Settings → General → Container Tabs → create one container per workspace (Work, Personal, etc.). Distinct colors/icons.
-2. Right-click each workspace in the Zen sidebar → Set Profile → assign matching container as the workspace's default.
-3. Install forked `aw-watcher-web` (below).
+The forwarder reads this file read-only. macOS may prompt for Accessibility + Input Monitoring permissions for the watchers on first run.
 
-Workspace labeling is a convention, not ground truth — a tab opened in the "wrong" container will be mis-labeled. Acceptable trade for avoiding userChrome hackery.
+### 2. Zen Firefox extension setup (the forked `aw-watcher-web`)
 
-## Forked `aw-watcher-web`
+Zen is a Firefox-based browser. The agent:
 
-Clone `ActivityWatch/aw-watcher-web`. In the background script where the event payload is assembled from a `tabs.onActivated` / `tabs.onUpdated` event, resolve the cookieStoreId:
+1. **Clones `ActivityWatch/aw-watcher-web`** into `mac-testing/aw-watcher-web/` (or any path — it gets built, not committed).
+2. **Adds a `container` field** to each emitted event. In Firefox, tabs belong to a "container" (identified by `cookieStoreId`). Josh uses containers to model his Zen *workspaces* (one container per workspace). Resolving looks like:
+   ```javascript
+   let containerName = 'no-container';
+   if (tab.cookieStoreId && tab.cookieStoreId !== 'firefox-default') {
+     try {
+       const identity = await browser.contextualIdentities.get(tab.cookieStoreId);
+       containerName = identity.name;
+     } catch (e) { /* container deleted / incognito */ }
+   }
+   event.data.container = containerName;
+   ```
+   Must also add `"contextualIdentities"` and `"cookies"` to `manifest.json`'s `permissions`.
+3. **Builds** the Firefox variant (`make build-firefox` or equivalent) and documents how to install the resulting `.xpi` into Zen (`about:debugging` → "Load Temporary Add-on" for dev, or `xpinstall.signatures.required = false` in `about:config` + drag-and-drop for persistent, since Zen allows unsigned extensions).
 
-```javascript
-let containerName = 'no-container';
-if (tab.cookieStoreId && tab.cookieStoreId !== 'firefox-default') {
-  try {
-    const identity = await browser.contextualIdentities.get(tab.cookieStoreId);
-    containerName = identity.name;
-  } catch (e) {
-    // container deleted, private browsing, etc.
+### 3. Python forwarder
+
+A launchd-scheduled Python script at `mac-forwarder/forwarder.py` that:
+
+- Reads AW's SQLite read-only (`sqlite3.connect(f"file:{AW_DB}?mode=ro", uri=True)`).
+- Maintains a per-AW-bucket rowid checkpoint in `~/.scrollantir/checkpoint.json`. On each run: for each known bucket, `SELECT id, timestamp, duration, datastr FROM events WHERE bucket_id = ? AND id > ? ORDER BY id LIMIT 500`.
+- Maps AW buckets to scrollantir source strings. AW's bucket names include a hostname suffix — be robust to that:
+  ```python
+  BUCKET_MAP = {
+      "aw-watcher-window":      "system.window",
+      "aw-watcher-afk":         "system.afk",
+      "aw-watcher-web-firefox": "zen.tab",
   }
-}
-event.data.container = containerName;
-```
+  # Match by prefix: if bucket.id.startswith(k) → source = v
+  ```
+- Synthesizes **deterministic UUIDs** per row: `uuid.uuid5(uuid.NAMESPACE_URL, f"{bucket_id}:{aw_row_id}")`. Ensures retries produce the same ID and the server dedupes cleanly.
+- Strips query strings from `zen.tab` URLs before sending (session tokens hide there):
+  ```python
+  if source == "zen.tab" and "url" in data:
+      data["url"] = data["url"].split("?", 1)[0]
+  ```
+- Batches up to 500 events per POST. Payload per event matches the schema:
+  ```json
+  {"id": "...", "device": "mac", "source": "system.window",
+   "timestamp": "2026-04-20T14:23:01.000Z", "duration_s": 12.3,
+   "data": {"app": "Zen", "title": "..."}}
+  ```
+- On `2xx`: advance checkpoint and persist to `checkpoint.json`.
+- On `4xx` (except 408/429): log error to stderr, **do not** advance checkpoint, return — next run retries from same point. Don't block on a bad token.
+- On `5xx` / IO error: log, don't advance checkpoint, return. Next run retries.
+- Reads bearer token from **macOS Keychain** (`keyring.get_password("scrollantir", "ingest-token")`). Reads server URL from `~/.scrollantir/config.json` (or same keychain entry as a sibling). Never hardcoded.
 
-Add to `manifest.json` permissions array:
+### 4. launchd agent
 
-```json
-"permissions": ["tabs", "storage", "contextualIdentities", "cookies", "<all_urls>"]
-```
+Plist at `~/Library/LaunchAgents/com.scrollantir.forwarder.plist`:
 
-Build: `make build-firefox`. Result: a signed or unsigned `.zip` in `dist/`.
+- `StartInterval`: 30 (run every 30 seconds — Mac is plugged in most of the time, no battery concern)
+- `RunAtLoad`: true (run on login)
+- `StandardOutPath` + `StandardErrorPath` → `~/Library/Logs/scrollantir-forwarder.{out,err}.log`
+- Loaded with `launchctl load -w ~/Library/LaunchAgents/com.scrollantir.forwarder.plist`
 
-Install options:
-- **Temporary** (unsigned): `about:debugging` → This Firefox → Load Temporary Add-on. Unloads on restart.
-- **Persistent, recommended**: Set `xpinstall.signatures.required = false` in `about:config`. Zen allows this (standard Firefox on release doesn't). Then install the built `.xpi`.
-- Alternative: sign through own AMO developer account (free, small effort).
+### 5. Setup script
 
-## Idle detection and "was Zen really focused"
+A one-shot shell script (`mac-forwarder/setup.sh`) that:
 
-`aw-watcher-web` fires on tab events *even if Zen isn't focused*. For accurate time, join at query time:
+1. Creates `~/.scrollantir/` if missing
+2. Prompts for server URL + token, writes to keychain + config
+3. Installs Python deps (venv + `requirements.txt` with `requests`, `keyring`)
+4. Copies the plist to `~/Library/LaunchAgents/` with path substitution
+5. Loads the launchd agent
 
-```
-zen.tab events ∩ (system.window where app = "zen") ∩ (system.afk where status = "not-afk")
-```
+## What NOT to do
 
-This happens in the dashboard layer, not the collection layer.
+- Do **not** modify AW's SQLite. Read-only. AW is the owner; we just tap its stream.
+- Do **not** use `aw-sync`. It's the documented-rough part of the AW ecosystem. We have our own forwarder.
+- Do **not** fork `aw-watcher-window` or `aw-watcher-afk`. Stock works.
+- Do **not** commit the vendored `aw-watcher-web` source — `.gitignore` already excludes `vendor/`. Only commit the patched extension as its own directory if the agent decides to version it, clearly marked.
+- Do **not** commit the keychain token or the config with the token. Use macOS Keychain.
 
-## Mac forwarder
+## Testing the setup
 
-Small Python daemon, launched via launchd agent. Polls AW's SQLite, batches, POSTs to server, tracks a checkpoint per bucket.
+Josh's stub server is at `android-testing/server.py`, listening on `0.0.0.0:8069` with token `dev-token`. After setup, events should start appearing in that server's stdout within a minute, with `device: mac` and the expected source strings. The `.jsonl` log at `android-testing/received/YYYY-MM-DD.jsonl` should also accumulate rows.
 
-Why a checkpoint on Mac (not on Android)?
-- Android owns its own queue; we delete on ack.
-- On Mac, AW owns the SQLite and we don't want to mutate it. Instead, we read events with `id > last_forwarded_id` per bucket.
+Verification checklist:
 
-Sketch:
+- Open Zen → switch tabs → terminate forwarder → restart → AW events since last run show up in the stub (checkpoint works)
+- Stub server briefly offline → events stay queued in AW, forwarder retries, drains on return
+- Open Zen with a URL containing `?utm_source=xxx` → verify query string stripped in server log
+- Switch to a container-backed workspace → verify `container` field populates
+- Lock screen → system.afk flips to afk → unlock → flips back
 
-```python
-import requests, sqlite3, json, pathlib, time, uuid
-from datetime import datetime, timezone
+## Fit with existing infra
 
-AW_DB = pathlib.Path.home() / "Library/Application Support/activitywatch/aw-server-rust/sqlite.db"
-CHECKPOINT = pathlib.Path.home() / ".scrollantir/checkpoint.json"
-SERVER = "https://scrollantir.example.com/ingest"
-TOKEN = keyring.get_password("scrollantir", "ingest-token")
+- Ingest endpoint: same `POST /ingest` the phone uses. Same bearer auth.
+- Server schema: already handles these events (see `architecture.md`).
+- Dashboard: will filter by `device` to slice Mac vs. phone totals.
+- `mac-testing/` directory exists (and the stub server lives there). The agent can mirror layout with `mac-forwarder/` for the launchd agent and fork output.
 
-# Maps an AW bucket to the scrollantir source string we emit under device="mac"
-BUCKET_TO_SOURCE = {
-    "aw-watcher-window_<host>":      "system.window",
-    "aw-watcher-afk_<host>":         "system.afk",
-    "aw-watcher-web-firefox_<host>": "zen.tab",
-}
+## Commit discipline
 
-def load_checkpoint():
-    if CHECKPOINT.exists():
-        return json.loads(CHECKPOINT.read_text())
-    return {}
+Per project convention:
 
-def save_checkpoint(cp):
-    CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
-    CHECKPOINT.write_text(json.dumps(cp))
+1. **Separate commits for orthogonal work** — ActivityWatch setup notes, extension fork, forwarder, launchd plist/setup each their own commit.
+2. **Each commit buildable / testable in isolation.** For example, the forwarder should work even before the extension fork is installed — it'll just not see `container` fields.
+3. Commit messages follow the `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` convention already established in the repo.
 
-def poll_and_forward():
-    cp = load_checkpoint()
-    conn = sqlite3.connect(f"file:{AW_DB}?mode=ro", uri=True)
-    batch = []
-    new_cp = dict(cp)
-    for bucket_id, source in BUCKET_TO_SOURCE.items():
-        last_id = cp.get(bucket_id, 0)
-        rows = conn.execute(
-            "SELECT id, timestamp, duration, datastr FROM events "
-            "WHERE bucket_id = ? AND id > ? ORDER BY id LIMIT 500",
-            (resolve_bucket_rowid(bucket_id), last_id)
-        ).fetchall()
-        for id_, ts, dur, datastr in rows:
-            batch.append({
-                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{bucket_id}:{id_}")),
-                "device": "mac",
-                "source": source,
-                "timestamp": ts,          # AW stores ISO-8601 UTC already
-                "duration_s": dur,
-                "data": json.loads(datastr),
-            })
-            new_cp[bucket_id] = id_
+## Reference files the agent must read
 
-    if not batch:
-        return
+Before starting:
 
-    # Strip query strings client-side for zen.tab (session tokens hide there)
-    for e in batch:
-        if e["source"] == "zen.tab" and "url" in e["data"]:
-            e["data"]["url"] = e["data"]["url"].split("?", 1)[0]
-
-    r = requests.post(
-        SERVER,
-        headers={"Authorization": f"Bearer {TOKEN}"},
-        json=batch,
-        timeout=30,
-    )
-    if r.status_code == 200:
-        save_checkpoint(new_cp)
-```
-
-Note on IDs: AW uses auto-increment integer IDs. We synthesize a deterministic UUID via `uuid5(NAMESPACE_URL, f"{bucket}:{id}")` so retries of the same row produce the same UUID, giving us the server-side `ON CONFLICT DO NOTHING` idempotency without tracking per-row ack state.
-
-### launchd agent
-
-`~/Library/LaunchAgents/com.scrollantir.forwarder.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.scrollantir.forwarder</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/env</string>
-        <string>python3</string>
-        <string>/Users/joshua/dev/scrollantir/mac-forwarder/forwarder.py</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>30</integer>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/joshua/Library/Logs/scrollantir-forwarder.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/joshua/Library/Logs/scrollantir-forwarder.err.log</string>
-</dict>
-</plist>
-```
-
-Load: `launchctl load ~/Library/LaunchAgents/com.scrollantir.forwarder.plist`.
-
-Cadence: 30s. Low enough for "feels live," far below what would strain anything.
-
-## Secrets handling
-
-Ingest token stored in macOS Keychain:
-
-```bash
-security add-generic-password -s scrollantir -a ingest-token -w
-# enter the bearer token at the prompt
-```
-
-Read from Python via the `keyring` package (uses Keychain on Mac):
-
-```python
-import keyring
-token = keyring.get_password("scrollantir", "ingest-token")
-```
-
-Never put the token in the launchd plist, in the forwarder source, or in a config file committed to git.
-
-## Build order
-
-1. **Install AW + Firefox extension**, verify events in `localhost:5600`. Confirms collection is working baseline.
-2. **Set up containers in Zen** for each workspace, one-to-one with your mental workspace model.
-3. **Fork aw-watcher-web**, add container field, install via temporary load, verify `data.container` appears in web bucket events.
-4. **Make the fork permanent** via `xpinstall.signatures.required = false` or self-signing.
-5. **Mac forwarder against stub server** (same ngrok + FastAPI from Android Stage 3). Verify checkpoint advances, no duplicates on restart.
-6. **Launchd agent** so it runs on login.
-7. **Point at real server** once Android is also flowing data.
-
-## Risks / open issues
-
-- Zen specifically: the Firefox extension installed inside Zen may interact with Zen's own tab isolation features in unexpected ways. Needs smoke testing.
-- The `xpinstall.signatures.required` workaround is Zen-permitted but non-standard Firefox behavior. Alternative signing path is safer long-term.
-- AW's aw-watcher-web has open issue #1124 noting that the system-level watcher can't read Firefox URLs on Mac — which is exactly why we need the extension. Stays true for Zen.
-- If Zen updates change how workspace → container assignment works, re-verify container labeling.
+- `docs/architecture.md` — event schema, pipeline, idempotency strategy
+- `docs/android.md` — how the phone side does the same thing, for pattern consistency
+- `docs/setup.md` — current setup documentation, to extend for Mac
+- `android-testing/server.py` — to understand exactly what the ingest endpoint expects
+- `CREDITS.md` — ActivityWatch attribution belongs here if they add patches

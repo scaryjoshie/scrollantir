@@ -39,7 +39,14 @@ Studio's green Run button.
   services on Pixel; re-enable in Settings → Accessibility if you stop
   seeing `youtube.shorts` events after a system update.
 
-## Starting the stub server (Stage 3 LAN testing)
+## Mac collector
+
+Not yet built. Spec is in [mac.md](mac.md) — ActivityWatch + a forked
+`aw-watcher-web` (adds Zen container tracking) + a Python launchd
+forwarder that reads AW's SQLite and POSTs to the same ingest
+endpoint the phone uses.
+
+## Starting the stub server (current dev ingest)
 
 ```bash
 cd /Users/joshua/dev/scrollantir/android-testing

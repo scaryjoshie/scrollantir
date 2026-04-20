@@ -1,27 +1,28 @@
 # Scrollantir docs
 
-Personal "palantir for myself" time-tracking system. Structured stats across Mac + Android, local-first collection, store-and-forward to own Postgres, custom dashboard.
+Personal "palantir for yourself" time-tracking. Structured events across Mac + Android, owned end-to-end, Postgres as source of truth, custom dashboard.
 
-Start with [architecture.md](architecture.md) for the system overview and data model. Then the per-platform specs.
+Read in this order:
 
 | Doc | What |
 |---|---|
-| [architecture.md](architecture.md) | System diagram, data model, store-and-forward pattern, full source list |
-| [android.md](android.md) | Custom Android app spec — foreground service, UsageStats, screen/unlock, Shorts/Reels detector, Room queue, WorkManager forwarder. **Primary focus of v1.** |
-| [mac.md](mac.md) | ActivityWatch setup + forked aw-watcher-web for Zen containers + Python launchd forwarder |
+| [architecture.md](architecture.md) | System diagram, event schema, source naming, collection pattern, pipeline. Start here. |
+| [android.md](android.md) | Implementation reference for the phone app. What's built, how it works, toolchain versions, known tradeoffs. |
+| [mac.md](mac.md) | **Spec to be implemented.** ActivityWatch + forked `aw-watcher-web` (for Zen container tracking) + Python launchd forwarder. |
+| [setup.md](setup.md) | Runbook: stub-server start, Android install dance (Android 15 spoof), permission grants. |
 
 ## Not yet written
 
-- `server.md` — FastAPI ingest spec, deployment (Cloud Run vs. VM), Postgres schema, auth
-- `dashboard.md` — dashboard stack, query templates, view designs
-- `queries.md` — reusable SQL/AQL snippets for the core cross-source joins (mac-vs-phone, workspace breakdown, etc.)
+- `server.md` — FastAPI ingest spec for the production server (Cloud Run / VM + Neon Postgres), auth, rate limits, deployment
+- `dashboard.md` — Next.js + Tremor dashboard, query templates, view designs
+- `queries.md` — reusable SQL snippets for core cross-source joins (mac-vs-phone, workspace breakdown, content-mode ratios)
 
 ## Principles
 
 - **Own the data.** No SaaS. Events land in own Postgres.
-- **Local-first collection.** Every device has a durable queue. Forwarder is the only thing that touches the network.
+- **Local-first collection.** Every device has a durable queue. Forwarders are the only thing touching the network.
 - **One shape for all events.** `{id, device, source, timestamp, duration_s, data}`. Simpler queries, simpler ingest.
-- **Source = stable raw fact, tags = ontology.** Events table never re-interpreted. "Short form" is a tag joined at query time, not a source name.
-- **Pattern B collection.** Track state in memory, emit a completed event on change. No heartbeats on the wire.
+- **Source = stable raw fact, tags = ontology.** Events never re-interpreted. "Short form" is a tag joined at query time, not a source name.
+- **Pattern B collection.** Track state in memory, emit completed event on change. No heartbeats on the wire.
 - **Lightweight.** No screen recording, no OCR, no always-on ML. Polling + OS signals only.
-- **Sideload Android, self-host server.** Play Store and public endpoints are constraints to avoid.
+- **Sideloaded Android, self-hosted server.** Play Store and public endpoints are constraints to avoid.
