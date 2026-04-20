@@ -55,9 +55,18 @@ async def ingest(events: list[Event], authorization: str = Header(...)):
 
     print(f"[ingest] received {len(events)} events")
     for e in events:
+        # Pretty-print: prefer app_label over the raw package name when the
+        # client included one. Keeps the raw `app` field in data for
+        # completeness.
+        label = e.data.get("app_label") or e.data.get("app") or ""
+        if label and label != str(e.data):
+            extras = {k: v for k, v in e.data.items() if k not in ("app", "app_label")}
+            suffix = f"  {label}" + (f"  {extras}" if extras else "")
+        else:
+            suffix = f"  data={e.data}"
         print(
             f"  {e.device:6} {e.source:28} {e.duration_s:7.2f}s  "
-            f"id={e.id[:8]}  data={e.data}"
+            f"id={e.id[:8]}{suffix}"
         )
 
     # Append to daily rollup file

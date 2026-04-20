@@ -3,6 +3,7 @@ package app.scrollantir.tracker
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.util.Log
 import app.scrollantir.db.EventDao
 import app.scrollantir.db.emit
@@ -23,6 +24,21 @@ class UsageStatsPoller(
 
     private val usm: UsageStatsManager =
         context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+    private val pm: PackageManager = context.packageManager
+    // Memoized package → human-readable label. PackageManager calls are
+    // cheap individually but we'd call tens of thousands per day without
+    // caching. Keyed by packageName; value of null means "lookup failed".
+    private val labelCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun labelFor(pkg: String): String = labelCache.getOrPut(pkg) {
+        try {
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        } catch (_: PackageManager.NameNotFoundException) {
+            pkg
+        } catch (_: Throwable) {
+            pkg
+        }
+    }
 
     // Mutex serializes pollOnce (processes UsageEvents) and flushCurrent
     // (external caller). All writes to currentApp / currentStartedAt /
@@ -115,7 +131,14 @@ class UsageStatsPoller(
             source = "system.foreground",
             start = Instant.ofEpochMilli(currentStartedAt),
             durationS = durS,
-            data = mapOf("app" to app)
+            // `app` = stable package identifier (never changes across renames,
+            // primary key for downstream joins). `app_label` = presentation-
+            // layer human name from PackageManager; used by server logs and
+            // any UI that doesn't have its own AppIconCache.
+            data = mapOf(
+                "app" to app,
+                "app_label" to labelFor(app)
+            )
         )
         if (app in ContentDetection.TARGET_PACKAGES) {
             ContentDetectorService.notifyForegroundLeft(endMs)
