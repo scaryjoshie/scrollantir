@@ -1,1 +1,2 @@
+aw-client>=0.5
 keyring>=24.0
