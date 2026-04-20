@@ -2,6 +2,7 @@ package app.scrollantir.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -31,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,12 +43,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.EventRow
@@ -54,10 +56,12 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private val HOUR_HEIGHT = 120.dp
-private val MINUTE_HEIGHT = HOUR_HEIGHT / 60
 private const val DAY_MS = 24L * 3600 * 1000
 private val HOUR_LABEL_WIDTH = 44.dp
+
+private const val MIN_DP_PER_MIN = 0.5f
+private const val MAX_DP_PER_MIN = 8f
+private const val DEFAULT_DP_PER_MIN = 2f
 
 /**
  * Visualizes today's foreground sessions as colored blocks stacked top-to-bottom.
@@ -67,6 +71,7 @@ private val HOUR_LABEL_WIDTH = 44.dp
  * - Block color: stable hash of package name.
  * - Red horizontal line: "now".
  * - Tap any block to open a details sheet.
+ * - Zoom in/out icons scale dp/minute between [0.5, 8].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,6 +103,13 @@ fun TimelineScreen(
         }
     }
 
+    // dp per minute. DEFAULT is starting point; zoom in goes up, out goes down.
+    var dpPerMin by remember { mutableFloatStateOf(DEFAULT_DP_PER_MIN) }
+    // Pending scrollTo value applied by a LaunchedEffect, so zoom handlers
+    // can request a scroll target that takes effect after the new height
+    // has been laid out.
+    var pendingScrollPx by remember { mutableStateOf<Int?>(null) }
+
     val blocks = remember(foregroundEvents, startOfDayMs, nowMs) {
         buildBlocks(foregroundEvents, startOfDayMs, nowMs)
     }
@@ -107,14 +119,22 @@ fun TimelineScreen(
     val scrollState = rememberScrollState()
     val density = LocalDensity.current
 
-    // Scroll to "now" on first render
+    // Scroll to "now" on first render at the initial zoom.
     LaunchedEffect(Unit) {
-        val nowMinuteOffset = ((System.currentTimeMillis() - startOfDayMs) / 60_000f)
-        val offsetPx = with(density) { (nowMinuteOffset.dp * MINUTE_HEIGHT.value).toPx() }
-        // Center "now" in the viewport if possible; else scroll as close as we can.
-        val target = (offsetPx - 400f).toInt().coerceAtLeast(0)
-        scrollState.scrollTo(target)
+        val nowMinute = ((System.currentTimeMillis() - startOfDayMs) / 60_000f)
+        val targetPx = with(density) { (nowMinute * DEFAULT_DP_PER_MIN).dp.toPx() } - 400f
+        scrollState.scrollTo(targetPx.toInt().coerceAtLeast(0))
     }
+
+    LaunchedEffect(pendingScrollPx) {
+        pendingScrollPx?.let {
+            scrollState.scrollTo(it)
+            pendingScrollPx = null
+        }
+    }
+
+    val hourHeightDp = (dpPerMin * 60).dp
+    val timelineHeightDp = hourHeightDp * 24
 
     Column(
         modifier = modifier
@@ -134,8 +154,40 @@ fun TimelineScreen(
             Text(
                 text = "Timeline",
                 style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
             )
+            IconButton(
+                onClick = {
+                    // Preserve the visible top-of-viewport across zoom changes.
+                    val currentTopMinute = with(density) {
+                        scrollState.value / dpPerMin.dp.toPx()
+                    }
+                    val newDpPerMin = (dpPerMin / 1.5f).coerceAtLeast(MIN_DP_PER_MIN)
+                    dpPerMin = newDpPerMin
+                    pendingScrollPx = with(density) {
+                        (currentTopMinute * newDpPerMin).dp.toPx()
+                    }.toInt().coerceAtLeast(0)
+                },
+                enabled = dpPerMin > MIN_DP_PER_MIN
+            ) {
+                Icon(Icons.Filled.ZoomOut, contentDescription = "Zoom out")
+            }
+            IconButton(
+                onClick = {
+                    val currentTopMinute = with(density) {
+                        scrollState.value / dpPerMin.dp.toPx()
+                    }
+                    val newDpPerMin = (dpPerMin * 1.5f).coerceAtMost(MAX_DP_PER_MIN)
+                    dpPerMin = newDpPerMin
+                    pendingScrollPx = with(density) {
+                        (currentTopMinute * newDpPerMin).dp.toPx()
+                    }.toInt().coerceAtLeast(0)
+                },
+                enabled = dpPerMin < MAX_DP_PER_MIN
+            ) {
+                Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
+            }
         }
 
         Box(
@@ -146,9 +198,9 @@ fun TimelineScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(HOUR_HEIGHT * 24)
+                    .height(timelineHeightDp)
             ) {
-                HourLabels()
+                HourLabels(hourHeightDp = hourHeightDp)
                 Spacer(Modifier.width(6.dp))
                 Box(
                     modifier = Modifier
@@ -159,7 +211,7 @@ fun TimelineScreen(
                     for (h in 0..23) {
                         Box(
                             modifier = Modifier
-                                .offset(y = HOUR_HEIGHT * h)
+                                .offset(y = hourHeightDp * h)
                                 .fillMaxWidth()
                                 .height(1.dp)
                                 .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
@@ -169,14 +221,15 @@ fun TimelineScreen(
                     blocks.forEach { b ->
                         TimelineBlockBox(
                             block = b,
+                            dpPerMin = dpPerMin,
                             onClick = { selected = b }
                         )
                     }
                     // "Now" line
-                    val nowOffsetDp = ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f) * MINUTE_HEIGHT.value
+                    val nowOffsetMin = ((nowMs - startOfDayMs).coerceAtLeast(0) / 60_000f)
                     Box(
                         modifier = Modifier
-                            .offset(y = nowOffsetDp.dp)
+                            .offset(y = (nowOffsetMin * dpPerMin).dp)
                             .fillMaxWidth()
                             .height(2.dp)
                             .background(Color(0xFFEF4444))
@@ -201,7 +254,7 @@ fun TimelineScreen(
 }
 
 @Composable
-private fun HourLabels() {
+private fun HourLabels(hourHeightDp: androidx.compose.ui.unit.Dp) {
     Column(
         modifier = Modifier
             .width(HOUR_LABEL_WIDTH)
@@ -211,7 +264,7 @@ private fun HourLabels() {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(HOUR_HEIGHT),
+                    .height(hourHeightDp),
                 contentAlignment = Alignment.TopEnd
             ) {
                 Text(
@@ -228,34 +281,23 @@ private fun HourLabels() {
 @Composable
 private fun TimelineBlockBox(
     block: TimelineBlock,
+    dpPerMin: Float,
     onClick: () -> Unit
 ) {
-    val topMinutes = block.startOfDayOffsetMinutes
-    val heightMinutes = block.durationMinutes
-    // Minimum 2dp so very short blocks stay visible
-    val h = (heightMinutes * MINUTE_HEIGHT.value).dp.coerceAtLeast(2.dp)
+    val topDp = (block.startOfDayOffsetMinutes * dpPerMin).dp
+    val heightDp = (block.durationMinutes * dpPerMin).dp.coerceAtLeast(2.dp)
 
     Box(
         modifier = Modifier
-            .offset(y = (topMinutes * MINUTE_HEIGHT.value).dp)
+            .offset(y = topDp)
             .fillMaxWidth()
-            .height(h)
+            .height(heightDp)
             .padding(vertical = 0.5.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(block.color)
-            .pointerInput(block.pkg, topMinutes) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.any { it.pressed }) {
-                            onClick()
-                            break
-                        }
-                    }
-                }
-            }
+            .clickable(onClick = onClick)
     ) {
-        if (h >= 14.dp) {
+        if (heightDp >= 14.dp) {
             Text(
                 text = block.label,
                 style = MaterialTheme.typography.labelSmall,
@@ -341,7 +383,7 @@ private data class TimelineBlock(
     val label: String,
     val startMs: Long,
     val endMs: Long,
-    val startOfDayOffsetMinutes: Float,  // start relative to today 00:00, in minutes
+    val startOfDayOffsetMinutes: Float,
     val durationMinutes: Float,
     val color: Color,
     val textColor: Color
@@ -380,21 +422,15 @@ private fun buildBlocks(
     return out
 }
 
-/**
- * Stable HSL-based color from a package name. Consistent across runs so a
- * given app always has the same color.
- */
 private fun colorForPackage(pkg: String): Color {
     var h = 0
     for (c in pkg) h = (h * 31 + c.code) and 0x7FFFFFFF
     val hue = (h % 360).toFloat()
-    val sat = 0.55f
-    val light = 0.55f
-    return hslToColor(hue, sat, light)
+    return hslToColor(hue, sat = 0.55f, light = 0.55f)
 }
 
-private fun hslToColor(h: Float, s: Float, l: Float): Color {
-    val c = (1f - kotlin.math.abs(2f * l - 1f)) * s
+private fun hslToColor(h: Float, sat: Float, light: Float): Color {
+    val c = (1f - kotlin.math.abs(2f * light - 1f)) * sat
     val hp = h / 60f
     val x = c * (1f - kotlin.math.abs(hp % 2f - 1f))
     val (r1, g1, b1) = when {
@@ -405,12 +441,11 @@ private fun hslToColor(h: Float, s: Float, l: Float): Color {
         hp < 5f -> Triple(x, 0f, c)
         else -> Triple(c, 0f, x)
     }
-    val m = l - c / 2f
+    val m = light - c / 2f
     return Color(r1 + m, g1 + m, b1 + m, 1f)
 }
 
 private fun readableOn(bg: Color): Color {
-    // Cheap luminance; black text on lighter bg, white on darker.
     val luminance = 0.299f * bg.red + 0.587f * bg.green + 0.114f * bg.blue
     return if (luminance > 0.55f) Color(0xDE000000) else Color(0xFFFFFFFF)
 }
@@ -434,7 +469,3 @@ private fun formatTimeOfDay(ms: Long): String {
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(ms))
 }
-
-/** Compose-scope helper to convert Dp to Px. Avoids importing LocalDensity into callers. */
-@Composable
-private fun dpToPx(d: Dp): Float = with(LocalDensity.current) { d.toPx() }
