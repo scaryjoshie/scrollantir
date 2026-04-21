@@ -10,14 +10,18 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned · 💡 idea
 
 | Piece | Status | Notes |
 |---|---|---|
-| Android app (phone events) | ✅ | Collecting `system.foreground`, `system.screen`, `system.unlocked`, `system.unlock`, `youtube.shorts`, `instagram.reels`, `instagram.stories`, `tiktok.feed`, `detector.miss`. Sideloaded on Pixel 9. Posts to stub server (not yet Supabase). |
-| Mac forwarder | ✅ | launchd agent, reads AW via `aw-client`, posts to stub server. `docs/mac.md`. |
+| Android app (phone events) | ✅ | Collecting `system.foreground`, `system.screen`, `system.unlocked`, `system.unlock`, `youtube.shorts`, `instagram.reels`, `instagram.stories`, `tiktok.feed`, `detector.miss`. Sideloaded on Pixel 9. **Still posts to stub server — Supabase wire-up is #4 below.** |
+| Mac forwarder | ✅ | launchd agent, reads AW via `aw-client`, **now posts to Supabase edge function** (as of 2026-04-21). Hostname-agnostic uuid5 scheme. `docs/mac.md`. |
 | Zen aw-watcher-web fork | ✅ | `mac-extension/` — adds `container` field to tab events. Installed as xpi in Zen. |
-| Stub ingest server | ✅ | `android-testing/server.py` — dev-only, LAN, bearer `dev-token`. |
+| Stub ingest server | ✅ | `android-testing/server.py` — dev-only, LAN, bearer `dev-token`. Still used by Android until #4 lands. |
 | Supabase project | ✅ | `feijpewzqgqczkxmvdng`. CLI linked locally. |
-| Supabase schema v3 | ✅ | Deployed. See `docs/supabase.md`. Three write surfaces: `ingest_api`, `agent_api`, user_role direct SQL. |
+| Supabase schema v3 | ✅ | Deployed + three hot-patches applied 2026-04-21 (pgcrypto schema qualifier, rate-limit 200→10000, re-grant `events_enriched`). Three write surfaces: `ingest_api`, `agent_api`, user_role direct SQL. |
 | Permissive RLS policies | ✅ | On all public tables, scoped to user_role + agent_role. |
-| Custom Postgres roles | ✅ | `ingest_role`, `user_role`, `agent_role` created NOLOGIN. Passwords not yet assigned. |
+| Custom Postgres roles | ✅ | `ingest_role`, `user_role`, `agent_role` now LOGIN with passwords assigned (2026-04-21 via `./admin setup-roles`). DSNs in macOS Keychain. |
+| Supabase edge functions | ✅ | Three endpoints deployed with `--no-verify-jwt`: `/ingest`, `/prompt-answer`, `/pending-prompts`. `docs/edge-functions.md`. |
+| Mac → Supabase ingest | ✅ | ~3400+ events landed; forwarder running on 30s interval. |
+| Orchestrator Phase 0 | ✅ | Local Claude Code against Supabase wrote first daily-digest report (`reports.id c93d8d69-...`). `docs/orchestrator.md`. |
+| Repo prepped for OSS | ✅ | MIT LICENSE, top-level README, personal paths scrubbed, `.claude/settings.local.json` gitignored. |
 
 ## Immediate next work (implementation)
 
@@ -32,25 +36,23 @@ revoke-all --yes, rotate, rotate --finalize. Four Codex audit passes
 before merge; acceptance sequence from `docs/admin-cli.md` not yet
 run (awaits service_role DSN + explicit OK).
 
-### 2. Ingest edge functions (`supabase/functions/*`) 📋
+### 2. Ingest edge functions (`supabase/functions/*`) ✅
 
-Full spec in [`docs/edge-functions.md`](edge-functions.md). Three
-functions for v1 ingest:
+Shipped 2026-04-21 (commit `c933dcd`, redeployed with
+`--no-verify-jwt` so device bearers reach handlers). Three endpoints
+live: `/ingest`, `/prompt-answer`, `/pending-prompts`. Full details
+in `docs/edge-functions.md`. Deno runtime, typed `PostgresError`
+SQLSTATE mapping, bound-parameter queries, per-event loop with
+short-circuit on auth/rate-limit, continue-on-error for validation.
 
-- `POST /functions/v1/ingest` — events (calls `ingest_api.accept_event`)
-- `POST /functions/v1/prompt-answer` — prompt answers
-- `GET /functions/v1/pending-prompts` — phone polling
+### 3. Wire Mac forwarder to Supabase ✅
 
-Each ~40-80 lines TS. Connects as `ingest_role` via `INGEST_DATABASE_URL`
-secret. Never uses `service_role`.
-
-**Acceptance:** see `docs/edge-functions.md` — curl tests + real forwarder wire-up.
-
-### 3. Wire Mac forwarder to Supabase 📋
-
-Change `mac-forwarder/setup.sh` to prompt for the Supabase edge function URL + minted bearer. Update `forwarder.py` config path if needed. Re-run setup.sh, verify events flow.
-
-**Acceptance:** `~/Library/Logs/scrollantir-forwarder.out.log` shows successful POSTs to `<ref>.supabase.co/functions/v1/ingest`. Events visible in Supabase dashboard.
+Shipped 2026-04-21 (commits `fa1e31f`, `3a8348d`). Forwarder now
+posts to Supabase `/functions/v1/ingest` on 30 s launchd interval.
+Config key renamed from `server_url` to `ingest_url`; UUID scheme
+rewritten to `uuid5("mac:{source}:{bucket_created_at}:{aw_id}")`
+so hostname drift no longer re-ingests history. Verified end-to-end:
+3400+ events landed.
 
 ### 4. Wire Android app to Supabase 📋
 
@@ -62,16 +64,26 @@ Update the app's "Server URL" setting to accept the Supabase edge function URL +
 
 **Acceptance:** phone events appear in `events` table.
 
-### 5. Documentation sweep 📋
+### 5. Documentation sweep 🚧
 
-Update:
-- `docs/setup.md` — replace stub-server section with Supabase setup runbook
-- `docs/architecture.md` — update the pipeline diagram to show Supabase instead of FastAPI/stub
-- `docs/android.md` — note the new QR onboarding flow once implemented
+Partially done: `docs/data-flow.md`, `docs/orchestrator.md`,
+`docs/cmux-watcher.md` written; `docs/session-2026-04-21.md` added
+as a handoff chronicle; roadmap + README index updated.
+
+Still stale per 2026-04-21 Codex audit:
+- `docs/architecture.md` pipeline diagram + status table (still
+  shows the FastAPI stub as current)
+- `docs/data-flow.md` phase-status table (edge functions marked as
+  "next" but they're live)
+- `docs/README.md` + top-level `README.md` blurbs that reference
+  the pre-Supabase world
+- `docs/setup.md` — replace stub-server section with a Supabase
+  setup runbook
+- `docs/android.md` — note the new QR onboarding flow once #4 ships
 
 ## Next after ingest is live (agent infra)
 
-### 6. Orchestrator — Claude Code CLI on a server 📋
+### 6. Orchestrator — Claude Code CLI on a server 🚧
 
 Full spec in [`docs/orchestrator.md`](orchestrator.md). Supersedes
 the earlier "local Claude Code agent tooling" and "scheduled edge
@@ -98,6 +110,11 @@ DB-only, no LLM, no reason to move them.
 End state: cron-triggered daily-digest lands a report every morning
 without human intervention, verifiable via the
 `/scrollantir/memory/last-success-daily-digest` marker.
+
+**Progress 2026-04-21:** Phase 0 complete — first real daily-digest
+report written to `public.reports` by local Claude Code as
+`agent_role`. Phase 1 (local Docker), 2 (Oracle Free VM + Coolify),
+3 (weekly/classifier/prompt-asker) still to go.
 
 ### 7. ~~Scheduled edge functions (cron agents)~~ ❌
 
@@ -149,6 +166,70 @@ New screen in the phone app:
 - On submit: POST to `/prompt-answer`
 
 **Acceptance:** agent asks a question at 10pm, phone shows it, you answer in the morning, it becomes an event.
+
+## Follow-ups from 2026-04-21 Codex audit
+
+Surfaced during the audit + AFK bug investigation on the day of
+first end-to-end ingest. None blocking; ordered by severity/risk.
+Full context in `docs/session-2026-04-21.md`.
+
+### FU-1. Rate-limit livelock (MUST-FIX, high severity) 📋
+
+`ingest_api.accept_event` increments the per-minute rate counter
+*before* the INSERT, so `ON CONFLICT DO NOTHING` no-op retries burn
+budget. Forwarder only advances checkpoint after a full-bucket
+drain. Any bucket with >10000 events backlog (a ~2-week offline
+gap at this user's event rate) permanently stalls because each
+retry re-consumes the budget on duplicate no-ops without progress.
+
+Fix options (pick one or both):
+- Server: skip counter increment on ON-CONFLICT no-op (cleanest)
+- Client: advance `mac-forwarder/forwarder.py` checkpoint per chunk
+
+### FU-2. AW heartbeat cascade recurrence (SHOULD-FIX, medium) 📋
+
+AW-server's heartbeat occasionally inserts retroactive overlapping
+rows with fresh aw_ids; forwarder faithfully ships them as distinct
+events → Supabase duplicates at low-hundreds/month rate. Cleaned up
+109 rows on 2026-04-21 via strict-containment SQL (session chronicle
+has the canonical query).
+
+Fix: forwarder-side overlap suppression in `drain_bucket` before
+POST — same strict-containment logic as the cleanup SQL (collapse
+same-payload overlapping events, keep longest-duration). Until then,
+run the cleanup query weekly-ish.
+
+### FU-3. Docs drift (SHOULD-FIX, medium) 📋
+
+- `docs/architecture.md` status table + pipeline diagram still
+  describe the stub-server world.
+- `docs/data-flow.md` has a status table marking edge functions as
+  "next" when they're live.
+- `docs/README.md` + top-level `README.md` blurbs reference the
+  pre-Supabase state.
+
+One-hour sweep.
+
+### FU-4. Migration file ordering hazard (SHOULD-FIX, low) 📋
+
+`supabase/migrations/20260421072149_fix_pgcrypto_extensions_schema.sql`
+embeds the full `accept_event` function body **with the old 200/min
+rate cap**. Re-running it after `20260421073200_raise_ingest_rate_limit_to_10000.sql`
+silently reverts the cap. Fix: trim `072149` to just the extension
+schema change + the `extensions.digest()` call-site edits, or
+update its body to the final `accept_event` version.
+
+### FU-5. Hardcoded project ref (SHOULD-FIX, low; blocks OSS drop) 📋
+
+`mac-forwarder/setup.sh:32` and `docs/setup.md:50,147` embed
+`feijpewzqgqczkxmvdng` as the default Supabase URL. Replace with
+placeholder + explicit "fill this in" line before the repo is made
+public.
+
+### FU-6. Admin CLI asymmetric base-role check (SHOULD-FIX, very low) 📋
+
+`scripts/admin/db.py` rejects non-`postgres` base users on pooler
+DSNs but not on direct DSNs. Mirror the check. UX only.
 
 ## Ideas / future bets (not blocking anything)
 
