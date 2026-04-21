@@ -23,16 +23,14 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned · 💡 idea
 
 Order matters — each step unblocks the next.
 
-### 1. Admin CLI (`scripts/admin.py`) 📋
+### 1. Admin CLI (`scripts/admin.py`) ✅
 
-Full spec in [`docs/admin-cli.md`](admin-cli.md). Local Python tool for:
-- Device registry (`device add` / `list` / `rename` / `retire`)
-- Role setup (`setup-roles` — one-time, assigns passwords to custom roles, writes to Keychain)
-- Token lifecycle (`mint` with QR output, `list`, `revoke`, `rotate`, `rotate --finalize`)
-
-~200-300 lines Python. `psycopg`, `keyring`, `qrcode`, `click`.
-
-**Acceptance:** see `docs/admin-cli.md` — specific command sequence.
+Shipped 2026-04-21 (commit `297307e`). `./admin` at repo root with
+device add/list/rename/retire, setup-roles (ALTER ROLE WITH LOGIN +
+Keychain writes), mint (QR + plaintext-once), list, revoke,
+revoke-all --yes, rotate, rotate --finalize. Four Codex audit passes
+before merge; acceptance sequence from `docs/admin-cli.md` not yet
+run (awaits service_role DSN + explicit OK).
 
 ### 2. Ingest edge functions (`supabase/functions/*`) 📋
 
@@ -73,27 +71,43 @@ Update:
 
 ## Next after ingest is live (agent infra)
 
-### 6. Local Claude Code agent tooling 📋
+### 6. Orchestrator — Claude Code CLI on a server 📋
 
-Full spec in [`docs/agent.md`](agent.md). Repo-root `CLAUDE.md` with
-agent instructions, connection pattern (Keychain read), schema
-reference, conventions for reports/annotations/prompts. Optional
-`scripts/agent_helper.py` or Postgres MCP for ergonomic queries.
+Full spec in [`docs/orchestrator.md`](orchestrator.md). Supersedes
+the earlier "local Claude Code agent tooling" and "scheduled edge
+functions (cron agents)" items — we consolidated both into a single
+always-on container running Claude Code CLI, cron-invoked.
 
-**Acceptance:** Claude Code session writes a `report` via `agent_api.upsert_report`, shows up in `SELECT * FROM reports ORDER BY created_at DESC`.
+Runtime: Docker on Oracle Cloud Always Free ARM + Coolify.
+Four-phase setup (local scratch → local Docker → VPS deploy → layer
+on jobs). Credentialed as `agent_role`; writes reports via
+`agent_api.upsert_report` and prompts via `agent_api.create_prompt`.
 
-### 7. Scheduled edge functions (cron agents) 📋
+Jobs land incrementally:
+- `smoke` — wiring check (phase-1 validator).
+- `daily-digest` — 7am local, 24h summary. First real job.
+- `weekly-report` — Sunday 9am local, 7-day deeper analysis.
+- `classifier` — every 15 min once projects (#8) ships.
+- `prompt-asker` — deferred; triggers + question taxonomy TBD.
 
-Via `pg_cron` scheduling `net.http_post` to new edge functions:
+Small operational jobs (auto-revoke superseded tokens, prune
+rate_limit rows older than 1h) stay on Supabase `pg_cron` — they're
+DB-only, no LLM, no reason to move them.
 
-- `daily-digest` — runs at 7am, pulls last 24h of events, calls an LLM provider (Cerebras/Groq free tier for speed, fall back to Anthropic), drafts a short `report` and stores.
-- `weekly-report` — runs Sundays at 9am, similar but 7-day window and deeper analysis.
-- `prompt-asker` — runs at configurable triggers (e.g., nightly at 10pm) to ask low-friction questions (sleep latency, mood).
-- `token-cleanup` — hourly: revoke superseded tokens older than 48h; delete rate_limit rows older than 1h.
+**Acceptance:** per-phase exit criteria in `docs/orchestrator.md`.
+End state: cron-triggered daily-digest lands a report every morning
+without human intervention, verifiable via the
+`/scrollantir/memory/last-success-daily-digest` marker.
 
-Anthropic/Cerebras/Groq API keys stored as Supabase function secrets.
+### 7. ~~Scheduled edge functions (cron agents)~~ ❌
 
-**Acceptance:** daily digest appears in `reports` every morning.
+Superseded by #6. The reasoning was: Supabase edge functions are
+short-lived, stateless, stdlib-Deno, and have no persistent
+filesystem — wrong shape for an agent that accumulates skills and
+memory across runs. The jobs that would have lived here
+(`daily-digest`, `weekly-report`, `classifier`, `prompt-asker`) now
+run inside the orchestrator container (#6). Token-cleanup and
+rate_limit pruning stay on `pg_cron` since they're DB-only.
 
 ## Dashboards and projects (the "point")
 
