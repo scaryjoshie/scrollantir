@@ -13,7 +13,7 @@ installer as Play Store and lets the service run.
 ### Easiest path: the Gradle task
 
 ```bash
-cd /Users/joshua/dev/scrollantir/android
+cd ~/dev/scrollantir/android
 ./gradlew :app:installDebugSpoofed
 ```
 
@@ -45,7 +45,7 @@ One-time. Before any forwarder posts real data.
 
 ```bash
 brew install supabase/tap/supabase
-cd /Users/joshua/dev/scrollantir
+cd ~/dev/scrollantir
 supabase login                  # opens browser (run in your own terminal, not this shell)
 supabase link --project-ref feijpewzqgqczkxmvdng
 ```
@@ -93,7 +93,7 @@ The forwarder reads this file read-only.
 ### 2. Build and install the Zen extension
 
 ```bash
-cd /Users/joshua/dev/scrollantir/mac-extension
+cd ~/dev/scrollantir/mac-extension
 ./build.sh
 ```
 
@@ -118,7 +118,7 @@ bucket appear in AW shortly after browsing.
 ### 3. Run the forwarder setup script
 
 ```bash
-cd /Users/joshua/dev/scrollantir/mac-forwarder
+cd ~/dev/scrollantir/mac-forwarder
 ./setup.sh
 ```
 
@@ -189,7 +189,7 @@ seconds. Useful when iterating on forwarder code.
 ## Starting the stub server (current dev ingest)
 
 ```bash
-cd /Users/joshua/dev/scrollantir/android-testing
+cd ~/dev/scrollantir/android-testing
 uv run --with fastapi --with uvicorn --with pydantic python server.py
 ```
 

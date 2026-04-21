@@ -39,7 +39,7 @@ Build this when one of the following becomes true:
   workspace (avg uninterrupted tab-focus span, tab-switching rate
   as a distraction proxy).
 - You want cwd/cmd as a project-attribution signal — `cwd` starting
-  with `/Users/joshua/dev/scrollantir` is strong evidence of
+  with `~/dev/scrollantir` is strong evidence of
   Scrollantir project work regardless of which workspace holds it.
 
 ## Design (from 2026-04-21 subagent investigation)
@@ -107,7 +107,7 @@ data   = {
   "surface_id":      "<uuid>",
   "surface_index":   2,
   "surface_title":   "editor",
-  "cwd":             "/Users/joshua/dev/scrollantir",    # if available
+  "cwd":             "~/dev/scrollantir",                # if available
   "cmd":             "nvim"                               # if available
 }
 ```
