@@ -50,6 +50,7 @@ DECLARE
   v_hits         INTEGER;
   v_is_backfill  BOOLEAN;
   v_data         JSONB;
+  v_inserted_id  UUID;
 BEGIN
   -- Token validation. Superseded tokens are valid for up to 48h
   -- past superseded_at to support rotation overlap.
@@ -81,20 +82,21 @@ BEGIN
     RAISE EXCEPTION 'device % is retired', p_device USING ERRCODE = '28000';
   END IF;
 
-  -- Fixed-window rate limit.
-  INSERT INTO private.ingest_rate_limit (token_hash, window_start, hits)
-  VALUES (v_hash, v_window, 1)
-  ON CONFLICT (token_hash, window_start)
-  DO UPDATE SET hits = private.ingest_rate_limit.hits + 1
-  RETURNING hits INTO v_hits;
-
-  -- Rate limit: 10000/min/token. Calibrated upward from an initial
-  -- 200 because the first-sync backfill from ActivityWatch can push
-  -- multiple thousands of events from a single bucket at once, and
-  -- we want a clean drain rather than forcing N retries. Steady
-  -- state is <30 events/min, so this mostly exists as a runaway-
-  -- client guard, not a throughput throttle.
-  IF v_hits > 10000 THEN
+  -- Rate-limit peek. We READ the current minute's counter and raise
+  -- if it's already at the cap, but we DON'T increment here — the
+  -- increment happens only if the INSERT below actually adds a new
+  -- row. This is what makes the rate limit survive ON-CONFLICT
+  -- no-op floods from a stalled forwarder retry loop: duplicate
+  -- events don't charge budget against themselves.
+  --
+  -- 10000 hits/min/token is a runaway-client guard, not a
+  -- throughput throttle. Steady-state is <30 events/min; the cap
+  -- matters only during first-sync backfills.
+  SELECT hits INTO v_hits
+    FROM private.ingest_rate_limit
+   WHERE token_hash = v_hash AND window_start = v_window;
+  IF v_hits IS NULL THEN v_hits := 0; END IF;
+  IF v_hits >= 10000 THEN
     RAISE EXCEPTION 'rate limit exceeded (% hits/min)', v_hits
       USING ERRCODE = '54000';  -- program_limit_exceeded
   END IF;
@@ -121,13 +123,27 @@ BEGIN
   -- Update last_used_at opportunistically.
   UPDATE private.tokens SET last_used_at = NOW() WHERE token_hash = v_hash;
 
-  -- Insert. Idempotent on retry via deterministic UUIDs.
+  -- Insert. Idempotent on retry via deterministic UUIDs. RETURNING
+  -- populates v_inserted_id only when a new row actually landed;
+  -- ON-CONFLICT leaves it NULL.
   INSERT INTO public.events (
     id, device, source, timestamp_utc, duration_s, data, schema_version, is_backfill
   ) VALUES (
     p_id, p_device, p_source, p_timestamp_utc, p_duration_s, v_data, p_schema_version, v_is_backfill
   )
-  ON CONFLICT (id) DO NOTHING;
+  ON CONFLICT (id) DO NOTHING
+  RETURNING id INTO v_inserted_id;
+
+  -- Charge rate-limit budget only for actual new inserts. Retries
+  -- of already-ingested events (ON-CONFLICT no-ops) cost DB work
+  -- but don't count toward the cap — that's the whole point of
+  -- reading before writing above.
+  IF v_inserted_id IS NOT NULL THEN
+    INSERT INTO private.ingest_rate_limit (token_hash, window_start, hits)
+    VALUES (v_hash, v_window, 1)
+    ON CONFLICT (token_hash, window_start)
+    DO UPDATE SET hits = private.ingest_rate_limit.hits + 1;
+  END IF;
 
   RETURN p_id;
 END

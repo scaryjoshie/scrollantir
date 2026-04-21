@@ -228,6 +228,59 @@ def build_event(source: str, bucket_created_iso: str, aw_event) -> dict:
     }
 
 
+def _collapse_overlaps(events: list) -> list:
+    """Drop events whose time span is strictly contained by another
+    same-data event in the batch. Targets the aw-server heartbeat
+    cascade, where the watcher's heartbeat pulse produces a chain
+    of retroactive rows (timestamps step +1 μs backward, durations
+    grow) — all with the same `data` payload but distinct aw_ids.
+    Each cascade row's span is nested inside the next one's, so a
+    strict-containment filter reduces the cluster to one winner
+    (the longest-duration row).
+
+    Does NOT touch:
+      - events with different `data` payloads (different activity
+        contexts)
+      - events with the same `data` but partially-overlapping spans
+        that don't strictly contain each other (two legitimate
+        same-activity events adjacent in time)
+    """
+    if len(events) < 2:
+        return events
+
+    from collections import defaultdict
+    groups: dict[str, list] = defaultdict(list)
+    for e in events:
+        key = json.dumps(dict(e.data), sort_keys=True, default=str)
+        groups[key].append(e)
+
+    survivors = []
+    for group in groups.values():
+        if len(group) == 1:
+            survivors.append(group[0])
+            continue
+        # Consider candidates longest-first so the nested cascade
+        # rows (shorter, contained) get discarded against the
+        # longest one already kept.
+        group.sort(key=lambda e: (-e.duration.total_seconds(), -e.id))
+        kept: list = []
+        for candidate in group:
+            c_start = candidate.timestamp
+            c_end = c_start + candidate.duration
+            contained = any(
+                k.timestamp <= c_start
+                and k.timestamp + k.duration >= c_end
+                and k.id != candidate.id
+                for k in kept
+            )
+            if not contained:
+                kept.append(candidate)
+        survivors.extend(kept)
+
+    survivors.sort(key=lambda e: e.id)
+    return survivors
+
+
 def shape_data(source: str, data: dict) -> dict:
     if source == "system.window":
         return {"app": data.get("app", ""), "title": data.get("title", "")}
@@ -325,6 +378,25 @@ def drain_bucket(
         key=lambda e: e.id,
     )
 
+    # FU-2: collapse AW heartbeat cascades before POST. The
+    # checkpoint still advances past EVERY id we've seen (captured
+    # from the pre-collapse list below), so dropped events never
+    # re-appear on the next drain.
+    if fresh:
+        original_max_id = fresh[-1].id
+        original_max_ts = max(e.timestamp for e in fresh)
+        before = len(fresh)
+        fresh = _collapse_overlaps(fresh)
+        collapsed = before - len(fresh)
+        if collapsed > 0:
+            log(
+                f"{bucket_id}: collapsed {collapsed} same-data "
+                f"overlapping events ({before} → {len(fresh)})"
+            )
+    else:
+        original_max_id = None
+        original_max_ts = None
+
     if not fresh:
         # Fill in bucket_created_at on migrated or fresh entries so
         # the next run's rebuild-detector has something to compare
@@ -343,11 +415,14 @@ def drain_bucket(
         payload = [build_event(source, bucket_created_iso, e) for e in chunk]
         post_batch(ingest_url, token, payload)
 
+    # Checkpoint on the original pre-collapse high-water mark so
+    # collapsed events can't re-appear on next drain.
+    assert original_max_id is not None and original_max_ts is not None
     new_cp = {
         "source": source,
         "bucket_created_at": bucket_created_iso,
-        "id": fresh[-1].id,
-        "ts": iso_z(max(e.timestamp for e in fresh)),
+        "id": original_max_id,
+        "ts": iso_z(original_max_ts),
     }
     return len(fresh), new_cp
 

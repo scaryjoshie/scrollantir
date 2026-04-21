@@ -29,14 +29,21 @@ die() { printf "\033[1;31m[setup]\033[0m %s\n" "$*" >&2; exit 1; }
 # Expect the FULL ingest URL — e.g.
 #   https://<ref>.supabase.co/functions/v1/ingest  (Supabase edge function)
 #   http://localhost:8069/ingest                   (dev stub server)
-default_url="https://feijpewzqgqczkxmvdng.supabase.co/functions/v1/ingest"
-if [[ -f "$CONFIG_PATH" ]]; then
-    existing_url=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c.get('ingest_url') or c.get('server_url') or '')" 2>/dev/null || true)
-    [[ -n "$existing_url" ]] && default_url="$existing_url"
+#
+# If SCROLLANTIR_INGEST_URL is set in the environment, use it as the
+# default (handy for fork setups). Otherwise fall back to the value
+# already in config, otherwise no default — the user must paste it.
+default_url="${SCROLLANTIR_INGEST_URL:-}"
+if [[ -z "$default_url" && -f "$CONFIG_PATH" ]]; then
+    default_url=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c.get('ingest_url') or c.get('server_url') or '')" 2>/dev/null || true)
 fi
 
-read -rp "Ingest endpoint URL [$default_url]: " ingest_url
-ingest_url="${ingest_url:-$default_url}"
+if [[ -n "$default_url" ]]; then
+    read -rp "Ingest endpoint URL [$default_url]: " ingest_url
+    ingest_url="${ingest_url:-$default_url}"
+else
+    read -rp "Ingest endpoint URL (e.g. https://<project-ref>.supabase.co/functions/v1/ingest): " ingest_url
+fi
 [[ -z "$ingest_url" ]] && die "ingest_url is required"
 
 # Forgiving fixup: if someone pastes just the base URL without /ingest,

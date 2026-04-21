@@ -47,7 +47,7 @@ One-time. Before any forwarder posts real data.
 brew install supabase/tap/supabase
 cd ~/dev/scrollantir
 supabase login                  # opens browser (run in your own terminal, not this shell)
-supabase link --project-ref feijpewzqgqczkxmvdng
+supabase link --project-ref <your-project-ref>   # e.g. feijpewzqgqczkxmvdng for the maintainer's instance
 ```
 
 Then whenever schema changes:

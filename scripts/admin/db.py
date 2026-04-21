@@ -112,6 +112,13 @@ def parse_dsn(dsn: str) -> DsnParts:
     # Direct: host like db.<ref>.supabase.co, username is 'postgres'.
     parts = host.split(".")
     if len(parts) == 4 and parts[0] == "db" and parts[-2:] == ["supabase", "co"]:
+        if username != "postgres":
+            raise SystemExit(
+                f"Admin DSN must authenticate as 'postgres' on a direct "
+                f"connection (service-role equivalent); got '{username}'. "
+                f"If you meant to use a pre-scoped role, run the admin CLI "
+                f"from the `postgres` account instead."
+            )
         return DsnParts(
             host=host,
             port=port,
