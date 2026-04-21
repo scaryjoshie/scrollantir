@@ -4,30 +4,42 @@ Scrollantir Mac forwarder.
 Reads ActivityWatch via its local HTTP API (`aw-client` talks to
 aw-server on 127.0.0.1:5600), maps per-bucket events to scrollantir
 events, POSTs batches to the ingest server with bearer auth, and
-advances a per-bucket (event-id, timestamp) checkpoint.
+advances a per-bucket checkpoint.
 
 Run under launchd every 30s. See `com.scrollantir.forwarder.plist`
 and `setup.sh`.
 
 Design notes:
-- Event UUIDs are uuid5(NAMESPACE_URL, f"{aw_bucket_id}:{aw_event_id}")
-  so retries produce the same ID and the server dedupes via ON CONFLICT.
-- We checkpoint on (ts, id). `ts` bounds the API fetch (cheap filter
-  that scales with backfill size rather than total history); `id`
-  dedupes within same-timestamp collisions and is what the uuid5 is
-  keyed on.
-- On any error (4xx / 5xx / network), we do NOT advance the checkpoint.
-  Next run retries from the same point. On bad token we exit 1; launchd
-  still re-fires every 30s, so the pace of retry is 2 req/min/bucket —
-  not a storm, but not zero either.
+- Event UUIDs are
+    uuid5(NAMESPACE_URL,
+          f"mac:{source}:{bucket_created_at}:{aw_event.id}")
+  Rationale: retries must produce the same UUID so the server
+  dedupes via `ON CONFLICT (id)`. An earlier scheme used the full
+  AW `bucket_id` as the UUID input, which includes the DHCP-
+  assigned hostname — so joining a different Wi-Fi network
+  produced fresh UUIDs for events that otherwise shared identity.
+  Current scheme swaps hostname out for `bucket_created_at` (stable
+  across a bucket's lifetime; changes only when AW recreates it,
+  e.g. on DB wipe) plus the scrollantir source name. Hostname
+  drift dedupes correctly; AW DB rebuild gets a new generation of
+  UUIDs so aw_ids that restart at 1 don't collide with old.
+- Checkpoint is keyed by AW bucket_id (unchanged from earlier
+  forwarder versions). Each entry also carries `source` and
+  `bucket_created_at` so we can detect bucket rebuilds (same
+  bucket_id, new created timestamp → reset id=0) and so the UUID
+  input has everything it needs. Legacy checkpoint entries (from
+  before this refactor) fill these in on first drain.
+- We drain EVERY AW bucket that prefix-matches a known source —
+  not just the newest. If hostname drift created a second bucket
+  for the same source, both get drained; their events live under
+  different `bucket_created_at` → different UUIDs → no collisions
+  in Supabase.
+- On any error (4xx / 5xx / network), we do NOT advance the
+  checkpoint. Next run retries from the same point. Launchd
+  re-fires every 30s.
 - We rely on aw-server running on localhost:5600. If it's down,
-  watchers queue locally (AW's own persist-queue) and drain when it
-  comes back. No events are lost.
-- `Event.id` is assumed unique per bucket for the lifetime of AW's
-  SQLite file. If a user deletes and recreates a bucket, ids restart
-  from 1 and this checkpoint's stored id would be larger than the new
-  events' ids → those events would be skipped. Not worth defending
-  against in code; delete the checkpoint file if you ever wipe AW.
+  watchers queue locally (AW's own persist-queue) and drain when
+  it comes back. No events are lost.
 """
 from __future__ import annotations
 
@@ -105,21 +117,46 @@ def load_token() -> str:
     sys.exit(2)
 
 
+# Checkpoint format:
+#   { "<aw_bucket_id>": {
+#         "source": "<scrollantir source>",
+#         "bucket_created_at": "<ISO-8601 UTC>" | null,
+#         "id": <int>,
+#         "ts": "<ISO-8601 UTC>"
+#       } }
+# Legacy format (pre-refactor):
+#   { "<aw_bucket_id>": {"id": <int>, "ts": <ISO>} }
+# Migration fills in `source` from prefix-match and leaves
+# `bucket_created_at` as null; first drain fetches the value from
+# AW and writes it in.
+
 def load_checkpoint() -> dict[str, dict]:
-    """Per-bucket {id: int, ts: ISO-8601 str}."""
     if not CHECKPOINT_PATH.exists():
         return {}
     try:
         with CHECKPOINT_PATH.open() as f:
-            data = json.load(f)
+            raw = json.load(f)
     except json.JSONDecodeError as e:
         err(f"checkpoint file corrupt ({e}); starting from scratch")
         return {}
-    return {
-        bucket: {"id": int(v["id"]), "ts": str(v["ts"])}
-        for bucket, v in data.items()
-        if isinstance(v, dict) and "id" in v and "ts" in v
-    }
+    out: dict[str, dict] = {}
+    for bucket_id, v in raw.items():
+        if not isinstance(v, dict) or "id" not in v or "ts" not in v:
+            continue
+        source = v.get("source") or source_for_bucket(bucket_id)
+        if source is None:
+            # Unrecognized bucket prefix — keep the raw entry as-is
+            # rather than dropping, so a future prefix addition can
+            # pick it up.
+            out[bucket_id] = {**v}
+            continue
+        out[bucket_id] = {
+            "source": source,
+            "bucket_created_at": v.get("bucket_created_at"),
+            "id": int(v["id"]),
+            "ts": str(v["ts"]),
+        }
+    return out
 
 
 def save_checkpoint(cp: dict[str, dict]) -> None:
@@ -150,8 +187,37 @@ def iso_z(dt: datetime) -> str:
     )
 
 
-def build_event(bucket_id: str, source: str, aw_event) -> dict:
-    ev_id = str(uuid.uuid5(NAMESPACE, f"{bucket_id}:{aw_event.id}"))
+def _normalize_created(bucket_created) -> str:
+    """Canonicalize AW's `created` value to a stable ISO-8601 UTC
+    string suitable for use as UUID input. Fails loudly on
+    unparseable inputs so UUIDs can never drift silently.
+
+    - aware datetime → converted to UTC, ms-precision ISO
+    - naive datetime → assumed UTC, attached tzinfo, normalized
+    - ISO-8601 string (with Z or offset) → parsed + normalized
+    - naive ISO string → assumed UTC → normalized
+    - anything else → ValueError
+    """
+    if isinstance(bucket_created, datetime):
+        dt = bucket_created
+    else:
+        s = str(bucket_created)
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(
+                f"cannot parse bucket_created {bucket_created!r}: {e}"
+            ) from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return iso_z(dt)
+
+
+def build_event(source: str, bucket_created_iso: str, aw_event) -> dict:
+    ev_id = str(uuid.uuid5(
+        NAMESPACE,
+        f"mac:{source}:{bucket_created_iso}:{aw_event.id}",
+    ))
     return {
         "id": ev_id,
         "device": "mac",
@@ -198,7 +264,7 @@ def post_batch(ingest_url: str, token: str, events: list[dict]) -> None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "scrollantir-mac-forwarder/2",
+            "User-Agent": "scrollantir-mac-forwarder/3",
         },
     )
     try:
@@ -224,6 +290,7 @@ def drain_bucket(
     aw: ActivityWatchClient,
     bucket_id: str,
     source: str,
+    bucket_created_iso: str,
     cp: dict | None,
     ingest_url: str,
     token: str,
@@ -231,33 +298,54 @@ def drain_bucket(
     """Fetch new events for one bucket, POST in ≤500-chunks, return
     (events_sent, new_checkpoint_entry_or_None).
 
-    Raises IngestError on network/HTTP failure — caller decides whether to
-    bail the whole run (we do, so the next launchd tick retries).
+    Raises IngestError on network/HTTP failure — caller decides
+    whether to bail the whole run.
     """
-    cp = cp or {"id": 0, "ts": EPOCH_ISO}
+    # Detect bucket rebuild (same aw_bucket_id but AW recreated the
+    # bucket — e.g., DB wipe). Under the new UUID scheme the
+    # rebuilt bucket's events hash into a distinct generation, so
+    # resetting id=0 is safe: fresh aw_ids won't collide with old
+    # on the server.
+    stored_created = cp.get("bucket_created_at") if cp else None
+    if stored_created is not None and stored_created != bucket_created_iso:
+        log(
+            f"{bucket_id}: AW rebuilt bucket "
+            f"(was {stored_created}, now {bucket_created_iso}); "
+            f"resetting id=0"
+        )
+        cp = None
+
+    cp = cp or {"source": source, "bucket_created_at": None, "id": 0, "ts": EPOCH_ISO}
     last_id = cp["id"]
     last_ts = datetime.fromisoformat(cp["ts"].replace("Z", "+00:00"))
 
-    # Pull everything since last_ts. aw-client returns newest-first.
-    # On a 30s cadence this is a handful of events in steady state; on
-    # a long backfill it's bounded by how long the forwarder was down.
     aw_events = aw.get_events(bucket_id, start=last_ts, limit=-1)
     fresh = sorted(
         (e for e in aw_events if e.id > last_id),
         key=lambda e: e.id,
     )
+
     if not fresh:
+        # Fill in bucket_created_at on migrated or fresh entries so
+        # the next run's rebuild-detector has something to compare
+        # against. Only rewrite if the field actually changed.
+        if cp.get("bucket_created_at") != bucket_created_iso:
+            return 0, {
+                "source": source,
+                "bucket_created_at": bucket_created_iso,
+                "id": cp["id"],
+                "ts": cp["ts"],
+            }
         return 0, None
 
     for chunk_start in range(0, len(fresh), BATCH_SIZE):
         chunk = fresh[chunk_start:chunk_start + BATCH_SIZE]
-        payload = [build_event(bucket_id, source, e) for e in chunk]
+        payload = [build_event(source, bucket_created_iso, e) for e in chunk]
         post_batch(ingest_url, token, payload)
 
-    # fresh is sorted ascending by id, so fresh[-1].id is the new high-water.
-    # Timestamp is NOT monotonic with id (watchers can emit for a past moment),
-    # so take an actual max across the batch.
     new_cp = {
+        "source": source,
+        "bucket_created_at": bucket_created_iso,
         "id": fresh[-1].id,
         "ts": iso_z(max(e.timestamp for e in fresh)),
     }
@@ -266,10 +354,7 @@ def drain_bucket(
 
 def run_once() -> int:
     cfg = load_config()
-    # Backwards-compat: older configs used `server_url` (base URL;
-    # `/ingest` was appended in post_batch). New configs use
-    # `ingest_url` (the full endpoint, no appending). Prefer the new
-    # key; fall back to the old by appending /ingest.
+    # Backwards-compat: older configs used `server_url`.
     ingest_url = cfg.get("ingest_url")
     if not ingest_url:
         legacy = cfg.get("server_url")
@@ -295,30 +380,46 @@ def run_once() -> int:
         return 1
 
     total = 0
+    bucket_count = 0
     for bucket_id in sorted(buckets.keys()):
         source = source_for_bucket(bucket_id)
         if source is None:
             continue
+        meta = buckets[bucket_id]
+        created_raw = meta.get("created") if isinstance(meta, dict) else getattr(meta, "created", None)
+        if created_raw is None:
+            err(f"{bucket_id}: bucket metadata missing `created`; skipping")
+            continue
+        try:
+            bucket_created_iso = _normalize_created(created_raw)
+        except ValueError as e:
+            err(f"{bucket_id}: {e}; skipping")
+            continue
+
+        bucket_count += 1
         cp = checkpoint.get(bucket_id)
         try:
-            sent, new_cp = drain_bucket(aw, bucket_id, source, cp, ingest_url, token)
+            sent, new_cp = drain_bucket(
+                aw, bucket_id, source, bucket_created_iso, cp, ingest_url, token,
+            )
         except IngestError as e:
             if 400 <= e.status < 500 and e.status not in (408, 429):
                 err(f"{bucket_id}: ingest rejected ({e}); checkpoint unchanged")
             else:
                 err(f"{bucket_id}: transient ({e}); checkpoint unchanged")
             return 1
-        if sent == 0:
+        if new_cp is None:
             continue
-        checkpoint[bucket_id] = new_cp  # type: ignore[assignment]
+        checkpoint[bucket_id] = new_cp
         save_checkpoint(checkpoint)
         total += sent
-        log(f"{bucket_id}: sent {sent} events (through id {new_cp['id']})")
+        if sent > 0:
+            log(f"{bucket_id}: sent {sent} events (through id {new_cp['id']})")
 
     if total == 0:
         log("no new events")
     else:
-        log(f"run complete: {total} events across {len(buckets)} buckets")
+        log(f"run complete: {total} events across {bucket_count} buckets")
     return 0
 
 
