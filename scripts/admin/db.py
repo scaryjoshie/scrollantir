@@ -5,6 +5,16 @@ Resolution order for the DSN:
   2. DATABASE_URL= line in scripts/.env.admin
 
 The DSN is never logged. Error messages say only that it's missing.
+
+Supported DSN flavors:
+  - Direct:         postgresql://postgres:PWD@db.<ref>.supabase.co:5432/postgres
+                    (requires IPv6 outbound; Supabase stopped serving IPv4
+                     on the direct host without a paid add-on)
+  - Session Pooler: postgresql://postgres.<ref>:PWD@aws-0-<region>.pooler.supabase.com:5432/postgres
+                    (IPv4-accessible; the default now)
+
+Both shapes work; the admin CLI auto-detects which one was pasted and
+builds per-role DSNs in the same shape.
 """
 
 from __future__ import annotations
@@ -54,43 +64,82 @@ class DsnParts:
     host: str
     port: int
     database: str
+    username: str         # "postgres" (direct) or "postgres.<ref>" (pooler)
+    project_ref: str      # extracted regardless of shape
+    is_pooler: bool
 
 
 def parse_dsn(dsn: str) -> DsnParts:
     parsed = urllib.parse.urlparse(dsn)
-    if not parsed.hostname:
+    host = parsed.hostname
+    username = parsed.username or ""
+
+    if not host:
         raise SystemExit("Admin DATABASE_URL is malformed: missing host.")
+    if not username:
+        raise SystemExit("Admin DATABASE_URL is malformed: missing username.")
+
     database = (parsed.path or "/postgres").lstrip("/") or "postgres"
-    return DsnParts(
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        database=database,
-    )
+    port = parsed.port or 5432
 
+    # Pooler: host like aws-0-us-east-1.pooler.supabase.com,
+    # username like postgres.<projectref>.
+    if host.endswith(".pooler.supabase.com"):
+        if "." not in username:
+            raise SystemExit(
+                "Pooler DSN username must be '<role>.<project-ref>' "
+                f"(e.g. 'postgres.feijpewzqgqczkxmvdng'); got '{username}'. "
+                "Copy the exact URL from Supabase dashboard → Database → "
+                "Connection string → Session pooler."
+            )
+        base_role, _, project_ref = username.partition(".")
+        if not project_ref:
+            raise SystemExit("Pooler DSN username has empty project ref.")
+        if base_role != "postgres":
+            raise SystemExit(
+                f"Admin DSN must authenticate as 'postgres.<ref>' (service-role "
+                f"equivalent); got base role '{base_role}'."
+            )
+        return DsnParts(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            project_ref=project_ref,
+            is_pooler=True,
+        )
 
-def project_ref(host: str) -> str:
-    """Extract <ref> from a direct-connection host 'db.<ref>.supabase.co'.
-
-    Fails loudly on anything else — in particular on pooler hosts
-    (aws-0-*.pooler.supabase.com), since their username format
-    (postgres.<ref>) would break role substitution in setup-roles.
-    """
+    # Direct: host like db.<ref>.supabase.co, username is 'postgres'.
     parts = host.split(".")
     if len(parts) == 4 and parts[0] == "db" and parts[-2:] == ["supabase", "co"]:
-        return parts[1]
+        return DsnParts(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            project_ref=parts[1],
+            is_pooler=False,
+        )
+
     raise SystemExit(
-        f"Could not extract project ref from DB host. Expected "
-        f"'db.<project-ref>.supabase.co' (the direct connection); "
-        f"the session pooler URL is not supported."
+        f"Unrecognized Postgres host '{host}'. Expected either "
+        f"'db.<ref>.supabase.co' (direct) or "
+        f"'aws-0-<region>.pooler.supabase.com' (session pooler)."
     )
 
 
 def build_role_dsn(role: str, password: str, parts: DsnParts) -> str:
-    """Build a fresh DSN for a custom role. URL-encode the password even
-    though token_urlsafe only emits URL-safe chars — defensive hygiene."""
+    """Build a DSN for a custom role in the same shape as the admin DSN.
+
+    Pooler DSNs require the username to be '<role>.<project-ref>' so
+    Supavisor can route to the right project. Direct DSNs use the bare
+    role name. `secrets.token_urlsafe` emits URL-safe chars only; the
+    `quote(safe='')` is defensive.
+    """
     encoded = urllib.parse.quote(password, safe="")
+    username = f"{role}.{parts.project_ref}" if parts.is_pooler else role
     return (
-        f"postgresql://{role}:{encoded}"
+        f"postgresql://{username}:{encoded}"
         f"@{parts.host}:{parts.port}/{parts.database}"
     )
 

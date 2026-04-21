@@ -15,12 +15,12 @@ import click
 import psycopg
 
 from . import fmt_ts, print_table, qr as qr_module
-from .db import connect, get_dsn, parse_dsn, project_ref
+from .db import connect, get_dsn, parse_dsn
 
 
 def _ingest_url() -> str:
     parts = parse_dsn(get_dsn())
-    return f"https://{project_ref(parts.host)}.supabase.co/functions/v1/ingest"
+    return f"https://{parts.project_ref}.supabase.co/functions/v1/ingest"
 
 
 def _lookup_device(cur, device_id: str) -> tuple[str, str]:

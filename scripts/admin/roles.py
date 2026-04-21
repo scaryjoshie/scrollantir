@@ -32,7 +32,10 @@ ROLES: tuple[tuple[str, str], ...] = (
 def setup_roles() -> None:
     parts = parse_dsn(get_dsn())
 
-    results: list[tuple[str, str, str]] = []
+    # Stage the rotation in one DB transaction. Keychain writes happen
+    # ONLY after the DB transaction commits, so a mid-rotation failure
+    # rolls back every password and leaves Keychain untouched.
+    pending: list[tuple[str, str, str]] = []   # (role, keychain_account, role_dsn)
     with connect() as conn, conn.cursor() as cur:
         for role, keychain_account in ROLES:
             password = secrets.token_urlsafe(32)
@@ -48,8 +51,13 @@ def setup_roles() -> None:
                     f"Run: supabase db push --include-roles"
                 )
             role_dsn = build_role_dsn(role, password, parts)
-            keyring.set_password(KEYCHAIN_SERVICE, keychain_account, role_dsn)
-            results.append((role, keychain_account, role_dsn))
+            pending.append((role, keychain_account, role_dsn))
+    # DB committed here. Now write to Keychain.
+
+    results: list[tuple[str, str, str]] = []
+    for role, keychain_account, role_dsn in pending:
+        keyring.set_password(KEYCHAIN_SERVICE, keychain_account, role_dsn)
+        results.append((role, keychain_account, role_dsn))
 
     click.echo()
     for role, acct, _ in results:

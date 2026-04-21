@@ -11,6 +11,9 @@ venv/
 # Admin CLI local config (contains service_role DSN)
 scripts/.env.admin
 
+# Local secrets inbox (minted tokens, DSNs — never commit)
+scripts/.secrets/
+
 # Node (future: dashboard)
 node_modules/
 
