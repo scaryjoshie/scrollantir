@@ -8,6 +8,9 @@ __pycache__/
 venv/
 .env
 
+# Admin CLI local config (contains service_role DSN)
+scripts/.env.admin
+
 # Node (future: dashboard)
 node_modules/
 

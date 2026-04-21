@@ -1,0 +1,4 @@
+psycopg[binary]>=3.2
+keyring>=24
+qrcode>=7.4
+click>=8.1

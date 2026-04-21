@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Scrollantir admin CLI shim. Execs scripts/admin.py under the
+# scripts/.venv interpreter so dependencies (psycopg, keyring, qrcode,
+# click) resolve without requiring the user to activate a venv.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$REPO_ROOT/scripts/.venv"
+PY="$VENV/bin/python"
+
+if [[ ! -x "$PY" ]]; then
+  {
+    echo "Admin CLI venv not found at $VENV."
+    echo "One-time setup:"
+    echo "  python3 -m venv $VENV"
+    echo "  $VENV/bin/pip install -r $REPO_ROOT/scripts/requirements.txt"
+  } >&2
+  exit 1
+fi
+
+exec "$PY" "$REPO_ROOT/scripts/admin.py" "$@"
