@@ -173,7 +173,7 @@ Surfaced during the audit + AFK bug investigation on the day of
 first end-to-end ingest. None blocking; ordered by severity/risk.
 Full context in `docs/session-2026-04-21.md`.
 
-### FU-1. Rate-limit livelock (MUST-FIX, high severity) 📋
+### FU-1. Rate-limit livelock (MUST-FIX, high severity) ✅
 
 `ingest_api.accept_event` increments the per-minute rate counter
 *before* the INSERT, so `ON CONFLICT DO NOTHING` no-op retries burn
@@ -186,7 +186,7 @@ Fix options (pick one or both):
 - Server: skip counter increment on ON-CONFLICT no-op (cleanest)
 - Client: advance `mac-forwarder/forwarder.py` checkpoint per chunk
 
-### FU-2. AW heartbeat cascade recurrence (SHOULD-FIX, medium) 📋
+### FU-2. AW heartbeat cascade recurrence (SHOULD-FIX, medium) ✅
 
 AW-server's heartbeat occasionally inserts retroactive overlapping
 rows with fresh aw_ids; forwarder faithfully ships them as distinct
@@ -199,7 +199,7 @@ POST — same strict-containment logic as the cleanup SQL (collapse
 same-payload overlapping events, keep longest-duration). Until then,
 run the cleanup query weekly-ish.
 
-### FU-3. Docs drift (SHOULD-FIX, medium) 📋
+### FU-3. Docs drift (SHOULD-FIX, medium) ✅
 
 - `docs/architecture.md` status table + pipeline diagram still
   describe the stub-server world.
@@ -210,7 +210,7 @@ run the cleanup query weekly-ish.
 
 One-hour sweep.
 
-### FU-4. Migration file ordering hazard (SHOULD-FIX, low) 📋
+### FU-4. Migration file ordering hazard (SHOULD-FIX, low) ✅
 
 `supabase/migrations/20260421072149_fix_pgcrypto_extensions_schema.sql`
 embeds the full `accept_event` function body **with the old 200/min
@@ -219,14 +219,14 @@ silently reverts the cap. Fix: trim `072149` to just the extension
 schema change + the `extensions.digest()` call-site edits, or
 update its body to the final `accept_event` version.
 
-### FU-5. Hardcoded project ref (SHOULD-FIX, low; blocks OSS drop) 📋
+### FU-5. Hardcoded project ref (SHOULD-FIX, low; blocks OSS drop) ✅
 
 `mac-forwarder/setup.sh:32` and `docs/setup.md:50,147` embed
 `feijpewzqgqczkxmvdng` as the default Supabase URL. Replace with
 placeholder + explicit "fill this in" line before the repo is made
 public.
 
-### FU-6. Admin CLI asymmetric base-role check (SHOULD-FIX, very low) 📋
+### FU-6. Admin CLI asymmetric base-role check (SHOULD-FIX, very low) ✅
 
 `scripts/admin/db.py` rejects non-`postgres` base users on pooler
 DSNs but not on direct DSNs. Mirror the check. UX only.

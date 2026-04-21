@@ -61,13 +61,13 @@ Everything else on this page is a zoom-in on one of those arrows.
 
 | Plane | State |
 |---|---|
-| Android collector | ✅ built, posting to stub server |
-| Mac collector + forwarder | ✅ built, posting to stub server |
-| Supabase schema v3 | ✅ deployed |
-| Admin CLI | 🚧 just implemented, not yet run |
-| Edge functions (ingest / prompt-answer / pending-prompts) | 📋 next |
-| Orchestrator (server + agent runtime) | 💡 architecturally decided, deployment TBD |
-| Swift Mac dashboard | 📋 later |
+| Android collector | ✅ built; still posting to LAN stub. Supabase wire-up is roadmap #4. |
+| Mac collector + forwarder | ✅ launchd every 30 s → Supabase `/functions/v1/ingest`. Hostname-agnostic uuid5 scheme; heartbeat-cascade overlap suppression on the client. |
+| Supabase schema v3 | ✅ deployed + three 2026-04-21 hot-patches (pgcrypto schema qualifier, rate-counter on actual-insert only, `events_enriched` re-grant). |
+| Admin CLI | ✅ shipped 2026-04-21; roles assigned, Mac device registered, token minted. |
+| Edge functions (ingest / prompt-answer / pending-prompts) | ✅ deployed with `--no-verify-jwt`. |
+| Orchestrator (server + agent runtime) | 🚧 Phase 0 validated (local Claude Code wrote first daily-digest report); Phases 1–3 (container → Oracle Free + Coolify → add jobs) planned. |
+| Swift Mac dashboard | 📋 planned; blocked on roadmap #8 projects layer. |
 
 ## System diagram
 

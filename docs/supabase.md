@@ -76,8 +76,8 @@ The `id` is client-generated. The rule a collector must follow:
  │   service_role           │───────────────── │ private.ingest_rate_limit    │
  └──────────────────────────┘                  │                              │
                                                │                              │
- ┌──────────────────────────────────────────┐  │ reports, insights, prompts,  │
- │ Swift Mac app ("dashboard")              │  │ annotations, source_tags     │
+ ┌──────────────────────────────────────────┐  │ reports, annotations,        │
+ │ Swift Mac app ("dashboard")              │  │ prompts, source_tags         │
  │                                          │  │                              │
  │  ┌─── user-initiated action ─────────┐   │  │  (view) events_enriched      │
  │  │ UI buttons: reclassify, curate,   │   │  │                              │
@@ -87,7 +87,7 @@ The `id` is client-generated. The rule a collector must follow:
  │                                          │  │                              │
  │  ┌─── spawned Claude Code agent ─────┐   │  │                              │
  │  │ reads + reasons about data        │   │  │                              │
- │  │ writes reports/insights one at    │   │  │                              │
+ │  │ writes reports/annotations one at │   │  │                              │
  │  │ a time                            │   │  │                              │
  │  │ → agent_role via env var          │───┼─>│  agent_api.upsert_*          │
  │  └───────────────────────────────────┘   │  │  agent_api.soft_delete_*     │
@@ -107,7 +107,7 @@ bounded blast radius.
 |---|---|---|---|
 | `service_role` | Admin CLI only | everything | everything |
 | `ingest_role` | Ingest edge function only | nothing directly | only via `ingest_api.accept_event` |
-| `user_role` | Swift Mac app, user-initiated actions | `public.*` SELECT | CRUD on derived tables (`reports`, `insights`, `annotations`, `prompts`) and `source_tags`; SELECT-only on `events` and `devices` |
+| `user_role` | Swift Mac app, user-initiated actions | `public.*` SELECT | CRUD on derived tables (`reports`, `annotations`, `prompts`) and `source_tags`; SELECT-only on `events` and `devices` |
 | `agent_role` | Claude Code subprocess (spawned by Swift app, or invoked directly in terminal) | `public.*` SELECT (ground truth + derived) | only via `agent_api.*` singletons |
 | `anon` | nothing we control | nothing | nothing |
 
@@ -130,12 +130,12 @@ interactive. Neither role has any access to `private.*`.
 GRANT USAGE ON SCHEMA public TO user_role, agent_role;
 GRANT SELECT ON public.events, public.devices, public.events_enriched
   TO user_role, agent_role;
-GRANT SELECT ON public.reports, public.insights, public.annotations,
+GRANT SELECT ON public.reports, public.annotations,
                 public.prompts, public.source_tags
   TO user_role, agent_role;
 
 -- User can CRUD derived + source_tags directly (including batch)
-GRANT INSERT, UPDATE, DELETE ON public.reports, public.insights,
+GRANT INSERT, UPDATE, DELETE ON public.reports,
                                  public.annotations, public.prompts,
                                  public.source_tags
   TO user_role;
@@ -143,11 +143,9 @@ GRANT INSERT, UPDATE, DELETE ON public.reports, public.insights,
 -- Agent cannot write directly; routes through singleton functions
 GRANT USAGE ON SCHEMA agent_api TO agent_role;
 GRANT EXECUTE ON FUNCTION agent_api.upsert_report,
-                          agent_api.upsert_insight,
                           agent_api.upsert_annotation,
                           agent_api.create_prompt,
                           agent_api.soft_delete_report,
-                          agent_api.soft_delete_insight,
                           agent_api.soft_delete_annotation
   TO agent_role;
 
@@ -303,10 +301,14 @@ impossible under `agent_role`, by design.
 
 ```
 -- Agent side (as agent_role):
-SELECT agent_api.create_prompt('sleep_latency',
-                               'How long did you take to fall asleep last night?',
-                               '{"trigger": "nightly"}'::jsonb,
-                               NOW() + INTERVAL '2 days');
+SELECT agent_api.create_prompt(
+  'sleep_latency',
+  'How long did you take to fall asleep last night?',
+  '{"trigger": "nightly"}'::jsonb,                            -- context
+  '{"type": "number", "unit": "minutes"}'::jsonb,             -- answer_schema
+  NOW() + INTERVAL '2 days',                                   -- expires_at
+  'agent.nightly'                                              -- asked_by
+);
 
 -- Phone polls /functions/v1/pending-prompts every 30s (or on screen-on)
 -- with its existing bearer. Returns any unanswered prompts. No Realtime

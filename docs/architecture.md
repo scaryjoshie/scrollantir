@@ -6,11 +6,13 @@ Personal "palantir for yourself" time-tracking. Structured events across Mac and
 
 | Component | State |
 |---|---|
-| Android app (phone data) | ✅ Built, running on Josh's Pixel 9 |
-| Stub ingest server (dev) | ✅ Python/FastAPI on Mac LAN (`android-testing/server.py`) |
-| Mac collector (ActivityWatch + forwarder) | 🚧 Planned — see `mac.md` |
-| Production ingest server (Postgres, HTTPS) | 🚧 Planned |
-| Dashboard | 🚧 Planned |
+| Android app (phone data) | ✅ Built, running on Pixel 9. **Still posts to the LAN stub server**; Supabase wire-up is roadmap #4. |
+| Mac collector (ActivityWatch + forwarder) | ✅ launchd agent on 30 s interval, posting to Supabase. |
+| Ingest pipeline (Supabase edge functions → Postgres) | ✅ `/ingest`, `/prompt-answer`, `/pending-prompts` live. Event row count in the thousands and growing. |
+| Admin CLI (`./admin`) | ✅ Device/token/role lifecycle. |
+| Orchestrator (Claude Code CLI) | 🚧 Phase 0 validated locally; Phases 1–3 (container → Oracle Free + Coolify → add jobs) planned. |
+| Stub ingest server (dev-only) | ✅ Still usable for LAN-only debugging; not the primary path anymore. |
+| Dashboard (Swift Mac app) | 📋 Planned; blocked on roadmap #8 (projects/classification). |
 
 ## Goals
 
@@ -38,26 +40,47 @@ PHONE (Android 14+, Pixel 9)                     MAC
 │ ├─ ContentDetectorService  │                   │ └─ aw-watcher-web (fork)   │
 │ │    (AccessibilityService)│                   │                            │
 │ └─ Room DB (local queue)   │                   │ Python forwarder (launchd) │
-│                            │                   │   reads AW's local SQLite  │
-│ ForwarderWorker (15m)      │                   │                            │
+│                            │                   │   reads AW's local SQLite, │
+│ ForwarderWorker (15m)      │                   │   runs every 30s           │
 │ CleanupWorker (6h)         │                   │                            │
 └──────────────┬─────────────┘                   └──────────────┬─────────────┘
                │                                                │
-               │    HTTPS + bearer                  HTTPS + bearer
-               │                                                │
-               └────────────┬───────────────────────────────────┘
-                            ▼
-                ┌────────────────────────┐
-                │  Ingest server         │
-                │  FastAPI → Postgres    │
-                │  ON CONFLICT DO NOTHING│
-                └────────────────────────┘
-                            ▼
-                    ┌───────────────┐
-                    │  Dashboard    │
-                    │  (TBD)        │
-                    └───────────────┘
+               │  HTTPS + bearer                  HTTPS + bearer │
+               │  [stub for now;                                 │
+               │   roadmap #4 →                                  │
+               │   Supabase edge]                                │
+               │                                                 │
+               ▼                                                 ▼
+     ┌──────────────────┐             ┌──────────────────────────────────┐
+     │ android-testing/ │             │ Supabase edge function           │
+     │ server.py        │             │ POST /functions/v1/ingest        │
+     │ (LAN stub, dev)  │             │ (Deno, --no-verify-jwt)          │
+     └──────────────────┘             │           ↓                      │
+                                      │ ingest_api.accept_event          │
+                                      │ (SECURITY DEFINER, ingest_role)  │
+                                      │           ↓                      │
+                                      │ public.events                    │
+                                      │ ON CONFLICT (id) DO NOTHING      │
+                                      └──────────────┬───────────────────┘
+                                                     │
+                                                     ▼
+                             ┌────────────────────────────────────────┐
+                             │ Orchestrator (planned)                 │
+                             │ Claude Code CLI + cron + Docker        │
+                             │ Oracle Free ARM + Coolify              │
+                             │ Reads via agent_role, writes reports   │
+                             │ via agent_api.upsert_report            │
+                             └────────────────────────────────────────┘
+                                                     ▼
+                                          ┌───────────────────┐
+                                          │ Swift dashboard   │
+                                          │ (planned)         │
+                                          └───────────────────┘
 ```
+
+See `docs/data-flow.md` for the cross-plane credential map and
+per-arrow operation detail. This diagram is the bird's-eye view;
+data-flow.md is the runtime placement.
 
 ## Data model
 
