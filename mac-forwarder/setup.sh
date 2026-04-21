@@ -25,16 +25,26 @@ KEYRING_ACCOUNT="ingest-token"
 say() { printf "\033[1;34m[setup]\033[0m %s\n" "$*"; }
 die() { printf "\033[1;31m[setup]\033[0m %s\n" "$*" >&2; exit 1; }
 
-# ─── prompt for server URL + token ────────────────────────────────────────
-default_url="http://localhost:8069"
+# ─── prompt for ingest URL + token ────────────────────────────────────────
+# Expect the FULL ingest URL — e.g.
+#   https://<ref>.supabase.co/functions/v1/ingest  (Supabase edge function)
+#   http://localhost:8069/ingest                   (dev stub server)
+default_url="https://feijpewzqgqczkxmvdng.supabase.co/functions/v1/ingest"
 if [[ -f "$CONFIG_PATH" ]]; then
-    existing_url=$(python3 -c "import json,sys; print(json.load(open('$CONFIG_PATH')).get('server_url',''))" 2>/dev/null || true)
+    existing_url=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c.get('ingest_url') or c.get('server_url') or '')" 2>/dev/null || true)
     [[ -n "$existing_url" ]] && default_url="$existing_url"
 fi
 
-read -rp "Ingest server URL [$default_url]: " server_url
-server_url="${server_url:-$default_url}"
-[[ -z "$server_url" ]] && die "server_url is required"
+read -rp "Ingest endpoint URL [$default_url]: " ingest_url
+ingest_url="${ingest_url:-$default_url}"
+[[ -z "$ingest_url" ]] && die "ingest_url is required"
+
+# Forgiving fixup: if someone pastes just the base URL without /ingest,
+# append it so they don't hit 404.
+case "$ingest_url" in
+    */ingest) ;;
+    *) ingest_url="${ingest_url%/}/ingest" ;;
+esac
 
 read -rsp "Bearer token (input hidden): " token
 echo
@@ -45,7 +55,7 @@ mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 cat > "$CONFIG_PATH" <<EOF
 {
-  "server_url": "$server_url"
+  "ingest_url": "$ingest_url"
 }
 EOF
 chmod 600 "$CONFIG_PATH"

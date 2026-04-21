@@ -190,9 +190,9 @@ class IngestError(Exception):
         self.body = body
 
 
-def post_batch(server_url: str, token: str, events: list[dict]) -> None:
+def post_batch(ingest_url: str, token: str, events: list[dict]) -> None:
     req = Request(
-        server_url.rstrip("/") + "/ingest",
+        ingest_url,
         data=json.dumps(events).encode("utf-8"),
         method="POST",
         headers={
@@ -225,7 +225,7 @@ def drain_bucket(
     bucket_id: str,
     source: str,
     cp: dict | None,
-    server_url: str,
+    ingest_url: str,
     token: str,
 ) -> tuple[int, dict | None]:
     """Fetch new events for one bucket, POST in ≤500-chunks, return
@@ -252,7 +252,7 @@ def drain_bucket(
     for chunk_start in range(0, len(fresh), BATCH_SIZE):
         chunk = fresh[chunk_start:chunk_start + BATCH_SIZE]
         payload = [build_event(bucket_id, source, e) for e in chunk]
-        post_batch(server_url, token, payload)
+        post_batch(ingest_url, token, payload)
 
     # fresh is sorted ascending by id, so fresh[-1].id is the new high-water.
     # Timestamp is NOT monotonic with id (watchers can emit for a past moment),
@@ -266,10 +266,18 @@ def drain_bucket(
 
 def run_once() -> int:
     cfg = load_config()
-    server_url = cfg.get("server_url")
-    if not server_url:
-        err("config.json missing 'server_url'")
-        return 2
+    # Backwards-compat: older configs used `server_url` (base URL;
+    # `/ingest` was appended in post_batch). New configs use
+    # `ingest_url` (the full endpoint, no appending). Prefer the new
+    # key; fall back to the old by appending /ingest.
+    ingest_url = cfg.get("ingest_url")
+    if not ingest_url:
+        legacy = cfg.get("server_url")
+        if legacy:
+            ingest_url = legacy.rstrip("/") + "/ingest"
+        else:
+            err("config.json missing 'ingest_url' (or legacy 'server_url')")
+            return 2
     aw_host = cfg.get("aw_host", "127.0.0.1")
     aw_port = int(cfg.get("aw_port", 5600))
 
@@ -293,7 +301,7 @@ def run_once() -> int:
             continue
         cp = checkpoint.get(bucket_id)
         try:
-            sent, new_cp = drain_bucket(aw, bucket_id, source, cp, server_url, token)
+            sent, new_cp = drain_bucket(aw, bucket_id, source, cp, ingest_url, token)
         except IngestError as e:
             if 400 <= e.status < 500 and e.status not in (408, 429):
                 err(f"{bucket_id}: ingest rejected ({e}); checkpoint unchanged")

@@ -88,7 +88,13 @@ BEGIN
   DO UPDATE SET hits = private.ingest_rate_limit.hits + 1
   RETURNING hits INTO v_hits;
 
-  IF v_hits > 200 THEN
+  -- Rate limit: 10000/min/token. Calibrated upward from an initial
+  -- 200 because the first-sync backfill from ActivityWatch can push
+  -- multiple thousands of events from a single bucket at once, and
+  -- we want a clean drain rather than forcing N retries. Steady
+  -- state is <30 events/min, so this mostly exists as a runaway-
+  -- client guard, not a throughput throttle.
+  IF v_hits > 10000 THEN
     RAISE EXCEPTION 'rate limit exceeded (% hits/min)', v_hits
       USING ERRCODE = '54000';  -- program_limit_exceeded
   END IF;
