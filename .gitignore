@@ -14,6 +14,9 @@ scripts/.env.admin
 # Local secrets inbox (minted tokens, DSNs — never commit)
 scripts/.secrets/
 
+# Per-user Claude Code overrides (bypass perms etc.) — never commit
+.claude/settings.local.json
+
 # Node (future: dashboard)
 node_modules/
 
