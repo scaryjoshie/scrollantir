@@ -29,6 +29,34 @@ Plus the **Admin CLI** (your local Mac only, `service_role`) for
 device + token + role-password lifecycle. That's in its own plane
 because it's the root-of-trust tool and never runs automated.
 
+Runtime for the orchestrator is **Claude Code CLI in a Docker
+container** (Oracle Free ARM + Coolify, target deployment). Not a
+bespoke Python agent loop — the CLI already implements tool-use,
+streaming, self-correction, and has a skills/memory filesystem
+convention we can lean on. See `docs/orchestrator.md` for the concrete
+setup plan.
+
+## Five-entity view
+
+The 10,000-ft picture, nothing else:
+
+```mermaid
+flowchart LR
+  Phone["📱 Phone<br/>forwarder"]
+  Mac["💻 Mac<br/>forwarder"]
+  Supa[("☁️ Supabase<br/>Postgres + edge fns")]
+  Orch["🧠 Orchestrator<br/>Claude Code + cron"]
+  UI["📊 Swift UI<br/>Mac dashboard (planned)"]
+
+  Phone -- "HTTPS events<br/>bearer token" --> Supa
+  Mac   -- "HTTPS events<br/>bearer token" --> Supa
+  Orch  <-- "agent_role<br/>SELECT + agent_api.* RPCs" --> Supa
+  UI    -- "user_role<br/>direct Postgres" --> Supa
+  UI    -. "chat (future)" .-> Orch
+```
+
+Everything else on this page is a zoom-in on one of those arrows.
+
 ## Status
 
 | Plane | State |
@@ -95,17 +123,15 @@ flowchart TB
   end
 
   %% ═════════ Orchestrator ═════════
-  subgraph ORCH["🧠 Orchestrator (cheap VPS, TBD)"]
+  subgraph ORCH["🧠 Orchestrator (Docker on Oracle Free + Coolify)"]
     direction TB
-    OrchScheduler["Internal scheduler<br/>daily-digest 7am<br/>weekly-report Sun 9am<br/>classifier every 15 min<br/>prompt-asker nightly"]
-    OrchChatAPI["Chat HTTP/WS<br/>(Swift dashboard calls)"]
-    OrchAgent["Agent runtime<br/>(Claude Code / Codex CLI<br/>+ tool inventory)"]
-    OrchFS[("Local FS:<br/>skills/<br/>memory/<br/>state/")]
-    OrchEnv[("Env secrets:<br/>AGENT_DATABASE_URL<br/>ANTHROPIC_API_KEY<br/>GROQ_API_KEY / CEREBRAS_API_KEY")]
-    OrchScheduler --> OrchAgent
-    OrchChatAPI --> OrchAgent
-    OrchAgent -- "reads/writes" --> OrchFS
-    OrchAgent -.reads.-> OrchEnv
+    OrchCron["cron<br/>0 7 * * *   daily-digest<br/>0 9 * * 0   weekly-report<br/>*/15 * * * *  classifier"]
+    OrchCLI["claude -p '...'<br/>(Claude Code CLI, headless)"]
+    OrchFS[("Persistent volume:<br/>/scrollantir/CLAUDE.md<br/>/scrollantir/jobs/*.md<br/>/scrollantir/skills/<br/>/scrollantir/memory/")]
+    OrchEnv[("Env secrets (Coolify):<br/>ANTHROPIC_API_KEY<br/>AGENT_DATABASE_URL")]
+    OrchCron --> OrchCLI
+    OrchCLI -- "reads conventions,<br/>writes memory" --> OrchFS
+    OrchCLI -. "reads" .-> OrchEnv
   end
 
   %% ═════════ LLM providers ═════════
@@ -124,17 +150,17 @@ flowchart TB
   AdminCLI == "service_role<br/>direct Postgres :5432" ==> PG
   SwiftDash -- "user_role<br/>direct Postgres :5432" --> PubTables
 
-  %% ═════════ Arrows: Swift ↔ orchestrator ═════════
-  SwiftDash -- "WSS chat" --> OrchChatAPI
+  %% ═════════ Arrows: Swift ↔ orchestrator (future; transport TBD) ═════════
+  SwiftDash -. "chat (future)" .-> OrchCLI
 
   %% ═════════ Arrows: orchestrator → Supabase ═════════
-  OrchAgent -- "agent_role SELECT<br/>direct Postgres :5432" --> EnrichView
-  OrchAgent -- "agent_role SELECT" --> PubTables
-  OrchAgent -- "agent_role EXECUTE<br/>singleton RPCs" --> AgentAPI
+  OrchCLI -- "agent_role SELECT<br/>direct Postgres :5432" --> EnrichView
+  OrchCLI -- "agent_role SELECT" --> PubTables
+  OrchCLI -- "agent_role EXECUTE<br/>singleton RPCs" --> AgentAPI
 
   %% ═════════ Arrows: orchestrator → LLMs ═════════
-  OrchAgent -. "HTTPS" .-> Anthropic
-  OrchAgent -. "HTTPS" .-> Groq
+  OrchCLI -. "HTTPS (Anthropic API)" .-> Anthropic
+  OrchCLI -. "HTTPS (optional)" .-> Groq
 ```
 
 Legend:
@@ -232,7 +258,11 @@ windows and prompts. Classifier is the same shape but uses
 Groq/Cerebras and writes via a `agent_api.classify_event` RPC
 (introduced as part of roadmap #8).
 
-### D. Swift dashboard chat
+### D. Swift dashboard chat (future, transport TBD)
+
+Illustrative only. The Swift app doesn't exist yet and the chat
+transport (WebSocket shown below, SSE also viable) is an open
+question scoped for whenever the Swift app is actually being built.
 
 ```mermaid
 sequenceDiagram
@@ -314,59 +344,54 @@ can shell out, use git, run Python).
 
 ## What the orchestrator server needs to provide
 
-Minimum viable spec. This is what you should shop for.
+Minimum viable spec. Concrete setup plan in `docs/orchestrator.md`.
 
-1. **Always-on Linux host.** 1 vCPU / 1 GB RAM is fine to start; 2
-   vCPU / 2 GB more comfortable. No GPU. No high IOPS. Traffic is
-   trivial (a few KB of DB queries + a few MB of LLM round-trips per
-   day).
-2. **Persistent disk (~5 GB).** Skills, memory, logs. Separate from
-   container lifetime — redeploys must not wipe `/var/scrollantir/*`.
-3. **TLS-terminated HTTPS endpoint** for the Swift app chat
-   (`wss://orch.yourdomain/chat`). Let's Encrypt + Caddy is trivial.
-   Self-signed is fine for a while since the only client is your Mac.
-4. **Outbound HTTPS** to `*.supabase.co:5432` (Postgres) and to LLM
-   provider APIs.
-5. **Environment secrets**: `AGENT_DATABASE_URL`, `ANTHROPIC_API_KEY`,
-   optional `GROQ_API_KEY` / `CEREBRAS_API_KEY`.
-6. **Cron or systemd timers** (host-level is fine; no need for a
-   scheduler library).
+1. **Always-on Linux host** (ARM64 OK). 1 vCPU / 1 GB RAM is fine to
+   start; 2 vCPU / 2 GB more comfortable. No GPU. Traffic is trivial
+   (a few KB of DB queries + a few MB of LLM round-trips per day).
+2. **Persistent disk (~5 GB).** Mounted into the container at
+   `/scrollantir`. Holds `CLAUDE.md`, `jobs/`, `skills/`, `memory/`,
+   logs. Survives redeploys.
+3. **Outbound HTTPS** to `*.supabase.co:5432` (Postgres) and to the
+   Anthropic API. No inbound HTTPS needed for v1 — chat is SSH-in
+   until the Swift app materializes.
+4. **Docker + cron**, both wrapped by Coolify. No scheduler library,
+   no bespoke agent runtime — Claude Code CLI does the reasoning;
+   cron does the timing; Coolify does the plumbing.
+5. **Env secrets (via Coolify):** `ANTHROPIC_API_KEY`,
+   `AGENT_DATABASE_URL`. Nothing else required for MVP.
 
-Candidate shapes:
-- Hetzner / DigitalOcean / Linode cheapest tier (~$4-6/mo) with
-  Docker Compose.
-- Fly.io with a persistent volume + machines (min=1) — can be a single
-  Dockerfile with persistence.
-- Mac mini at home running Tailscale — only viable if you're OK with
-  home ISP dependency; cheapest long-term.
-- A container on an existing server you already run (cheapest if you
-  have one).
+Target host: **Oracle Cloud Always Free ARM (Ampere Altra)**.
+4 OCPU / 24 GB RAM / 200 GB disk, free forever. Backup plans:
+Hetzner / DigitalOcean cheapest tier (~$4-6/mo), Fly.io with a
+persistent volume, or an existing home server + Tailscale.
 
 Not suitable: Cloudflare Workers, Vercel serverless, AWS Lambda
-(short timeouts, no persistent FS, cold starts). These are edge-fn
-shaped, which is what we specifically moved away from for the
+(short timeouts, no persistent FS, cold starts). These are the
+same constraints that ruled out Supabase edge functions for the
 reasoning plane.
 
-## Open questions (to resolve before orchestrator work starts)
+## Open questions
 
-1. **Agent runtime choice.** Claude Code CLI? Codex CLI? A bespoke
-   Python loop around `anthropic.messages.create`? Codex CLI is
-   Josh's stated preference; worth prototyping all three.
-2. **Chat transport to Swift.** Plain SSE vs. WebSocket? SSE is
-   simpler; WS supports user-interrupt upstream.
-3. **How `agent_role` DSN reaches the orchestrator.** Options:
-   `ssh + scp` after `setup-roles`; pull from 1Password CLI; manual
-   one-time paste into the VPS env. Pick one, document in
-   `docs/setup.md` when the orchestrator ships.
-4. **Classifier latency.** Per-event-as-it-arrives (orchestrator
-   subscribes to events changes) vs. 15-min batches. Batches are
-   simpler and fit the orchestrator's periodic-job shape; subscription
-   means the orchestrator needs an always-open listener on Postgres
-   LISTEN/NOTIFY. Default to batches.
-5. **Whether pg_cron tasks stay on Supabase.** Small DB-only jobs
-   (auto-revoke superseded tokens, delete old rate-limit rows) belong
-   on `pg_cron` since they don't need the orchestrator's runtime.
-   Everything with an LLM call belongs on the orchestrator.
+Narrowed, since the runtime decision is settled:
+
+1. **DB access tool inside the container.** Simplest: preconfigure
+   `~/.pgpass` and let the agent shell out to `psql`. More polished:
+   install the Postgres MCP server and register it with Claude Code.
+   Default: start with psql; upgrade if/when it's the bottleneck.
+2. **How `agent_role` DSN reaches the orchestrator.** Options: manual
+   one-time paste into Coolify env after `./admin setup-roles`; pull
+   from 1Password CLI at container boot; ssh-copy-id + scp. Pick one
+   and document in `docs/setup.md` when the orchestrator ships.
+3. **Classifier cadence.** Every-15-min batches (simple) vs.
+   LISTEN/NOTIFY subscription (real-time). Default to batches.
+4. **Whether `prompt-asker` is in v1.** daily-digest and
+   weekly-report are well-defined. Prompt-asker needs decisions about
+   triggers and question templates. Defer to v2 unless you want it
+   early for sleep detection.
+5. **Chat transport when Swift ships.** SSE (simpler) vs. WebSocket
+   (supports upstream interrupt). Decide when Swift is being built,
+   not now.
 
 ## Related docs
 
