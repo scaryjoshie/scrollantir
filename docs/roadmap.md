@@ -152,6 +152,7 @@ New screen in the phone app:
 
 ## Ideas / future bets (not blocking anything)
 
+- **[cmux per-tab watcher](cmux-watcher.md)** — tab-level (surface) focus events for the `manaflow-ai/cmux` terminal app. Design documented; deferred 2026-04-21 because workspace-level is already captured via `system.window` titles and per-tab volume isn't worth it until a downstream consumer (classifier, focus analysis) needs it.
 - **Spotify track history** — `spotify.track` events via OAuth + Supabase edge function polling
 - **Calendar meetings** — Google Calendar events as `calendar.meeting` duration events
 - **Wifi SSID for location context** — poor man's location without GPS

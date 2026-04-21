@@ -22,6 +22,7 @@ Read in this order:
 | [places.md](places.md) | **Planned module.** Named-location layer on top of raw location events: schema, query-time matching, visit consolidation with bathroom-break tolerance, schedule-aware attendance derivation, chatbot-driven population. |
 | [dashboard.md](dashboard.md) | **Planned module.** Mac Swift main portal: three stacked timelines (phone, mac, location), narrative-style location track, parsed/derived tables (`place_visits`, `travel_legs`), architectural options for deriving them. |
 | [views.md](views.md) | **Planned module.** Agent-authored custom dashboards — architecture options (views-as-data vs views-as-TypeScript), starter template library, agent tool surface. |
+| [cmux-watcher.md](cmux-watcher.md) | **Deferred.** Tab-level (surface) focus tracking inside the `manaflow-ai/cmux` terminal app. Design captured; shelved pending a downstream consumer since workspace-level is already free via `system.window` titles. |
 
 ## Not yet written
 
