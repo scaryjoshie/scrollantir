@@ -66,22 +66,30 @@ the client. Acceptance confirmed: phone token minted, QR scanned,
 `detector.miss` / `system.foreground` / `system.unlock` /
 `youtube.shorts` rows landed in `public.events` on first sync.
 
-### 5. Documentation sweep 🚧
+### 5. Documentation sweep ✅
 
-Partially done: `docs/data-flow.md`, `docs/orchestrator.md`,
-`docs/cmux-watcher.md` written; `docs/session-2026-04-21.md` added
-as a handoff chronicle; roadmap + README index updated.
-
-Still stale per 2026-04-21 Codex audit:
-- `docs/architecture.md` pipeline diagram + status table (still
-  shows the FastAPI stub as current)
-- `docs/data-flow.md` phase-status table (edge functions marked as
-  "next" but they're live)
-- `docs/README.md` + top-level `README.md` blurbs that reference
-  the pre-Supabase world
-- `docs/setup.md` — replace stub-server section with a Supabase
-  setup runbook
-- `docs/android.md` — note the new QR onboarding flow once #4 ships
+Drift swept 2026-04-25:
+- `docs/architecture.md` status table + ASCII pipeline diagram
+  refreshed; Coolify references replaced with Hetzner+systemd; phone
+  & mac forwarders shown going to Supabase directly; new
+  `phone.location.reading` + `phone.activity.state` sources added to
+  the catalog.
+- `docs/data-flow.md` Coolify references removed; orchestrator block
+  retitled "Docker + systemd on Hetzner CAX11"; status table updated
+  to reflect Phases 0–2 shipped, dashboard pivoted to web.
+- `docs/setup.md` stub-server section removed; Supabase-direct
+  verification checklist replaced.
+- `docs/mac.md` retitled as a component reference; status section
+  marks the implementation as live with the hold-the-tail fix
+  landed 2026-04-25.
+- `docs/agent.md` flagged as subsumed by `orchestrator.md` with a
+  banner pointing to the production runtime.
+- `docs/edge-functions.md` clarified what shipped as edge functions
+  (3) vs what moved to the orchestrator (daily-digest, weekly-report)
+  vs what stays as pure pg_cron (token-cleanup).
+- `docs/session-2026-04-23-aw-forwarder.md` postscript added: the
+  AFK decision in the body was reversed once real durations flowed;
+  derived-idle won.
 
 ## Next after ingest is live (agent infra)
 

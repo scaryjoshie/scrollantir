@@ -1,5 +1,22 @@
 # Session 2026-04-23 — the mac-forwarder truncation bug
 
+> **Postscript (2026-04-25): the AFK decision below was reversed.**
+> Once the forwarder fix landed and real durations flowed, empirical
+> re-evaluation showed AW's `system.afk` was over-aggressive against
+> *correct* data (counted ~10h idle against ~11h focus on a normal
+> day). The dashboard switched to a **derived-idle model**:
+> `mac_active = mac_focus`, with idle = gaps in
+> `mac_focus ∪ phone_active` of ≥ 2 min, clipped to "now."
+> Canonical model lives in `dashboard/server/summarize.ts` +
+> `idle.ts`. AW's raw `system.afk` rows are still in the DB and
+> surfaced as `mac_afk_ms` for comparison; not used in active-time
+> math.
+>
+> The "switch to AW AFK" decision below was the right call against
+> *truncated* data; it was wrong against *full* data. The chronicle
+> is preserved as written so the reasoning that led to the wrong
+> conclusion (and the empirical reversal) stays visible.
+
 Investigation + plan, written before any code change. No commits
 landed from this session; the dashboard has a handful of staged but
 unapplied dashboard-side changes that must be re-evaluated after the

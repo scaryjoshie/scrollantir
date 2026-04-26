@@ -5,6 +5,33 @@ internet-exposed surface for writes. Each function is a thin RPC
 caller — all real logic lives in `ingest_api.*` / `agent_api.*`
 SECURITY DEFINER functions in the database.
 
+## What ships as an edge function (and what doesn't)
+
+Three edge functions are deployed and live (since 2026-04-21):
+
+- `/functions/v1/ingest` — device → events POST
+- `/functions/v1/prompt-answer` — phone → answer POST
+- `/functions/v1/pending-prompts` — phone → unanswered prompts GET
+
+The "Function 4–6" sections below (`daily-digest`, `weekly-report`,
+`token-cleanup`) were originally specced as edge functions but
+**didn't ship that way**. Edge functions are short-lived, stateless
+Deno workers with no persistent FS — wrong shape for an agent that
+needs accumulated skills/memory and longer reasoning windows. Those
+jobs moved to the **orchestrator container** (Hetzner CAX11 + systemd
++ Docker + cron, see `orchestrator.md`):
+
+- `daily-digest` — orchestrator cron `0 7 * * *`
+- `weekly-report` — orchestrator cron `0 9 * * 0`
+- `classifier` — orchestrator cron (deferred until roadmap #8)
+- `token-cleanup` — pure SQL pg_cron in Postgres (still planned;
+  doesn't need an edge function or the orchestrator since it has no
+  LLM step)
+
+The spec sections below are kept as reference for the original design;
+when reading them, treat anything past Function 3 as "this is what
+moved to the orchestrator instead."
+
 ## File layout
 
 ```

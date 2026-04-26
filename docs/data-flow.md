@@ -30,11 +30,11 @@ device + token + role-password lifecycle. That's in its own plane
 because it's the root-of-trust tool and never runs automated.
 
 Runtime for the orchestrator is **Claude Code CLI in a Docker
-container** (Oracle Free ARM + Coolify, target deployment). Not a
+container** on Hetzner CAX11 + systemd (deployed 2026-04-21). Not a
 bespoke Python agent loop — the CLI already implements tool-use,
 streaming, self-correction, and has a skills/memory filesystem
-convention we can lean on. See `docs/orchestrator.md` for the concrete
-setup plan.
+convention we can lean on. See `docs/orchestrator.md` for image
+contents, deployment, and per-job prompts.
 
 ## Five-entity view
 
@@ -61,13 +61,13 @@ Everything else on this page is a zoom-in on one of those arrows.
 
 | Plane | State |
 |---|---|
-| Android collector | ✅ built; still posting to LAN stub. Supabase wire-up is roadmap #4. |
-| Mac collector + forwarder | ✅ launchd every 30 s → Supabase `/functions/v1/ingest`. Hostname-agnostic uuid5 scheme; heartbeat-cascade overlap suppression on the client. |
+| Android collector | ✅ built; posting to Supabase via QR-onboarding (roadmap #4 shipped 2026-04-21). Location + activity tracking + prompts inbox + QR scanner all live. |
+| Mac collector + forwarder | ✅ launchd every 30 s → Supabase `/functions/v1/ingest`. Hostname-agnostic uuid5; hold-the-tail discipline (2026-04-25) for correct durations. |
 | Supabase schema v3 | ✅ deployed + three 2026-04-21 hot-patches (pgcrypto schema qualifier, rate-counter on actual-insert only, `events_enriched` re-grant). |
-| Admin CLI | ✅ shipped 2026-04-21; roles assigned, Mac device registered, token minted. |
+| Admin CLI | ✅ shipped 2026-04-21; roles assigned, devices registered, tokens minted. |
 | Edge functions (ingest / prompt-answer / pending-prompts) | ✅ deployed with `--no-verify-jwt`. |
-| Orchestrator (server + agent runtime) | 🚧 Phase 0 validated (local Claude Code wrote first daily-digest report); Phases 1–3 (container → Oracle Free + Coolify → add jobs) planned. |
-| Swift Mac dashboard | 📋 planned; blocked on roadmap #8 projects layer. |
+| Orchestrator (server + agent runtime) | ✅ Phases 0–2 shipped (Hetzner CAX11 + systemd + Docker + cron); daily-digest + weekly-report cron-firing. Classifier deferred to roadmap #8. |
+| Web dashboard (Vite + React + TS) | 🚧 in progress at `dashboard/`; SwiftUI scaffold at `macos/` parked 2026-04-21. |
 
 ## System diagram
 
@@ -123,12 +123,12 @@ flowchart TB
   end
 
   %% ═════════ Orchestrator ═════════
-  subgraph ORCH["🧠 Orchestrator (Docker on Oracle Free + Coolify)"]
+  subgraph ORCH["🧠 Orchestrator (Docker + systemd on Hetzner CAX11)"]
     direction TB
     OrchCron["cron<br/>0 7 * * *   daily-digest<br/>0 9 * * 0   weekly-report<br/>*/15 * * * *  classifier"]
     OrchCLI["claude -p '...'<br/>(Claude Code CLI, headless)"]
     OrchFS[("Persistent volume:<br/>/scrollantir/CLAUDE.md<br/>/scrollantir/jobs/*.md<br/>/scrollantir/skills/<br/>/scrollantir/memory/")]
-    OrchEnv[("Env secrets (Coolify):<br/>ANTHROPIC_API_KEY<br/>AGENT_DATABASE_URL")]
+    OrchEnv[("Env secrets (/etc/scrollantir.env, mode 600):<br/>CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY<br/>AGENT_DATABASE_URL")]
     OrchCron --> OrchCLI
     OrchCLI -- "reads conventions,<br/>writes memory" --> OrchFS
     OrchCLI -. "reads" .-> OrchEnv
@@ -355,16 +355,19 @@ Minimum viable spec. Concrete setup plan in `docs/orchestrator.md`.
 3. **Outbound HTTPS** to `*.supabase.co:5432` (Postgres) and to the
    Anthropic API. No inbound HTTPS needed for v1 — chat is SSH-in
    until the Swift app materializes.
-4. **Docker + cron**, both wrapped by Coolify. No scheduler library,
+4. **Docker + cron**, supervised by host systemd. No scheduler library,
    no bespoke agent runtime — Claude Code CLI does the reasoning;
-   cron does the timing; Coolify does the plumbing.
-5. **Env secrets (via Coolify):** `ANTHROPIC_API_KEY`,
-   `AGENT_DATABASE_URL`. Nothing else required for MVP.
+   cron does the timing; systemd keeps the container alive.
+5. **Env secrets (via `/etc/scrollantir.env`, mode 600):**
+   `AGENT_DATABASE_URL` plus one of `CLAUDE_CODE_OAUTH_TOKEN` or
+   `ANTHROPIC_API_KEY`. Nothing else required for MVP.
 
-Target host: **Oracle Cloud Always Free ARM (Ampere Altra)**.
-4 OCPU / 24 GB RAM / 200 GB disk, free forever. Backup plans:
-Hetzner / DigitalOcean cheapest tier (~$4-6/mo), Fly.io with a
-persistent volume, or an existing home server + Tailscale.
+Currently deployed on **Hetzner CAX11 ARM** (Ampere, 2 vCPU / 4 GB
+RAM, ~€4/mo, nbg1). Was originally planned for Oracle Cloud Always
+Free ARM but Coolify proved unnecessary — plain Docker + systemd is
+simpler. Other reasonable options if you're picking fresh: Oracle
+Free ARM (4 OCPU / 24 GB RAM, free forever), DigitalOcean cheapest
+tier, Fly.io with a persistent volume, or a home server + Tailscale.
 
 Not suitable: Cloudflare Workers, Vercel serverless, AWS Lambda
 (short timeouts, no persistent FS, cold starts). These are the

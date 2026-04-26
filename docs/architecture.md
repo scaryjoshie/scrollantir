@@ -6,13 +6,12 @@ Personal "palantir for yourself" time-tracking. Structured events across Mac and
 
 | Component | State |
 |---|---|
-| Android app (phone data) | ✅ Built, running on Pixel 9. **Still posts to the LAN stub server**; Supabase wire-up is roadmap #4. |
-| Mac collector (ActivityWatch + forwarder) | ✅ launchd agent on 30 s interval, posting to Supabase. |
-| Ingest pipeline (Supabase edge functions → Postgres) | ✅ `/ingest`, `/prompt-answer`, `/pending-prompts` live. Event row count in the thousands and growing. |
+| Android app (phone data) | ✅ Built, running on Pixel 9. Posts to Supabase via QR-onboarding (since 2026-04-21). |
+| Mac collector (ActivityWatch + forwarder) | ✅ launchd agent on 30 s interval, posting to Supabase. Hold-the-tail fix landed 2026-04-25 (`session-2026-04-23-aw-forwarder.md`). |
+| Ingest pipeline (Supabase edge functions → Postgres) | ✅ `/ingest`, `/prompt-answer`, `/pending-prompts` live. Event row count in the tens of thousands. |
 | Admin CLI (`./admin`) | ✅ Device/token/role lifecycle. |
-| Orchestrator (Claude Code CLI) | 🚧 Phase 0 validated locally; Phases 1–3 (container → Oracle Free + Coolify → add jobs) planned. |
-| Stub ingest server (dev-only) | ✅ Still usable for LAN-only debugging; not the primary path anymore. |
-| Dashboard (Swift Mac app) | 📋 Planned; blocked on roadmap #8 (projects/classification). |
+| Orchestrator (Claude Code CLI) | ✅ Phases 0–2 shipped on Hetzner CAX11 + systemd. Daily-digest (07:00 CT) + weekly-report (Sun 09:00 CT) cron-firing. |
+| Dashboard (web — Vite + React + TS) | 🚧 In progress at `dashboard/`. SwiftUI attempt at `macos/` parked 2026-04-21. |
 
 ## Goals
 
@@ -38,44 +37,46 @@ PHONE (Android 14+, Pixel 9)                     MAC
 │ ├─ UsageStatsPoller        │                   │ ├─ aw-watcher-window       │
 │ ├─ ScreenWatcher           │                   │ ├─ aw-watcher-afk          │
 │ ├─ ContentDetectorService  │                   │ └─ aw-watcher-web (fork)   │
-│ │    (AccessibilityService)│                   │                            │
-│ └─ Room DB (local queue)   │                   │ Python forwarder (launchd) │
-│                            │                   │   reads AW's local SQLite, │
-│ ForwarderWorker (15m)      │                   │   runs every 30s           │
+│ ├─ ActivityWatcher         │                   │                            │
+│ ├─ LocationWatcher         │                   │ Python forwarder (launchd) │
+│ │    (Tier 1 + Tier 2 GPS) │                   │   reads AW's local SQLite, │
+│ └─ Room DB (local queue)   │                   │   runs every 30s,          │
+│                            │                   │   hold-the-tail discipline │
+│ ForwarderWorker (15m)      │                   │                            │
 │ CleanupWorker (6h)         │                   │                            │
 └──────────────┬─────────────┘                   └──────────────┬─────────────┘
                │                                                │
                │  HTTPS + bearer                  HTTPS + bearer │
-               │  [stub for now;                                 │
-               │   roadmap #4 →                                  │
-               │   Supabase edge]                                │
-               │                                                 │
                ▼                                                 ▼
-     ┌──────────────────┐             ┌──────────────────────────────────┐
-     │ android-testing/ │             │ Supabase edge function           │
-     │ server.py        │             │ POST /functions/v1/ingest        │
-     │ (LAN stub, dev)  │             │ (Deno, --no-verify-jwt)          │
-     └──────────────────┘             │           ↓                      │
-                                      │ ingest_api.accept_event          │
-                                      │ (SECURITY DEFINER, ingest_role)  │
-                                      │           ↓                      │
-                                      │ public.events                    │
-                                      │ ON CONFLICT (id) DO NOTHING      │
-                                      └──────────────┬───────────────────┘
-                                                     │
-                                                     ▼
-                             ┌────────────────────────────────────────┐
-                             │ Orchestrator (planned)                 │
-                             │ Claude Code CLI + cron + Docker        │
-                             │ Oracle Free ARM + Coolify              │
-                             │ Reads via agent_role, writes reports   │
-                             │ via agent_api.upsert_report            │
-                             └────────────────────────────────────────┘
-                                                     ▼
-                                          ┌───────────────────┐
-                                          │ Swift dashboard   │
-                                          │ (planned)         │
-                                          └───────────────────┘
+                ┌────────────────────────────────────────────┐
+                │ Supabase edge function                     │
+                │ POST /functions/v1/ingest                  │
+                │ (Deno, --no-verify-jwt)                    │
+                │           ↓                                │
+                │ ingest_api.accept_event                    │
+                │ (SECURITY DEFINER, ingest_role)            │
+                │           ↓                                │
+                │ public.events                              │
+                │ ON CONFLICT (id) DO NOTHING                │
+                └──────────────────┬─────────────────────────┘
+                                   │
+                                   ▼
+                  ┌───────────────────────────────────────┐
+                  │ Orchestrator (Hetzner CAX11)          │
+                  │ Docker + systemd + cron + Claude CLI  │
+                  │ daily-digest 07:00 CT,                │
+                  │ weekly-report Sun 09:00 CT.           │
+                  │ Reads via agent_role; writes reports  │
+                  │ via agent_api.upsert_report.          │
+                  └────────────────────┬──────────────────┘
+                                       │
+                                       ▼
+                          ┌───────────────────────────┐
+                          │ Web dashboard             │
+                          │ Vite + React + TS         │
+                          │ user_role direct Postgres │
+                          │ (in progress)             │
+                          └───────────────────────────┘
 ```
 
 See `docs/data-flow.md` for the cross-plane credential map and
@@ -126,6 +127,8 @@ The `(device, source)` pair identifies a logical stream. Schema of `data` is sta
 | phone  | `instagram.stories`     | dur  | Instagram in Stories view | `{}` |
 | phone  | `tiktok.feed`           | dur  | TikTok (whole app is feed) | `{}` |
 | phone  | `detector.miss`         | pt   | Target app foregrounded, no rule matched | `{"package", "view_ids"}` |
+| phone  | `phone.location.reading`| pt   | GPS sample (Tier 1 anchor + Tier 2 path) | `{"lat", "lng", "accuracy_m", "provider", "reason"}` |
+| phone  | `phone.activity.state`  | dur  | Activity Recognition span (still/walking/etc.) | `{"state": "still" \| "walking" \| "running" \| "bicycle" \| "vehicle" \| "unknown"}` |
 | mac    | `system.window`         | dur  | Frontmost app + window title | `{"app", "title"}` |
 | mac    | `system.afk`            | dur  | Active / idle | `{"status": "afk" \| "not-afk"}` |
 | mac    | `zen.tab`               | dur  | Zen tab URL/title/container | `{"url", "title", "container", "audible", "incognito"}` |

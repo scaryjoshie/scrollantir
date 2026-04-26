@@ -1,6 +1,17 @@
-# Mac — Collection Spec (to be implemented)
+# Mac collection — implementation reference
 
-This is the spec an agent should implement. The phone side is done and working; this is the other half of scrollantir's data story.
+Mac activity flows into Supabase via the same ingest endpoint and event
+schema as the phone. Three sources today: `system.window`, `system.afk`,
+`zen.tab`. ActivityWatch owns the local SQLite buffer; a Python launchd
+forwarder reads it on a 30 s interval and POSTs batches to
+`/functions/v1/ingest`.
+
+## Status
+
+✅ Live since 2026-04-21. Hold-the-tail correctness fix landed
+2026-04-25 (`session-2026-04-23-aw-forwarder.md`); event durations
+now reflect AW's final sealed values rather than mid-heartbeat
+snapshots.
 
 ## Goal
 
@@ -108,24 +119,32 @@ A one-shot shell script (`mac-forwarder/setup.sh`) that:
 - Do **not** commit the vendored `aw-watcher-web` source — `.gitignore` already excludes `vendor/`. Only commit the patched extension as its own directory if the agent decides to version it, clearly marked.
 - Do **not** commit the keychain token or the config with the token. Use macOS Keychain.
 
-## Testing the setup
+## Verifying the setup
 
-Josh's stub server is at `android-testing/server.py`, listening on `0.0.0.0:8069` with token `dev-token`. After setup, events should start appearing in that server's stdout within a minute, with `device: mac` and the expected source strings. The `.jsonl` log at `android-testing/received/YYYY-MM-DD.jsonl` should also accumulate rows.
+After running `mac-forwarder/setup.sh` and pasting the Supabase ingest URL +
+device bearer token, expect a log line every 30 s in
+`~/Library/Logs/scrollantir-forwarder.out.log`. Events land in
+`public.events` within roughly the same window.
 
 Verification checklist:
 
-- Open Zen → switch tabs → terminate forwarder → restart → AW events since last run show up in the stub (checkpoint works)
-- Stub server briefly offline → events stay queued in AW, forwarder retries, drains on return
-- Open Zen with a URL containing `?utm_source=xxx` → verify query string stripped in server log
-- Switch to a container-backed workspace → verify `container` field populates
-- Lock screen → system.afk flips to afk → unlock → flips back
+- Open Zen → switch tabs → terminate forwarder → restart → AW events since
+  last run show up in Supabase (checkpoint works)
+- Forwarder briefly offline → events stay queued in AW, forwarder retries,
+  drains on return without duplicates (UUID5 keyed deterministically)
+- Open Zen with a URL containing `?utm_source=xxx` → query string stripped
+  before POST
+- Switch to a container-backed workspace → `data.container` populates with
+  the workspace name
+- Lock screen → `system.afk` flips to `status="afk"` → unlock → flips back
 
 ## Fit with existing infra
 
-- Ingest endpoint: same `POST /ingest` the phone uses. Same bearer auth.
-- Server schema: already handles these events (see `architecture.md`).
-- Dashboard: will filter by `device` to slice Mac vs. phone totals.
-- `mac-testing/` directory exists (and the stub server lives there). The agent can mirror layout with `mac-forwarder/` for the launchd agent and fork output.
+- Ingest endpoint: same `POST /functions/v1/ingest` the phone uses. Same
+  bearer auth, same event schema.
+- Server schema: see `architecture.md` and `data-model.md`.
+- Dashboard: filters by `device` to slice Mac vs. phone totals; consumes
+  `system.window` + `zen.tab` for the Mac timeline lane.
 
 ## Commit discipline
 
@@ -135,12 +154,11 @@ Per project convention:
 2. **Each commit buildable / testable in isolation.** For example, the forwarder should work even before the extension fork is installed — it'll just not see `container` fields.
 3. Commit messages follow the `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` convention already established in the repo.
 
-## Reference files the agent must read
-
-Before starting:
+## Reference files
 
 - `docs/architecture.md` — event schema, pipeline, idempotency strategy
-- `docs/android.md` — how the phone side does the same thing, for pattern consistency
-- `docs/setup.md` — current setup documentation, to extend for Mac
-- `android-testing/server.py` — to understand exactly what the ingest endpoint expects
-- `CREDITS.md` — ActivityWatch attribution belongs here if they add patches
+- `docs/data-model.md` — primitives catalog (mac sources catalogued here)
+- `docs/android.md` — how the phone side does the same thing
+- `docs/setup.md` — install runbook
+- `docs/session-2026-04-23-aw-forwarder.md` — the truncation bug + fix
+- `CREDITS.md` — ActivityWatch attribution

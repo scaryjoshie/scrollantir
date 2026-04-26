@@ -139,38 +139,34 @@ tail -f ~/Library/Logs/scrollantir-forwarder.out.log
 Expect a log line every 30 seconds. The first run against a fresh AW
 install will send a batch of backfill from the moment AW started.
 
-### 4. Point at Supabase (or the stub server for LAN-only dev)
+### 4. Point at Supabase
 
-**Supabase (primary path).** After `scripts/admin.py setup-roles`
-and `admin mint --device-id mac --show-token` (see
-`docs/admin-cli.md`), re-run `mac-forwarder/setup.sh` and paste:
+After `scripts/admin.py setup-roles` and `admin mint --device-id mac
+--show-token` (see `docs/admin-cli.md`), run `mac-forwarder/setup.sh`
+and paste:
 - URL: `https://<project-ref>.supabase.co/functions/v1/ingest`
 - Token: the plaintext from `mint`
 
-**Stub server (optional, for debugging without touching remote).**
-`android-testing/server.py` still accepts events unchanged. Start
-it, then run `setup.sh` with `http://127.0.0.1:8069` + token
-`dev-token`. Events appear in the server's stdout within ~30
-seconds. Useful when iterating on forwarder code.
-
 ### Verification checklist
 
-- **Window events:** switch between apps on the Mac → within 30s the
-  stub server logs `mac  system.window` rows with `app` + `title`.
+Inspect a few rows directly in Supabase (or via `psql` as
+`agent_role`) after running for a couple of minutes:
+
+- **Window events:** switch between apps on the Mac → within 30s,
+  `system.window` rows with `app` + `title` should appear.
 - **AFK events:** lock the screen for >4 minutes (AW's afk threshold),
-  unlock → the stub server logs `mac  system.afk` rows flipping
-  `status` between `not-afk` and `afk`.
-- **Zen tabs:** visit tabs in a container-backed workspace → stub
-  server logs `mac  zen.tab` rows with `container` populated with
-  the workspace name.
-- **URL sanitation:** visit any URL with `?utm_source=...` → the server
-  row shows the URL with the query string stripped.
-- **Crash recovery:** `launchctl unload` the agent mid-run → `launchctl
-  load -w` it again → no duplicate events on the server because event
-  IDs are derived from `uuid5(NAMESPACE_URL, "{bucket}:{rowid}")`.
-- **Server offline:** stop the stub server → forwarder logs
-  `Connection refused`, keeps the checkpoint untouched, AW's DB
-  untouched → start the server → next run drains cleanly.
+  unlock → `system.afk` rows flipping `status` between `not-afk` and
+  `afk`.
+- **Zen tabs:** visit tabs in a container-backed workspace →
+  `zen.tab` rows with `container` populated with the workspace name.
+- **URL sanitation:** visit any URL with `?utm_source=...` → the row's
+  `data.url` has the query string stripped.
+- **Crash recovery:** `launchctl unload` the agent mid-run →
+  `launchctl load -w` it again → no duplicate events because event
+  IDs are derived from `uuid5(NAMESPACE_URL, "mac:{source}:{bucket_created_at}:{aw_id}")`.
+- **Server offline:** simulate by killing the network briefly →
+  forwarder logs the failure, keeps the checkpoint untouched, AW's DB
+  untouched → next run drains cleanly.
 
 ### Troubleshooting
 
@@ -186,13 +182,3 @@ seconds. Useful when iterating on forwarder code.
   scrollantir -a ingest-token` then re-run setup.sh (or just re-run
   setup.sh — it overwrites).
 
-## Starting the stub server (current dev ingest)
-
-```bash
-cd ~/dev/scrollantir/android-testing
-uv run --with fastapi --with uvicorn --with pydantic python server.py
-```
-
-Listens on `0.0.0.0:8069`, bearer token `dev-token`. Find your Mac's LAN IP
-with `ipconfig getifaddr en0` and enter `http://<that-ip>:8069` + `dev-token`
-in the app's Settings → Server section.
