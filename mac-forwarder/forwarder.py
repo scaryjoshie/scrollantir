@@ -351,6 +351,14 @@ def drain_bucket(
     """Fetch new events for one bucket, POST in ≤500-chunks, return
     (events_sent, new_checkpoint_entry_or_None).
 
+    Forwards only *sealed* events: the newest event per bucket is
+    held back every run because AW heartbeats it until focus
+    changes, and shipping it mid-growth would freeze its duration
+    at a snapshot (this bug dropped ~93% of mac activity before
+    catch; see docs/session-2026-04-23-aw-forwarder.md). Once a
+    newer-id sibling appears, the previously-held event is sealed
+    at its final duration and gets forwarded on the next drain.
+
     Raises IngestError on network/HTTP failure — caller decides
     whether to bail the whole run.
     """
@@ -378,25 +386,6 @@ def drain_bucket(
         key=lambda e: e.id,
     )
 
-    # FU-2: collapse AW heartbeat cascades before POST. The
-    # checkpoint still advances past EVERY id we've seen (captured
-    # from the pre-collapse list below), so dropped events never
-    # re-appear on the next drain.
-    if fresh:
-        original_max_id = fresh[-1].id
-        original_max_ts = max(e.timestamp for e in fresh)
-        before = len(fresh)
-        fresh = _collapse_overlaps(fresh)
-        collapsed = before - len(fresh)
-        if collapsed > 0:
-            log(
-                f"{bucket_id}: collapsed {collapsed} same-data "
-                f"overlapping events ({before} → {len(fresh)})"
-            )
-    else:
-        original_max_id = None
-        original_max_ts = None
-
     if not fresh:
         # Fill in bucket_created_at on migrated or fresh entries so
         # the next run's rebuild-detector has something to compare
@@ -410,21 +399,52 @@ def drain_bucket(
             }
         return 0, None
 
-    for chunk_start in range(0, len(fresh), BATCH_SIZE):
-        chunk = fresh[chunk_start:chunk_start + BATCH_SIZE]
+    # FU-2: collapse AW heartbeat cascades — each focus period can
+    # emit a chain of same-data rows with nested spans; keep the
+    # longest survivor per group.
+    before = len(fresh)
+    fresh = _collapse_overlaps(fresh)
+    collapsed = before - len(fresh)
+    if collapsed > 0:
+        log(
+            f"{bucket_id}: collapsed {collapsed} same-data "
+            f"overlapping events ({before} → {len(fresh)})"
+        )
+
+    # Hold back the newest survivor. AW is still heartbeating the
+    # current focus event, so shipping it now would freeze its
+    # duration mid-growth. Next poll re-reads it (checkpoint stays
+    # below tail.id) and forwards it once a newer event seals it.
+    tail = fresh[-1]
+    to_forward = fresh[:-1]
+
+    if not to_forward:
+        # Only the tail exists this run; nothing sealed yet. Keep
+        # the checkpoint below tail.id so we re-read next poll.
+        return 0, {
+            "source": source,
+            "bucket_created_at": bucket_created_iso,
+            "id": tail.id - 1,
+            "ts": cp["ts"],
+        }
+
+    for chunk_start in range(0, len(to_forward), BATCH_SIZE):
+        chunk = to_forward[chunk_start:chunk_start + BATCH_SIZE]
         payload = [build_event(source, bucket_created_iso, e) for e in chunk]
         post_batch(ingest_url, token, payload)
 
-    # Checkpoint on the original pre-collapse high-water mark so
-    # collapsed events can't re-appear on next drain.
-    assert original_max_id is not None and original_max_ts is not None
+    # Advance checkpoint to just below tail.id so the held tail is
+    # re-read next run. min(tail.ts, max_forwarded_ts) guards
+    # against the backward-stepping cascade timestamps noted in
+    # _collapse_overlaps.
+    max_forwarded_ts = max(e.timestamp for e in to_forward)
     new_cp = {
         "source": source,
         "bucket_created_at": bucket_created_iso,
-        "id": original_max_id,
-        "ts": iso_z(original_max_ts),
+        "id": tail.id - 1,
+        "ts": iso_z(min(tail.timestamp, max_forwarded_ts)),
     }
-    return len(fresh), new_cp
+    return len(to_forward), new_cp
 
 
 def run_once() -> int:
