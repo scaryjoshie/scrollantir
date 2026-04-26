@@ -1,13 +1,68 @@
 # Location tracking — planned module
 
-Captures where the phone is throughout the day, joined against app usage on the dashboard. Not yet built; deferred until prerequisites are in place.
+Captures where the phone is throughout the day, joined against app usage on the dashboard.
 
 ## Status
 
-🚧 Planned, blocked on:
+🚧 **Implementation in progress as of 2026-04-20.** Scope narrowed: collect locally, don't forward yet. Unblocks us from the HTTPS-server dependency. See "Current implementation plan" below.
 
-1. **Production HTTPS ingest server** (not the LAN stub). Cleartext posting of home coordinates to a LAN IP is a genuine security mistake.
-2. **Dashboard in use for 2+ weeks** — until you know what questions you'd ask location for, we don't know what resolution / cadence matters.
+### Cross-cutting note for the server / ingest agent
+
+Design decision (2026-04-25): **no egress snap. Full-precision GPS reaches Postgres.** The earlier 4-decimal client snap was removed — this is a personal self-hosted setup where Josh owns both phone and server, so the privacy-preserving grid pixel was solving a problem that doesn't exist here, while costing the place-matching layer the resolution it needs to distinguish e.g. a specific classroom from the building it's in.
+
+**Action for the server agent (still pending):** delete the lat/lng snap guard block at `30_ingest_api.sql:585-589` of the init migration. It's also dead code — its `p_source = 'phone.location'` exact-match never fires against our dotted `phone.location.reading`. Drop it via a new migration; behavior is unchanged either way.
+
+Original blockers (both sidestepped by going local-only for now):
+
+1. **Production HTTPS ingest server** — dodged by filtering `phone.location.*` and `phone.activity.*` out of the forwarder. Flip filter off when HTTPS exists.
+2. **Dashboard use for 2+ weeks** — dodged by building the dashboard (LocationScreen) alongside collection, on the phone itself.
+
+## Current implementation plan (2026-04-20)
+
+Decisions made:
+
+- **Tier 1 + Tier 2** shipped together. Tier 1 anchors readings at every activity transition; Tier 2 adds periodic sampling during movement states, gated by `setMinUpdateDistanceMeters` so stationary/in-place motion doesn't generate readings. Tuning: WALKING 20s/40m, RUNNING 15s/40m, BICYCLE 10s/60m, VEHICLE 10s/100m, STILL/UNKNOWN none.
+- **Forwarding live (Supabase, TLS).** Earlier local-only gate is gone now that ingest is over HTTPS. Coordinates ship at full device precision — the prior 4-decimal egress snap was removed 2026-04-25; sub-meter fidelity is wanted for the place-matching layer. Server-side snap in the init migration is dead code (source-name mismatch) and slated for removal.
+- **Map library: Google Maps SDK** via `maps-compose`. Compose-native, dark style baked in (`res/raw/maps_night.json`), clustering by identical grid-snapped coords so stacked readings render as one dot.
+- **Bottom sheet shows only `phone.activity.state` rows**, sorted newest-first, 12-hour time format. Raw `phone.location.reading` rows populate the map dots; they don't appear in the feed. Tap a row to expand inline into the overlapping app-usage events for that window.
+
+### Phased breakdown
+
+**Phase 0 — dependencies & manifest**
+- Add `play-services-location` and the chosen map library to `app/build.gradle.kts`
+- Manifest permissions: `ACCESS_FINE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`, `ACTIVITY_RECOGNITION`, `FOREGROUND_SERVICE_LOCATION`
+- `TrackerForegroundService` foregroundServiceType: `dataSync` → `dataSync|location`
+- Register `ActivityTransitionReceiver` in manifest
+- If Google Maps: `MAPS_API_KEY` from `local.properties` (gitignored) via `manifestPlaceholders`
+
+**Phase 1 — collection (`tracker/` package)**
+- `ActivityWatcher.kt` — owns `ActivityRecognitionClient.requestActivityTransitionUpdates`. On ENTER transition: emit closed `phone.activity.state` duration for previous state, update `current`, notify `LocationWatcher.onActivityChange(newState)`.
+- `ActivityTransitionReceiver.kt` — BroadcastReceiver for the PendingIntent; routes events back to `ActivityWatcher` via a shared flow.
+- `LocationWatcher.kt` — `FusedLocationProviderClient`. `onActivityChange()` fires one `getCurrentLocation` (Tier 1 anchor) and reconfigures a periodic `requestLocationUpdates` (Tier 2) with a per-activity min-update-distance. Drop `accuracy_m > 200`. Emit `phone.location.reading` point event with `{lat, lng, accuracy_m, provider, reason}` at full device precision.
+- `TrackerForegroundService.kt` — own both watchers, gate on `SecurePrefs.KEY_LOCATION_ENABLED` (default off). Flush open activity span in `onDestroy` under `runBlocking(NonCancellable)`. `stop()` the LocationWatcher (removes periodic updates) in both disable-path and onDestroy.
+
+**Phase 2 — forwarder gate**
+- `ForwarderWorker.kt` SELECT filter: `AND source NOT LIKE 'phone.location.%' AND source NOT LIKE 'phone.activity.%'`.
+
+**Phase 3 — Settings**
+- Fourth permission card: "Location (background)" → app detail settings intent
+- Fifth permission card: "Physical activity" → runtime `ACTIVITY_RECOGNITION` prompt
+- Toggle row: "Enable location tracking" (stored in `SecurePrefs`, default off). On/off starts/stops watchers.
+
+**Phase 4 — LocationScreen (UI)**
+- `TodayScreen.kt`: add Location icon (`Icons.Filled.Place`) to top-right icon bar. Swap `History` → `Timeline` for the timeline entry. Order: `Timeline · Location · Settings`.
+- `LocationScreen.kt` (new):
+  - Top bar: back arrow, date label, chevrons for prev/next day
+  - Map area (~65% height): markers per reading, dashed polyline between consecutive readings colored by the activity state of the segment between them. Initial camera fits the day's bounds.
+  - Bottom sheet (`BottomSheetScaffold`, peek ~30%, draggable to 85%): merged chronological feed of `phone.activity.state` + `phone.location.reading` rows. Tap a row → expand inline with overlapping foreground/content-mode events for that window.
+  - Stable activity-state color palette (gray=still, green=walking, orange=vehicle, blue=bicycle, red=running).
+
+**Phase 5 — polish**
+- `EventFilter` additions if noise appears
+- Auto-scroll bottom sheet to current hour on open
+- "No readings yet today" empty state
+
+**LOC budget:** ~640 LOC total. ~4–5 hours.
 
 ## What this enables
 
@@ -221,8 +276,8 @@ Plus a user-facing enable/disable toggle stored in `SecurePrefs`. Unlike trackin
 
 ### Privacy features in v1
 
-- **Client-side grid snap**: before emitting, round lat/lng to nearest 100m (~3 decimals). Server never stores exact coordinates. Enough fidelity for "at home vs. at work" without exposing the specific room you sit in.
 - **Accuracy gate**: drop readings with `accuracy_m > 200` — they're noise (tunnel, indoor with weak GPS).
+- **No egress snap**: full-precision coords ship to Supabase. Self-hosted single-user deployment, full fidelity wanted for the place-matching layer. If a future shared deployment ever changes the threat model, reintroduce a snap on the egress path.
 
 ## Full version (deferred, ~1 week)
 
