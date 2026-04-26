@@ -30,10 +30,6 @@ build/
 dist/
 *.log
 
-# Runtime test output from the stub server
-android-testing/received/
-android-testing/.venv/
-
 # Vendored reference code — clone locally, don't commit
 vendor/
 

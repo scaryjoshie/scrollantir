@@ -45,7 +45,7 @@ The forwarder reads this file read-only. macOS may prompt for Accessibility + In
 
 Zen is a Firefox-based browser. The agent:
 
-1. **Clones `ActivityWatch/aw-watcher-web`** into `mac-testing/aw-watcher-web/` (or any path — it gets built, not committed).
+1. **Clones `ActivityWatch/aw-watcher-web`** into a scratch path (e.g. `vendor/aw-watcher-web/`, gitignored).
 2. **Adds a `container` field** to each emitted event. In Firefox, tabs belong to a "container" (identified by `cookieStoreId`). Josh uses containers to model his Zen *workspaces* (one container per workspace). Resolving looks like:
    ```javascript
    let containerName = 'no-container';

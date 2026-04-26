@@ -67,7 +67,7 @@ Everything else on this page is a zoom-in on one of those arrows.
 | Admin CLI | ✅ shipped 2026-04-21; roles assigned, devices registered, tokens minted. |
 | Edge functions (ingest / prompt-answer / pending-prompts) | ✅ deployed with `--no-verify-jwt`. |
 | Orchestrator (server + agent runtime) | ✅ Phases 0–2 shipped (Hetzner CAX11 + systemd + Docker + cron); daily-digest + weekly-report cron-firing. Classifier deferred to roadmap #8. |
-| Web dashboard (Vite + React + TS) | 🚧 in progress at `dashboard/`; SwiftUI scaffold at `macos/` parked 2026-04-21. |
+| Web dashboard (Vite + React + TS) | 🚧 in progress at `dashboard/`. (Earlier SwiftUI attempt parked 2026-04-21, deleted in cleanup; recoverable from git history.) |
 
 ## System diagram
 

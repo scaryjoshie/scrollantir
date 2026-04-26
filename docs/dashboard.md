@@ -23,11 +23,11 @@ is unchanged.
    improves the reports by attaching `project_id` to events. Timeline
    renders fine without it; "time on what" queries don't.
 
-**Prior attempt:** SwiftUI scaffold at `macos/`. Parked; built the data
-layer correctly (schema types, query shapes) but couldn't deliver the
-Notion-style blocky-timeline UI Josh wanted within the framework's
-built-in charting. Read `macos/README.md` §"Known rough edges" before
-retreading.
+**Prior attempt:** SwiftUI scaffold (formerly at `macos/`, deleted in
+the 2026-04-25 cleanup pass; recoverable from git history). Built the
+data layer correctly (schema types, query shapes) but couldn't deliver
+the Notion-style blocky-timeline UI within Swift Charts' built-in
+charting. Net takeaway: pivoted to web (Vite + React + TS).
 
 ## Core concept: three stacked timelines
 
@@ -176,8 +176,9 @@ the option to wrap in Tauri later if a .app bundle becomes important.
 Reasons in brief: timeline UX was the weakest part of SwiftUI (Swift
 Charts gives hair-thin bars, not the Notion-blocky-zoomable look Josh
 wants), and the JS ecosystem has 5+ mature timeline libraries that hit
-that look out of the box. The previous SwiftUI attempt at `macos/` is
-parked — preserved for plumbing patterns, not for UI code.
+that look out of the box. The previous SwiftUI attempt (formerly at
+`macos/`, deleted 2026-04-25) is recoverable from git history if any
+plumbing patterns are wanted as reference.
 
 ### Current data plane state
 
@@ -300,9 +301,8 @@ gets busy.
   working zoom and pan, hover tooltips.
 - Works end-to-end against the live Supabase pooler DSN from
   `scrollantir/user-role`.
-- The parked `macos/` directory remains as historical reference.
-  Don't modify it; new code lives under `dashboard/` (or whatever
-  subdirectory name Josh prefers — ask before committing).
+- New code lives under `dashboard/` (or whatever subdirectory name
+  Josh prefers — ask before committing).
 
 ### One rule before scaffolding
 
@@ -318,7 +318,8 @@ goal. Propose the library evaluation first.
 - `scripts/admin/`, `supabase/` — admin CLI + DB schema, out of
   scope.
 - `android/`, `mac-forwarder/` — data collection; out of scope.
-- `macos/` — parked. Leave as-is.
+- (`macos/` was parked then deleted 2026-04-25 — recoverable from
+  git history if you need the data layer as reference.)
 
 Your playground is a fresh `dashboard/` directory (or similar). The
 `docs/` tree is fair game for notes, but ask Josh before major

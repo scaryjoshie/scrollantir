@@ -48,7 +48,7 @@ These weren't resolved in `data-model.md` and are good places to push:
 ## Constraints
 
 - **Don't write production code yet.** This is a design-only round. Spec, debate, document. Code follows once Josh is satisfied.
-- **Don't touch these directories**: `orchestrator/`, `android/`, `mac-forwarder/`, `supabase/`, `scripts/admin/`, `macos/`. Read-only for context. The dashboard's `server/` and `src/` and the `docs/` tree are fair game for proposals.
+- **Don't touch these directories**: `orchestrator/`, `android/`, `mac-forwarder/`, `supabase/`, `scripts/admin/`. Read-only for context. The dashboard's `server/` and `src/` and the `docs/` tree are fair game for proposals.
 - **Doc updates are encouraged.** If a discussion produces a decision, land it in `docs/data-model.md`'s decision log (or a new sibling doc if the topic is large). Treat the doc as the source of truth.
 - **Stage with git, don't commit.** Josh reviews everything before commit.
 

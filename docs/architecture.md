@@ -11,7 +11,7 @@ Personal "palantir for yourself" time-tracking. Structured events across Mac and
 | Ingest pipeline (Supabase edge functions → Postgres) | ✅ `/ingest`, `/prompt-answer`, `/pending-prompts` live. Event row count in the tens of thousands. |
 | Admin CLI (`./admin`) | ✅ Device/token/role lifecycle. |
 | Orchestrator (Claude Code CLI) | ✅ Phases 0–2 shipped on Hetzner CAX11 + systemd. Daily-digest (07:00 CT) + weekly-report (Sun 09:00 CT) cron-firing. |
-| Dashboard (web — Vite + React + TS) | 🚧 In progress at `dashboard/`. SwiftUI attempt at `macos/` parked 2026-04-21. |
+| Dashboard (web — Vite + React + TS) | 🚧 In progress at `dashboard/`. (Earlier SwiftUI attempt was parked then deleted; see git history if curious.) |
 
 ## Goals
 

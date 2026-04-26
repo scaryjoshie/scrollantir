@@ -13,7 +13,7 @@ Status legend: ✅ done · 🚧 in progress · 📋 planned · 💡 idea
 | Android app (phone events) | ✅ | Collecting `system.foreground`, `system.screen`, `system.unlocked`, `system.unlock`, `youtube.shorts`, `instagram.reels`, `instagram.stories`, `tiktok.feed`, `detector.miss`. Sideloaded on Pixel 9. **Still posts to stub server — Supabase wire-up is #4 below.** |
 | Mac forwarder | ✅ | launchd agent, reads AW via `aw-client`, **now posts to Supabase edge function** (as of 2026-04-21). Hostname-agnostic uuid5 scheme. `docs/mac.md`. |
 | Zen aw-watcher-web fork | ✅ | `mac-extension/` — adds `container` field to tab events. Installed as xpi in Zen. |
-| Stub ingest server | ✅ | `android-testing/server.py` — dev-only, LAN, bearer `dev-token`. Still used by Android until #4 lands. |
+| Stub ingest server | retired | `android-testing/server.py` deleted 2026-04-25 in cleanup pass. Both forwarders go to Supabase directly now. |
 | Supabase project | ✅ | `feijpewzqgqczkxmvdng`. CLI linked locally. |
 | Supabase schema v3 | ✅ | Deployed + three hot-patches applied 2026-04-21 (pgcrypto schema qualifier, rate-limit 200→10000, re-grant `events_enriched`). Three write surfaces: `ingest_api`, `agent_api`, user_role direct SQL. |
 | Permissive RLS policies | ✅ | On all public tables, scoped to user_role + agent_role. |
