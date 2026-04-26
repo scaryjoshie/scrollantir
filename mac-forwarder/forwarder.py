@@ -355,7 +355,7 @@ def drain_bucket(
     held back every run because AW heartbeats it until focus
     changes, and shipping it mid-growth would freeze its duration
     at a snapshot (this bug dropped ~93% of mac activity before
-    catch; see docs/session-2026-04-23-aw-forwarder.md). Once a
+    catch; see docs/sessions/session-2026-04-23-aw-forwarder.md). Once a
     newer-id sibling appears, the previously-held event is sealed
     at its final duration and gets forwarded on the next drain.
 

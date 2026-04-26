@@ -71,7 +71,7 @@ Rendering the three-timeline view needs derived state that raw `events` rows don
 
 ### For the location track (narrative style)
 You need:
-- **Visits** — "at place X from time A to time B" — consolidated from raw `phone.location.reading` rows matched against `places`, with the bathroom-break gap tolerance rule (see [places.md](places.md)).
+- **Visits** — "at place X from time A to time B" — consolidated from raw `phone.location.reading` rows matched against `places`, with the bathroom-break gap tolerance rule (see [places.md](../concepts/places.md)).
 - **Travel legs** — "walked from visit_N to visit_{N+1}" — derived from the period between consecutive visits + the active `phone.activity.state` during that period, with distance computed from endpoint coords (or path summary if Tier 2).
 - **Activity spans** — just `phone.activity.state` events, usable as-is.
 
@@ -152,9 +152,9 @@ scrolllantir tables today (single-user install).
 
 ## Relationship to other docs
 
-- [location.md](location.md) — upstream collection (raw `phone.location.*` and `phone.activity.*`)
-- [places.md](places.md) — named-location layer feeding the visits derivation
-- [architecture.md](architecture.md) — overall pipeline; this doc concerns the read path and UI
+- [location.md](../concepts/location.md) — upstream collection (raw `phone.location.*` and `phone.activity.*`)
+- [places.md](../concepts/places.md) — named-location layer feeding the visits derivation
+- [architecture.md](../architecture.md) — overall pipeline; this doc concerns the read path and UI
 
 ## Not yet decided
 

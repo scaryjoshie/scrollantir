@@ -1,7 +1,7 @@
 # orchestrator/
 
 Docker image + runtime files for the scrollantir reasoning plane.
-Spec: `../docs/orchestrator.md`. Data flow: `../docs/data-flow.md`.
+Spec: `../docs/runtime/README.md`. Data flow: `../docs/data-flow.md`.
 
 ## Layout
 
@@ -61,7 +61,7 @@ psql "$AGENT_DATABASE_URL" -c \
 
 Oracle Free ARM VM + systemd + a bind-mounted volume at
 `/opt/scrollantir/data:/scrollantir`. Full bootstrap in
-`../docs/orchestrator.md` §"Phase 2".
+`../docs/runtime/README.md` §"Phase 2".
 
 Artifacts:
 - `systemd/scrollantir-orchestrator.service` — systemd unit.

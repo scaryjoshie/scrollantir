@@ -61,13 +61,13 @@ supabase db push --include-roles --include-seed
 ```
 
 For schema design details, trust boundaries, and RPC signatures, see
-[`supabase.md`](supabase.md). For admin tooling (device add, token
-mint, role password setup), see [`admin-cli.md`](admin-cli.md). For
-edge function deployment, see [`edge-functions.md`](edge-functions.md).
+[`supabase.md`](supabase/README.md). For admin tooling (device add, token
+mint, role password setup), see [`admin-cli.md`](supabase/admin-cli.md). For
+edge function deployment, see [`edge-functions.md`](supabase/edge-functions.md).
 
 ## Mac collector
 
-Spec in [mac.md](mac.md). Code lives in:
+Spec in [mac.md](mac/README.md). Code lives in:
 
 - `mac-forwarder/` — the Python launchd forwarder + setup script
 - `mac-extension/` — the patched `aw-watcher-web` that tags tab events

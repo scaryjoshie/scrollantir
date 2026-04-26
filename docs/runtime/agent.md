@@ -1,6 +1,6 @@
 # Scrollantir — Local agent tooling spec
 
-> **Status:** Subsumed by [`orchestrator.md`](orchestrator.md). The
+> **Status:** Subsumed by [`orchestrator.md`](README.md). The
 > local-Claude-Code-on-the-Mac pattern described here was the
 > precursor design; the production reasoning runtime is now a Docker
 > container on Hetzner CAX11 running cron-fired jobs as `agent_role`.

@@ -15,7 +15,7 @@ interface EventDao {
     // --- Outgoing queue: unforwarded events ---
     //
     // All sources flow to Supabase. Location/activity rows were previously
-    // held local-only (see docs/location.md) while the ingest target was a
+    // held local-only (see docs/concepts/location.md) while the ingest target was a
     // LAN stub over plaintext HTTP; now that we POST to Supabase over TLS,
     // that blocker is gone. Coordinates ship at full device precision —
     // the prior 4-decimal egress snap was removed since this is a

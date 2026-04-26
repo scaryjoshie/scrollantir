@@ -156,7 +156,7 @@ LEFT JOIN visits v
 ORDER BY e.expected_start;
 ```
 
-Output feeds an attendance view (see [views.md](views.md)).
+Output feeds an attendance view (see [views.md](../dashboard/views.md)).
 
 ## Chatbot-driven population
 

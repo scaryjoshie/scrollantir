@@ -95,7 +95,7 @@ Drift swept 2026-04-25:
 
 ### 6. Orchestrator — Claude Code CLI on a server 🚧
 
-Full spec in [`docs/orchestrator.md`](orchestrator.md). Supersedes
+Full spec in [`docs/orchestrator.md`](runtime/README.md). Supersedes
 the earlier "local Claude Code agent tooling" and "scheduled edge
 functions (cron agents)" items — we consolidated both into a single
 always-on container running Claude Code CLI, cron-invoked.
@@ -169,7 +169,7 @@ rate_limit pruning stay on `pg_cron` since they're DB-only.
 
 ### 8. Projects + event classification 📋
 
-Full spec in [`docs/projects.md`](projects.md). Two new tables
+Full spec in [`docs/projects.md`](concepts/projects.md). Two new tables
 (`projects`, `event_project_links`), one new view
 (`events_with_project`), one new `agent_api.classify_event` RPC, and
 a scheduled edge function that runs a cheap-LLM classifier (Groq or
@@ -185,7 +185,7 @@ coarse.
 
 **Direction changed 2026-04-21.** The Swift app was parked; v1 is a
 web app (Vite + React + TS) under `dashboard/`. See
-[`dashboard.md`](dashboard.md) for the design and
+[`dashboard.md`](dashboard/README.md) for the design and
 [`data-model.md`](data-model.md) for the contract every dashboard
 view reads from. Currently in iteration: forwarder data-correctness
 work landed 2026-04-23; full architecture pass on primitives /
@@ -272,7 +272,7 @@ DSNs but not on direct DSNs. Mirror the check. UX only.
 
 ## Ideas / future bets (not blocking anything)
 
-- **[cmux per-tab watcher](cmux-watcher.md)** — tab-level (surface) focus events for the `manaflow-ai/cmux` terminal app. Design documented; deferred 2026-04-21 because workspace-level is already captured via `system.window` titles and per-tab volume isn't worth it until a downstream consumer (classifier, focus analysis) needs it.
+- **[cmux per-tab watcher](deferred/cmux-watcher.md)** — tab-level (surface) focus events for the `manaflow-ai/cmux` terminal app. Design documented; deferred 2026-04-21 because workspace-level is already captured via `system.window` titles and per-tab volume isn't worth it until a downstream consumer (classifier, focus analysis) needs it.
 - **Spotify track history** — `spotify.track` events via OAuth + Supabase edge function polling
 - **Calendar meetings** — Google Calendar events as `calendar.meeting` duration events
 - **Wifi SSID for location context** — poor man's location without GPS
