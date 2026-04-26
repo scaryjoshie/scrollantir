@@ -221,18 +221,18 @@ Server-side:
 
 ```sql
 CREATE TABLE events (
-  id TEXT PRIMARY KEY,           -- matches client UUID
+  id UUID PRIMARY KEY,           -- deterministic per (collector, bucket, row); see data-model.md
   device TEXT NOT NULL,
   source TEXT NOT NULL,
   timestamp_utc TIMESTAMPTZ NOT NULL,
-  duration_s REAL NOT NULL,
+  duration_s DOUBLE PRECISION NOT NULL,
   data JSONB NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX events_device_source_time ON events (device, source, timestamp_utc);
 ```
 
-Insert: `ON CONFLICT (id) DO NOTHING`. Retry after a lost-response is a no-op — zero duplicates.
+Insert: `ON CONFLICT (id) DO NOTHING`. Retry after a lost-response is a no-op — zero duplicates. Full id-generation contract in `data-model.md` §1.
 
 ### Mac's different
 

@@ -54,15 +54,17 @@ rewritten to `uuid5("mac:{source}:{bucket_created_at}:{aw_id}")`
 so hostname drift no longer re-ingests history. Verified end-to-end:
 3400+ events landed.
 
-### 4. Wire Android app to Supabase 📋
+### 4. Wire Android app to Supabase ✅
 
-Update the app's "Server URL" setting to accept the Supabase edge function URL + new bearer (via QR scan). Requires:
-
-- Update Android app's ingest URL format if needed
-- New "Scan Onboarding QR" setting screen (CameraX, parse JSON from `admin mint`'s QR)
-- Stored in `EncryptedSharedPreferences`
-
-**Acceptance:** phone events appear in `events` table.
+Shipped 2026-04-21. Added a "Scan Onboarding QR" settings card
+(CameraX + ML Kit barcode-scanning) that parses the `./admin mint`
+v:2 payload and writes `url`, `token`, and `device_id` into
+`EncryptedSharedPreferences`. Emit now stamps events with the stored
+`device_id` (default `phone`). `IngestClient` uses the stored URL
+verbatim — the stub-server `/ingest` suffix is no longer appended by
+the client. Acceptance confirmed: phone token minted, QR scanned,
+`detector.miss` / `system.foreground` / `system.unlock` /
+`youtube.shorts` rows landed in `public.events` on first sync.
 
 ### 5. Documentation sweep 🚧
 
@@ -111,10 +113,39 @@ End state: cron-triggered daily-digest lands a report every morning
 without human intervention, verifiable via the
 `/scrollantir/memory/last-success-daily-digest` marker.
 
-**Progress 2026-04-21:** Phase 0 complete — first real daily-digest
-report written to `public.reports` by local Claude Code as
-`agent_role`. Phase 1 (local Docker), 2 (Oracle Free VM + Coolify),
-3 (weekly/classifier/prompt-asker) still to go.
+**Progress 2026-04-21:** Phases 0, 1, and 2 complete.
+- **Phase 0** — first real daily-digest report by local Claude Code
+  as `agent_role` (`reports.id c93d8d69-...`).
+- **Phase 1** — cold-container `smoke` and `daily-digest` both
+  produce reports identical in shape to Phase 0 (`reports.id
+  a06e7c81-...` tag `{smoke}`; `reports.id 26862d14-...` tag
+  `{daily}`). Image: ubuntu:24.04 + psql + cron + node + Claude
+  Code CLI 2.1.116, 1m48s daily-digest, arm64 native.
+- **Phase 2** — Hetzner CAX11 ARM (nbg1) + systemd + bind-mount at
+  `/opt/scrollantir/data:/scrollantir`. Two consecutive
+  cron-triggered `daily-digest` runs landed without manual
+  intervention (`reports.id 4f73befe-...` tag `{daily}` via
+  injected test cron, and `9dc95f82-...` from the natural
+  `0 7 * * *` at 12:00 UTC). Ended up swapping Coolify for plain
+  systemd — docs/orchestrator.md §Phase 2 reflects the new stack.
+  **Silent-no-op bug** surfaced on first cron run and fixed:
+  `run-job.sh` now `cd /scrollantir` before `claude -p` so
+  project-local `.claude/settings.json` is discovered regardless
+  of cron's CWD; entrypoint.sh also mirrors settings to
+  `/root/.claude/settings.json` as belt-and-suspenders.
+
+Phase 3 partially delivered same-day:
+- **`weekly-report.md`** prompt shipped and test-run against
+  Supabase — `reports.id 9f3dea67-...` tag `{weekly}`, 3576-char
+  body. Cron line `0 9 * * 0` was already in `crontab.template`,
+  so Sunday 2026-04-26 14:00 UTC will be the first production fire.
+- **`classifier.md`** still blocked on roadmap #8 (projects
+  schema — `projects`, `event_project_links`, `events_with_project`
+  view, `agent_api.classify_event` RPC).
+- **`prompt-asker.md`** still deferred — needs question taxonomy.
+
+Phase 2 and weekly-report should soak for a few days of clean
+overnight runs before Phase 3's remaining pieces get worked on.
 
 ### 7. ~~Scheduled edge functions (cron agents)~~ ❌
 
@@ -142,30 +173,30 @@ coarse.
 
 **Acceptance:** see `docs/projects.md`. Dashboard query `SELECT project_name, SUM(duration_s) / 3600 AS hours FROM events_with_project WHERE timestamp_utc > NOW() - INTERVAL '7 days' GROUP BY 1` returns reasonable rollups.
 
-### 9. Swift Mac dashboard 📋
+### 9. Web dashboard 🚧
 
-Native app. Reads Supabase directly with `user_role` credentials (Keychain). Key surfaces:
+**Direction changed 2026-04-21.** The Swift app was parked; v1 is a
+web app (Vite + React + TS) under `dashboard/`. See
+[`dashboard.md`](dashboard.md) for the design and
+[`data-model.md`](data-model.md) for the contract every dashboard
+view reads from. Currently in iteration: forwarder data-correctness
+work landed 2026-04-23; full architecture pass on primitives /
+derivers / views in `data-model.md`. UI rebuild pending once the
+foundation is settled.
 
-- **Today view** — real-time time-on-app, short-form totals, Mac-vs-phone active time. Reads from `events_enriched`.
-- **Project view** — time per project via `events_with_project`. Bar charts.
-- **Reports inbox** — recent `reports`, daily digest, weekly summary. Read-only display with option to "open in editor" for user edits.
-- **Chat with agent** — Swift-native chat window that spawns Claude Code subprocess with `agent_role` credentials, shows streaming output, lets agent call tools.
-- **Terminal wrapper** — simple embedded terminal for invoking the admin CLI inline.
+### 10. Android "Questions" inbox ✅
 
-Tech stack likely: SwiftUI + `supabase-swift`. Keychain items: `scrollantir/user-role`, `scrollantir/agent-role`.
-
-**Acceptance:** you can open the app, see today's summary, ask the agent a question and get a response grounded in your real data.
-
-### 10. Android "Questions" inbox 📋
-
-New screen in the phone app:
-
-- Subscribes to (or polls every 30s) `/functions/v1/pending-prompts`
-- Shows unanswered prompts with their questions
-- Answer-entry UI respects `prompts.answer_schema` (number + unit, free text, multiple choice)
-- On submit: POST to `/prompt-answer`
-
-**Acceptance:** agent asks a question at 10pm, phone shows it, you answer in the morning, it becomes an event.
+Shipped 2026-04-21. New `QuestionsScreen` polls
+`/functions/v1/pending-prompts` every 30 s while foregrounded;
+`PromptsRepository` holds a process-wide `StateFlow<List<Prompt>>`
+and a mutex-guarded `refresh`. The `TodayScreen` icon row gained a
+question-mark button with a badge showing the unanswered count;
+TodayScreen triggers a one-shot refresh on entry. Answer renderer
+honors `answer_schema.type`: `number` (with optional `unit`),
+`string`, `choice` (radio from `options`), free-text fallback
+otherwise. Submit POSTs `{prompt_id, answer_event_id: uuid4, data}`
+to `/prompt-answer` and removes the prompt from the cache on 2xx or
+409 (already answered).
 
 ## Follow-ups from 2026-04-21 Codex audit
 
