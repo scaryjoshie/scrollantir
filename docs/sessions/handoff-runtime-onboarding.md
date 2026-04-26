@@ -1,12 +1,4 @@
-# Handoff — runtime onboarding prompt
-
-Self-contained prompt for a fresh agent picking up the `runtime/`
-rebuild work. Copy the section below into a new Claude Code
-session at the repo root.
-
----
-
-## Onboarding prompt — copy from here
+# Runtime rebuild — agent onboarding
 
 You are picking up scrollantir, a personal time-tracking system Josh
 is building. You are joining mid-project, after a major design +
@@ -14,7 +6,7 @@ cleanup session on 2026-04-25 that prepared the repo for the next
 phase. Your job is to scaffold a new `runtime/` folder that will
 replace the existing `orchestrator/` POC. Read the docs below in
 order before touching any code. **Do not start writing the runtime
-yet — first confirm the open questions at the end of this prompt
+yet — first confirm the open questions at the end of this doc
 with Josh.**
 
 ### What scrollantir is (one paragraph)
@@ -122,13 +114,13 @@ These are live-production or out-of-scope:
   commits in logical groups (~5–8 files, one concern). Don't make
   one giant commit; don't atomize either. Match the style of
   `git log --oneline -10`.
-- **Use `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`**
-  on every commit.
+- **Tag commits with a `Co-Authored-By:` trailer.** The repo
+  convention is the existing pattern in `git log` — match whatever
+  identifier reflects you.
 - **Never `--no-verify`.** If a hook fails, fix the underlying issue.
-- **Never bypass-permission unsafe ops.** Bypass-permissions is the
-  *project default* (set in `.claude/settings.local.json` per user)
-  for ergonomics, NOT a license to run destructive ops without
-  confirming.
+- **Don't run destructive ops (force-push, hard reset, mass deletes,
+  schema drops) without explicit confirmation** even if your harness
+  technically permits it.
 - **Never echo `AGENT_DATABASE_URL`, `service_role` DSN, or device
   bearer tokens** into log files, reports, or commit messages. Read
   them only from the macOS Keychain entries listed in `data-flow.md`.
@@ -207,7 +199,3 @@ Reply to Josh with:
 
 Don't run `git commit` until Josh greenlights both the open questions
 and your proposed first commit.
-
----
-
-End of prompt.
