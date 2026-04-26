@@ -48,11 +48,15 @@ class UsageStatsPoller(
     private var currentApp: String? = null
     private var currentStartedAt: Long = 0L
 
-    // Set synchronously by ScreenWatcher on SCREEN_OFF. The next pollOnce
-    // processes this under the mutex BEFORE reading new UsageEvents — this
-    // ensures the flush happens before any ACTIVITY_RESUMED for the same
-    // app (user unlocking back to the same app) is observed and skipped
-    // because the state still said "already in this app."
+    // Fallback flag set synchronously by ScreenWatcher on ACTION_SCREEN_OFF.
+    // Primary source-of-truth for screen-off is now the SCREEN_NON_INTERACTIVE
+    // events surfaced by UsageStatsManager itself (handled inline by
+    // pollOnce below), which carries the authoritative timestamp, survives
+    // doze, and can enumerate multiple screen-offs that happened while the
+    // poller coroutine was frozen. The broadcast flag only covers the
+    // latency gap between the OS screen-off broadcast and UsageStatsManager
+    // recording the matching SCREEN_NON_INTERACTIVE event (a few seconds
+    // on most builds).
     @Volatile private var pendingScreenOffFlushMs: Long? = null
 
     suspend fun run() {
@@ -76,27 +80,37 @@ class UsageStatsPoller(
 
     private suspend fun pollOnce() {
         mutex.withLock {
-            // If a screen-off flush was scheduled since the last poll,
-            // process it FIRST and rewind lastQuery to the screen-off
-            // moment. That way any RESUMED event that fired between
-            // screen-off and now gets seen against a freshly-null
-            // currentApp and starts a new session correctly — instead of
-            // being skipped because currentApp still equalled the app
-            // the user was in before locking.
-            val pending = pendingScreenOffFlushMs
-            if (pending != null) {
-                flushCurrentLocked(pending)
-                lastQuery = pending
-                pendingScreenOffFlushMs = null
-            }
-
+            // Walk the UsageStatsManager event stream in chronological
+            // order, flushing at each screen-off and starting new sessions
+            // at each ACTIVITY_RESUMED. Doing this in-stream — instead of
+            // driving flush purely off the ScreenWatcher broadcast — is
+            // what makes overnight-doze correct: when the poller coroutine
+            // finally wakes up in the morning, the stream contains every
+            // screen-off that fired while it was frozen, each with its
+            // own timestamp, so multi-screen-off sequences produce the
+            // right series of sessions instead of one bogus span across
+            // the whole sleep period.
             val now = System.currentTimeMillis()
             val events = usm.queryEvents(lastQuery, now)
             val ev = UsageEvents.Event()
             while (events.getNextEvent(ev)) {
-                if (ev.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                    handleResumedLocked(ev.packageName, ev.timeStamp)
+                when (ev.eventType) {
+                    UsageEvents.Event.ACTIVITY_RESUMED ->
+                        handleResumedLocked(ev.packageName, ev.timeStamp)
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE ->
+                        flushCurrentLocked(ev.timeStamp)
                 }
+            }
+            // Fast-path fallback for the latency gap: if the broadcast
+            // flag is set and the stream above didn't already close the
+            // session (currentApp would be null in that case), close it
+            // at the broadcast time. The currentStartedAt guard prevents
+            // a stale flag from retroactively flushing a newer session.
+            pendingScreenOffFlushMs?.let { pending ->
+                if (currentApp != null && pending >= currentStartedAt) {
+                    flushCurrentLocked(pending)
+                }
+                pendingScreenOffFlushMs = null
             }
             lastQuery = now
         }
@@ -173,6 +187,20 @@ class UsageStatsPoller(
         /** Suspend flush — for service onDestroy via runBlocking. */
         suspend fun flushActiveSession(atMs: Long = System.currentTimeMillis()) {
             activeInstance?.flushCurrent(atMs)
+        }
+
+        /**
+         * Re-anchor the in-flight foreground session to [nowMs] without
+         * closing or emitting. For the Settings "Reset local data" flow:
+         * after wiping the events table, anything still held in memory
+         * would emit a pre-wipe start time when it eventually closes, so
+         * we just pretend the current app started now.
+         */
+        fun resetSpanToNow(nowMs: Long) {
+            val inst = activeInstance ?: return
+            if (inst.currentApp == null) return
+            inst.currentStartedAt = nowMs
+            _currentForeground.value = CurrentForeground(inst.currentApp!!, nowMs)
         }
     }
 }

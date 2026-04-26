@@ -24,17 +24,30 @@ class CleanupWorker(
 
     override suspend fun doWork(): Result {
         val dao = AppDatabase.get(applicationContext).events()
-        val cutoff = Instant.now()
+        val forwardedCutoff = Instant.now()
             .minus(AppDatabase.RETENTION_HOURS, ChronoUnit.HOURS)
             .toString()
-        val deleted = dao.deleteForwardedBefore(cutoff)
-        Log.i(TAG, "cleaned $deleted forwarded events older than $cutoff")
+        val localOnlyCutoff = Instant.now()
+            .minus(LOCAL_ONLY_RETENTION_DAYS, ChronoUnit.DAYS)
+            .toString()
+
+        val deletedForwarded = dao.deleteForwardedBefore(forwardedCutoff)
+        val deletedLocal = dao.deleteLocalOnlyBefore(localOnlyCutoff)
+
+        Log.i(
+            TAG,
+            "cleaned $deletedForwarded forwarded (< $forwardedCutoff) + " +
+                "$deletedLocal local-only (< $localOnlyCutoff)"
+        )
         return Result.success()
     }
 
     companion object {
         const val TAG = "ScrollantirCleanup"
         private const val UNIQUE_NAME = "scrollantir-cleanup-periodic"
+        // 14 weeks ≈ one academic quarter; retains enough history for the
+        // LocationScreen's date nav without unbounded growth.
+        private const val LOCAL_ONLY_RETENTION_DAYS = 98L
 
         fun enqueuePeriodic(context: Context) {
             val request = PeriodicWorkRequestBuilder<CleanupWorker>(6, TimeUnit.HOURS).build()

@@ -19,6 +19,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import app.scrollantir.net.DeviceId
+import app.scrollantir.ui.LocationScreen
+import app.scrollantir.ui.OnboardScanScreen
+import app.scrollantir.ui.QuestionsScreen
 import app.scrollantir.ui.SettingsScreen
 import app.scrollantir.ui.TimelineScreen
 import app.scrollantir.ui.TodayScreen
@@ -27,6 +31,7 @@ import app.scrollantir.ui.theme.ScrollantirTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DeviceId.prime(applicationContext)
         enableEdgeToEdge()
         setContent {
             ScrollantirTheme {
@@ -38,7 +43,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { TODAY, SETTINGS, TIMELINE }
+private enum class Screen { TODAY, SETTINGS, TIMELINE, LOCATION, ONBOARD_SCAN, QUESTIONS }
 
 @Composable
 private fun AppRoot(modifier: Modifier = Modifier) {
@@ -55,12 +60,25 @@ private fun AppRoot(modifier: Modifier = Modifier) {
         when (screen) {
             Screen.TODAY -> TodayScreen(
                 onOpenSettings = { current = Screen.SETTINGS },
-                onOpenTimeline = { current = Screen.TIMELINE }
+                onOpenTimeline = { current = Screen.TIMELINE },
+                onOpenLocation = { current = Screen.LOCATION },
+                onOpenQuestions = { current = Screen.QUESTIONS }
             )
             Screen.SETTINGS -> SettingsScreen(
-                onBack = { current = Screen.TODAY }
+                onBack = { current = Screen.TODAY },
+                onOpenOnboardScan = { current = Screen.ONBOARD_SCAN }
             )
             Screen.TIMELINE -> TimelineScreen(
+                onBack = { current = Screen.TODAY }
+            )
+            Screen.LOCATION -> LocationScreen(
+                onBack = { current = Screen.TODAY }
+            )
+            Screen.ONBOARD_SCAN -> OnboardScanScreen(
+                onBack = { current = Screen.SETTINGS },
+                onDone = { current = Screen.SETTINGS }
+            )
+            Screen.QUESTIONS -> QuestionsScreen(
                 onBack = { current = Screen.TODAY }
             )
         }

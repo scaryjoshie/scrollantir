@@ -18,8 +18,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -42,6 +46,7 @@ import app.scrollantir.db.AppDatabase
 import app.scrollantir.db.AppTotal
 import app.scrollantir.db.EventRow
 import app.scrollantir.db.ModeTotal
+import app.scrollantir.net.PromptsRepository
 import app.scrollantir.tracker.ContentDetectorService
 import app.scrollantir.tracker.TrackerForegroundService
 import app.scrollantir.tracker.UsageStatsPoller
@@ -57,6 +62,8 @@ import java.time.ZoneId
 fun TodayScreen(
     onOpenSettings: () -> Unit,
     onOpenTimeline: () -> Unit,
+    onOpenLocation: () -> Unit,
+    onOpenQuestions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -91,6 +98,12 @@ fun TodayScreen(
     val running by TrackerForegroundService.running.collectAsState()
     val current by UsageStatsPoller.currentForeground.collectAsState()
     val currentMode by ContentDetectorService.currentMode.collectAsState()
+    val pendingPrompts by PromptsRepository.prompts.collectAsState()
+
+    // One-shot refresh on entry so the question badge is populated before
+    // the user opens the Questions screen. Cheap HTTP call; the screen's
+    // own poll loop handles the 30 s cadence once opened.
+    LaunchedEffect(Unit) { PromptsRepository.refresh(context) }
     val foregroundEvents by dao.foregroundEventsSince(lookbackIso)
         .collectAsState(initial = emptyList())
     val modeEvents by dao.contentModeEventsSince(lookbackIso)
@@ -133,10 +146,30 @@ fun TodayScreen(
             )
             StatusPill(running = running)
             Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onOpenQuestions) {
+                BadgedBox(
+                    badge = {
+                        if (pendingPrompts.isNotEmpty()) {
+                            Badge { Text(pendingPrompts.size.toString()) }
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.HelpOutline,
+                        contentDescription = "Questions"
+                    )
+                }
+            }
             IconButton(onClick = onOpenTimeline) {
                 Icon(
-                    imageVector = Icons.Filled.History,
+                    imageVector = Icons.Filled.Timeline,
                     contentDescription = "Timeline"
+                )
+            }
+            IconButton(onClick = onOpenLocation) {
+                Icon(
+                    imageVector = Icons.Filled.Place,
+                    contentDescription = "Location"
                 )
             }
             IconButton(onClick = onOpenSettings) {

@@ -109,6 +109,18 @@ class ScreenWatcher(
         }
     }
 
+    /**
+     * Re-anchor the in-flight screen-on / unlocked spans to [nowMs]
+     * without emitting a row. Used by the Settings "Reset local data"
+     * flow so that when these spans eventually close they only emit
+     * post-reset duration, not pre-wipe time.
+     */
+    fun resetSpansToNow(nowMs: Long) {
+        val t = Instant.ofEpochMilli(nowMs)
+        if (screenOnSince != null) screenOnSince = t
+        if (unlockedSince != null) unlockedSince = t
+    }
+
     companion object {
         const val TAG = "ScrollantirScreen"
     }

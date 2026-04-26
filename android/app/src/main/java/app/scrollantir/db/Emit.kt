@@ -1,5 +1,6 @@
 package app.scrollantir.db
 
+import app.scrollantir.net.DeviceId
 import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
@@ -15,7 +16,7 @@ suspend fun emit(
     dao.insert(
         EventRow(
             id = UUID.randomUUID().toString(),
-            device = "phone",
+            device = DeviceId.current(),
             source = source,
             timestampUtc = start.toString(),
             durationS = durationS,

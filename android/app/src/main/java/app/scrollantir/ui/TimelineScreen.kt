@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -304,24 +305,63 @@ fun TimelineScreen(
 
 @Composable
 private fun HourLabels(dpPerMin: Float) {
-    val hourHeight = (dpPerMin * 60).dp
-    Column(
+    // Absolute-positioned labels — mirrors how grid lines and event blocks
+    // are placed. Earlier Column+per-hour-Box layout caused Compose to
+    // compress child slots from the bottom up at high zoom (the children's
+    // summed fixed height outran the Column's resolved max), silently
+    // dropping later hour labels. A single parent Box with offset-per-label
+    // sidesteps Column sizing entirely and matches the rest of the screen.
+    val showHalf = dpPerMin >= 3f
+    val showQuarter = dpPerMin >= 6f
+    val subColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+    val primaryColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
         modifier = Modifier
             .width(HOUR_LABEL_WIDTH)
-            .fillMaxSize()
+            .fillMaxHeight()
     ) {
         for (h in 0..23) {
-            Box(
+            val hourTopMin = 60 * h
+            Text(
+                text = formatHour(h),
+                style = MaterialTheme.typography.labelSmall,
+                color = primaryColor,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(hourHeight),
-                contentAlignment = Alignment.TopEnd
-            ) {
+                    .align(Alignment.TopEnd)
+                    .offset(y = (dpPerMin * hourTopMin).dp)
+                    .padding(end = 6.dp)
+            )
+            if (showQuarter) {
                 Text(
-                    text = formatHour(h),
+                    text = ":15",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 6.dp)
+                    color = subColor,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = (dpPerMin * (hourTopMin + 15)).dp)
+                        .padding(end = 6.dp)
+                )
+            }
+            if (showHalf) {
+                Text(
+                    text = ":30",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = subColor,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = (dpPerMin * (hourTopMin + 30)).dp)
+                        .padding(end = 6.dp)
+                )
+            }
+            if (showQuarter) {
+                Text(
+                    text = ":45",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = subColor,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = (dpPerMin * (hourTopMin + 45)).dp)
+                        .padding(end = 6.dp)
                 )
             }
         }

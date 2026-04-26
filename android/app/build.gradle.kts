@@ -1,7 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// Google Maps API key pulled from local.properties so it stays out of VCS.
+// If missing, manifest placeholder resolves to an empty string and the map
+// tiles fail to load (with a clear LogCat message) — other features still work.
+val mapsApiKey: String = run {
+    val propsFile = rootProject.file("local.properties")
+    if (propsFile.exists()) {
+        Properties().apply { load(propsFile.inputStream()) }
+            .getProperty("MAPS_API_KEY", "")
+    } else ""
 }
 
 android {
@@ -22,6 +35,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("long", "BUILD_TIME_MS", "${System.currentTimeMillis()}L")
+
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
     buildTypes {
@@ -94,6 +109,14 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.security.crypto)
     implementation(libs.okhttp)
+    implementation(libs.play.services.location)
+    implementation(libs.play.services.maps)
+    implementation(libs.maps.compose)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.barcode.scanning)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

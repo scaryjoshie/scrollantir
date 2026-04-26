@@ -310,5 +310,18 @@ class ContentDetectorService : AccessibilityService() {
         fun notifyForegroundLeft(endMs: Long) {
             instance?.onForegroundLeftTarget(endMs)
         }
+
+        /**
+         * Re-anchor the in-flight content-mode span to [nowMs] without
+         * emitting. For the Settings "Reset local data" flow — see the
+         * corresponding methods on UsageStatsPoller, ActivityWatcher,
+         * and ScreenWatcher.
+         */
+        fun resetSpanToNow(nowMs: Long) {
+            val inst = instance ?: return
+            val c = inst.current ?: return
+            inst.current = CurrentMode(c.source, nowMs)
+            _currentMode.value = CurrentMode(c.source, nowMs)
+        }
     }
 }

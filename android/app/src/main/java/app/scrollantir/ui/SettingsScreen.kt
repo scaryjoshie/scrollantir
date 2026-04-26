@@ -30,7 +30,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -38,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,10 +63,15 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.runtime.rememberCoroutineScope
 import app.scrollantir.BuildConfig
+import app.scrollantir.db.AppDatabase
 import app.scrollantir.net.ForwarderWorker
 import app.scrollantir.net.SecurePrefs
+import kotlinx.coroutines.launch
+import app.scrollantir.tracker.ActivityWatcher
 import app.scrollantir.tracker.ContentDetectorService
+import app.scrollantir.tracker.LocationWatcher
 import app.scrollantir.tracker.TrackerForegroundService
 import java.time.Duration
 import java.time.Instant
@@ -73,6 +81,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenOnboardScan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -91,10 +100,22 @@ fun SettingsScreen(
     val usageGranted = remember(refreshTick) { hasUsageStatsPermission(context) }
     val batteryOK = remember(refreshTick) { isIgnoringBatteryOptimizations(context) }
     val a11yGranted = remember(refreshTick) { isAccessibilityEnabled(context) }
+    val fineLocGranted = remember(refreshTick) { LocationWatcher.hasFineLocationPermission(context) }
+    val bgLocGranted = remember(refreshTick) { LocationWatcher.hasBackgroundLocationPermission(context) }
+    val activityGranted = remember(refreshTick) { ActivityWatcher.hasActivityRecognitionPermission(context) }
     val running by TrackerForegroundService.running.collectAsState()
     val canStart = notifGranted && usageGranted
+    val locationEnabled = remember(refreshTick) {
+        SecurePrefs.get(context).getBoolean(SecurePrefs.KEY_LOCATION_ENABLED, false)
+    }
 
     val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { refreshTick++ }
+    val fineLocLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { refreshTick++ }
+    val activityLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { refreshTick++ }
 
@@ -134,6 +155,9 @@ fun SettingsScreen(
             usageGranted = usageGranted,
             batteryOK = batteryOK,
             a11yGranted = a11yGranted,
+            fineLocGranted = fineLocGranted,
+            bgLocGranted = bgLocGranted,
+            activityGranted = activityGranted,
             onGrantNotif = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -157,13 +181,136 @@ fun SettingsScreen(
                     Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
+            },
+            onGrantFineLoc = {
+                fineLocLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            },
+            onGrantBgLoc = {
+                // Background-location has no direct runtime dialog on
+                // Android 11+. Send the user to the app's Location settings
+                // where they pick "Allow all the time" manually.
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:${context.packageName}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            },
+            onGrantActivity = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    activityLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                }
+            }
+        )
+
+        LocationTrackingCard(
+            enabled = locationEnabled,
+            canEnable = fineLocGranted && activityGranted,
+            onToggle = { newValue ->
+                SecurePrefs.get(context).edit()
+                    .putBoolean(SecurePrefs.KEY_LOCATION_ENABLED, newValue)
+                    .apply()
+                TrackerForegroundService.reloadLocation(context)
+                refreshTick++
             }
         )
 
         SyncCard(context = context, refreshKey = refreshTick)
+        OnboardingCard(
+            context = context,
+            refreshKey = refreshTick,
+            onScan = onOpenOnboardScan
+        )
         ServerSettingsCard(context = context, onSaved = { refreshTick++ })
 
+        DangerZone(context = context)
+
         VersionFooter()
+    }
+}
+
+@Composable
+private fun DangerZone(context: Context) {
+    var showDialog by remember { mutableStateOf(false) }
+    var lastAction by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Danger zone",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.error
+            )
+            Text(
+                text = "Reset local data deletes every event in the on-device " +
+                    "queue, including any rows that have not yet been forwarded " +
+                    "to the server. This cannot be undone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { showDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Text("Reset local data")
+            }
+            lastAction?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("Reset local data?") },
+            text = {
+                Text(
+                    "This will permanently delete every event row stored locally, " +
+                        "including any that have not yet synced to the server. " +
+                        "Tracking will continue running; only historical data is wiped."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDialog = false
+                        scope.launch {
+                            val dao = AppDatabase.get(context).events()
+                            val deleted = dao.deleteAll()
+                            // Re-anchor every in-memory span holder so live
+                            // sessions don't re-emit pre-wipe start times
+                            // when they eventually close.
+                            TrackerForegroundService.resetAllSpansToNow()
+                            lastAction = "Deleted $deleted rows just now."
+                        }
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -225,10 +372,16 @@ private fun PermissionsSection(
     usageGranted: Boolean,
     batteryOK: Boolean,
     a11yGranted: Boolean,
+    fineLocGranted: Boolean,
+    bgLocGranted: Boolean,
+    activityGranted: Boolean,
     onGrantNotif: () -> Unit,
     onGrantUsage: () -> Unit,
     onGrantBattery: () -> Unit,
-    onGrantA11y: () -> Unit
+    onGrantA11y: () -> Unit,
+    onGrantFineLoc: () -> Unit,
+    onGrantBgLoc: () -> Unit,
+    onGrantActivity: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -251,6 +404,64 @@ private fun PermissionsSection(
             PermissionRow("Usage access", usageGranted, onGrantUsage)
             PermissionRow("Ignore battery optimization", batteryOK, onGrantBattery)
             PermissionRow("Accessibility (Shorts/Reels detection)", a11yGranted, onGrantA11y)
+            PermissionRow("Location (fine)", fineLocGranted, onGrantFineLoc)
+            PermissionRow("Location (all the time)", bgLocGranted, onGrantBgLoc)
+            PermissionRow("Physical activity", activityGranted, onGrantActivity)
+        }
+    }
+}
+
+@Composable
+private fun LocationTrackingCard(
+    enabled: Boolean,
+    canEnable: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Location tracking",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = if (enabled) "On — activity transitions + Tier 2 path sampling"
+                            else "Off",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onToggle,
+                    enabled = canEnable || enabled
+                )
+            }
+            if (!canEnable && !enabled) {
+                Text(
+                    text = "Grant Location (fine) and Physical activity above to enable.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = "Forwarded to Supabase at full device precision.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -351,6 +562,58 @@ private fun SyncCard(context: Context, refreshKey: Int) {
 }
 
 @Composable
+private fun OnboardingCard(
+    context: Context,
+    refreshKey: Int,
+    onScan: () -> Unit
+) {
+    val configured = remember(refreshKey) {
+        val prefs = SecurePrefs.get(context)
+        val url = prefs.getString(SecurePrefs.KEY_SERVER_URL, null)
+        val token = prefs.getString(SecurePrefs.KEY_TOKEN, null)
+        val device = prefs.getString(SecurePrefs.KEY_DEVICE_ID, null)
+        !url.isNullOrBlank() && !token.isNullOrBlank() && !device.isNullOrBlank()
+    }
+    val currentDevice = remember(refreshKey) {
+        SecurePrefs.get(context).getString(SecurePrefs.KEY_DEVICE_ID, null)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Ingest onboarding",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = if (configured) {
+                    "Device id: ${currentDevice ?: "—"}. Scan a fresh QR to rotate."
+                } else {
+                    "Scan the QR printed by `./admin mint --device-id <id>` on " +
+                        "your admin machine. The URL, token, and device id are " +
+                        "pulled from the QR — no manual typing."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                Text(if (configured) "Re-scan Onboarding QR" else "Scan Onboarding QR")
+            }
+        }
+    }
+}
+
+@Composable
 private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
     val prefs = remember { SecurePrefs.get(context) }
     var url by remember {
@@ -374,15 +637,22 @@ private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Server",
+                text = "Advanced: manual server",
                 style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Fallback for LAN stub debugging or when the QR " +
+                    "scanner is unavailable. URL is used verbatim — include " +
+                    "the `/ingest` (or `/functions/v1/ingest`) suffix.",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it; saved = false },
-                label = { Text("URL") },
-                placeholder = { Text("http://192.168.1.x:8069") },
+                label = { Text("Ingest URL") },
+                placeholder = { Text("http://192.168.1.x:8069/ingest") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth()

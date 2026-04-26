@@ -16,10 +16,12 @@ object SecurePrefs {
 
     const val KEY_SERVER_URL = "server_url"
     const val KEY_TOKEN = "token"
+    const val KEY_DEVICE_ID = "device_id"
     const val KEY_LAST_SYNC_AT = "last_sync_at"
     const val KEY_LAST_SYNC_RESULT = "last_sync_result"
     const val KEY_LAST_SYNC_COUNT = "last_sync_count"
     const val KEY_TRACKING_ENABLED = "tracking_enabled"
+    const val KEY_LOCATION_ENABLED = "location_enabled"
 
     @Volatile private var instance: SharedPreferences? = null
 

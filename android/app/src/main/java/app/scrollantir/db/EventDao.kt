@@ -13,8 +13,20 @@ interface EventDao {
     suspend fun insert(event: EventRow)
 
     // --- Outgoing queue: unforwarded events ---
+    //
+    // All sources flow to Supabase. Location/activity rows were previously
+    // held local-only (see docs/location.md) while the ingest target was a
+    // LAN stub over plaintext HTTP; now that we POST to Supabase over TLS,
+    // that blocker is gone. Coordinates ship at full device precision —
+    // the prior 4-decimal egress snap was removed since this is a
+    // self-hosted single-user setup and ~sub-meter fidelity is wanted for
+    // the place-matching layer.
 
-    @Query("SELECT * FROM events WHERE forwarded_at IS NULL ORDER BY timestamp_utc ASC LIMIT :limit")
+    @Query("""
+        SELECT * FROM events
+        WHERE forwarded_at IS NULL
+        ORDER BY timestamp_utc ASC LIMIT :limit
+    """)
     suspend fun nextBatch(limit: Int): List<EventRow>
 
     @Query("UPDATE events SET forwarded_at = :nowIso WHERE id IN (:ids)")
@@ -61,10 +73,76 @@ interface EventDao {
     @Query("SELECT COUNT(*) FROM events WHERE source = 'system.unlock' AND timestamp_utc >= :sinceIso")
     fun unlockCountSince(sinceIso: String): Flow<Int>
 
-    // --- Cleanup ---
+    // --- Location / activity (local-only, never forwarded) ---
 
-    @Query("DELETE FROM events WHERE forwarded_at IS NOT NULL AND forwarded_at < :cutoffIso")
+    @Query("""
+        SELECT * FROM events
+        WHERE source = 'phone.location.reading'
+          AND timestamp_utc >= :sinceIso
+          AND timestamp_utc < :untilIso
+        ORDER BY timestamp_utc ASC
+    """)
+    fun locationReadingsBetween(sinceIso: String, untilIso: String): Flow<List<EventRow>>
+
+    // Activity states and usage rows are duration events; a row starting
+    // before :sinceIso can still overlap the day window. We fetch with a
+    // 24h lookback and the caller clips in Kotlin. Mirrors the pattern
+    // used by foregroundEventsSince for the Today dashboard.
+
+    @Query("""
+        SELECT * FROM events
+        WHERE source = 'phone.activity.state'
+          AND timestamp_utc >= :lookbackIso
+          AND timestamp_utc < :untilIso
+        ORDER BY timestamp_utc ASC
+    """)
+    fun activityStatesSince(lookbackIso: String, untilIso: String): Flow<List<EventRow>>
+
+    @Query("""
+        SELECT * FROM events
+        WHERE timestamp_utc >= :lookbackIso
+          AND timestamp_utc < :untilIso
+          AND source IN ('system.foreground', 'youtube.shorts', 'instagram.reels',
+                         'instagram.stories', 'tiktok.feed')
+        ORDER BY timestamp_utc ASC
+    """)
+    fun usageOverlappingSince(lookbackIso: String, untilIso: String): Flow<List<EventRow>>
+
+    // --- Cleanup ---
+    //
+    // Location and activity rows are kept locally for ~98 days regardless of
+    // forward status so the on-phone LocationScreen can page back through
+    // prior days without refetching from Supabase. Everything else is dropped
+    // 48h after server ACK.
+
+    @Query("""
+        DELETE FROM events
+        WHERE forwarded_at IS NOT NULL
+          AND forwarded_at < :cutoffIso
+          AND source NOT LIKE 'phone.location.%'
+          AND source NOT LIKE 'phone.activity.%'
+    """)
     suspend fun deleteForwardedBefore(cutoffIso: String): Int
+
+    /**
+     * Full wipe — for the "reset all local data" button in Settings. Deletes
+     * every row including unforwarded ones. Destructive; UI must confirm.
+     */
+    @Query("DELETE FROM events")
+    suspend fun deleteAll(): Int
+
+    /**
+     * Delete old local-only rows that will never be forwarded (location +
+     * activity). Tier-1 volume is low (~70/day) so a generous retention is
+     * fine; we keep ~14 weeks so the LocationScreen can page back through
+     * the past quarter without hitting a wall.
+     */
+    @Query("""
+        DELETE FROM events
+        WHERE (source LIKE 'phone.location.%' OR source LIKE 'phone.activity.%')
+          AND timestamp_utc < :cutoffIso
+    """)
+    suspend fun deleteLocalOnlyBefore(cutoffIso: String): Int
 }
 
 data class AppTotal(

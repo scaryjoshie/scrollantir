@@ -10,7 +10,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class IngestClient(
-    private val serverUrl: String,
+    private val ingestUrl: String,
     private val token: String
 ) {
     private val client = OkHttpClient.Builder()
@@ -33,7 +33,7 @@ class IngestClient(
                         put("timestamp", row.timestampUtc)
                         put("duration_s", row.durationS)
                         // data_json is already a JSON string; parse so it serializes as object
-                        put("data", JSONObject(row.dataJson))
+                        put("data", parseDataJson(row.dataJson))
                     }
                 )
             }
@@ -41,15 +41,30 @@ class IngestClient(
 
         val body = json.toString().toRequestBody("application/json".toMediaType())
 
-        val url = serverUrl.trimEnd('/') + "/ingest"
+        // URL is stored as the full POST target (e.g. the Supabase
+        // `/functions/v1/ingest` endpoint from the QR payload, or a LAN
+        // stub ending in `/ingest`). No suffix mangling here.
         val request = Request.Builder()
-            .url(url)
+            .url(ingestUrl)
             .header("Authorization", "Bearer $token")
             .post(body)
             .build()
 
         client.newCall(request).execute().use { response ->
             return response.code
+        }
+    }
+
+    /**
+     * Defensive parse: malformed data JSON degrades to `{}` rather than
+     * throwing and failing the whole batch POST. No egress transforms today
+     * — coordinates and other fields ship as recorded.
+     */
+    private fun parseDataJson(dataJson: String): JSONObject {
+        return try {
+            JSONObject(dataJson)
+        } catch (_: Throwable) {
+            JSONObject()
         }
     }
 }
