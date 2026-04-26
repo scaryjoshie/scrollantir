@@ -1,0 +1,99 @@
+# scrollantir runtime — local self-hosted backend stack.
+# Five services: caddy (TLS + reverse proxy), postgres (data plane),
+# postgrest (REST over Postgres), api (FastAPI), agent (scheduler).
+# api + agent share one Python image, two commands.
+#
+# Local dev:    docker compose up -d
+# Hetzner deploy: see ./deploy.sh
+
+name: scrollantir
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - postgrest
+      - api
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scrollantir}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-scrollantir}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_USER:-scrollantir}" -d "${POSTGRES_DB:-scrollantir}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  postgrest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      # v0: connect as the postgres superuser; anon-role separation comes
+      # in commit #2 when db/schemas/ lands the authenticator + anon roles.
+      PGRST_DB_URI: postgres://${POSTGRES_USER:-scrollantir}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scrollantir}
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-scrollantir}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: ./app
+    restart: unless-stopped
+    expose:
+      - "8000"
+    command:
+      - uvicorn
+      - scrollantir.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent:
+    build: ./app
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - scrollantir.agent
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

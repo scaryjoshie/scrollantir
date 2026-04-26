@@ -18,6 +18,18 @@ historical context; this doc supersedes it for forward work.
 `orchestrator/` continues running daily-digest + weekly-report on
 Hetzner CAX11 until `runtime/` reaches parity, then gets retired.
 
+> **Status update 2026-04-26:** Decision #4 below — *"postgres/ reserved
+> but not populated in v1; Supabase remains the data plane"* — was
+> **reversed**. `runtime/` v1 now adopts the full self-hosted stack
+> from [self-host.md](self-host.md): Caddy + PostgREST + local Postgres
+> in the compose file from day one. The internal layout has also
+> evolved since this doc was written — `runtime/app/` is the single
+> Python image hosting both `api` (FastAPI) and `agent` (APScheduler)
+> as two compose services. See
+> [session-2026-04-25.md postscript](../sessions/session-2026-04-25.md#postscript--2026-04-26-self-host-pivot)
+> for rationale and the broader set of calls. `runtime/README.md` has
+> the current layout.
+
 ## Why a fresh folder
 
 Decided 2026-04-25 (see [session chronicle](../sessions/session-2026-04-25.md)).
@@ -192,11 +204,18 @@ Each step depends on the prior:
 
 ## What `runtime/` does NOT replace
 
-- **Supabase** stays as the data plane (events, prompts, derived_events,
-  ingest edge functions, agent_api RPCs).
-- **`dashboard/`** stays as a separate top-level folder. It deploys
-  *onto* `runtime/`'s Caddy but the codebase is independent.
-- **`android/`** and **`mac-forwarder/`** are unchanged collectors.
+- ~~**Supabase** stays as the data plane (events, prompts, derived_events,
+  ingest edge functions, agent_api RPCs).~~ **Reversed 2026-04-26.**
+  Supabase is being replaced; client cutover sequence (re-pointing
+  android/ + mac-forwarder/, re-minting tokens against the local DB)
+  is TBD and lands in a follow-up commit after the local stack proves
+  out.
+- **`dashboard/`** stays as a separate top-level folder. It will read
+  via Caddy → PostgREST instead of direct Postgres TCP once cutover
+  happens; codebase remains independent.
+- **`android/`** and **`mac-forwarder/`** are unchanged collectors
+  *for now* — they'll be re-pointed at the local ingest endpoint at
+  cutover.
 - **`scripts/admin.py`** stays as the local admin CLI.
 
 ## Decisions to confirm with Josh before scaffolding
@@ -204,15 +223,18 @@ Each step depends on the prior:
 The earlier discussion landed on these but they're worth a final yes
 before any code:
 
-- Folder name is `runtime/` (not `host/`, not `agent/`).
-- Python for the agent (not extending bash).
-- Caddy as a service in the compose stack from day one (vs. defer).
-- `postgres/` reserved as a folder slot but not populated in v1 (Supabase
-  remains the data plane).
+- Folder name is `runtime/` (not `host/`, not `agent/`). ✅ confirmed 2026-04-26
+- Python for the agent (not extending bash). ✅ confirmed 2026-04-26
+- Caddy as a service in the compose stack from day one (vs. defer). ✅ confirmed 2026-04-26
+- ~~`postgres/` reserved as a folder slot but not populated in v1
+  (Supabase remains the data plane).~~ **Reversed 2026-04-26** —
+  `postgres/` is populated in v1; runtime/ adopts self-host.md from
+  day one (see banner above).
 - Deterministic derivers ship as Python modules (vs. `*.sql` files
-  invoked by psql).
+  invoked by psql). ✅ confirmed 2026-04-26
 - Reuse the existing `orchestrator/runtime/{CLAUDE.md, jobs/, skills/}`
-  prompts verbatim into `runtime/agent/prompts/`.
+  prompts verbatim into `runtime/agent/prompts/`. ✅ confirmed 2026-04-26
+  (path lands as `runtime/app/src/scrollantir/agent/prompts/`).
 
 ## Pointers
 

@@ -1,0 +1,20 @@
+# scrollantir runtime — Caddy config.
+#
+# Local dev: HTTP only on :80, no ACME. Production swaps the :80 block
+# for a hostname block (e.g. `ingest.scrollantir.example`) and Caddy
+# auto-provisions Let's Encrypt certs.
+
+:80 {
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy postgrest:3000
+	}
+}

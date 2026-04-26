@@ -37,3 +37,6 @@ vendor/
 secrets/
 *.local
 local.properties
+
+# runtime/ — dev-only override (never on production VM)
+runtime/compose.override.yaml
