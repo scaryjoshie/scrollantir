@@ -1,10 +1,18 @@
-# Scrollantir — Orchestrator setup plan
+# Scrollantir — Orchestrator setup plan (POC)
+
+> **Status note (2026-04-25):** This doc describes the **current
+> production orchestrator** running on Hetzner CAX11 + systemd —
+> a successful POC that's writing daily-digest + weekly-report
+> reports on cron. Forward work moves into `runtime/` (a fresh
+> docker-compose stack). For the rebuild spec, read
+> [rebuild-plan.md](rebuild-plan.md) first; this doc is the
+> historical-and-current contract for the in-flight POC.
 
 The reasoning plane. A single always-on container running Claude Code
 CLI as a cron-invoked agent, with persistent local FS for skills and
 memory. No custom Python agent loop, no edge functions, no n8n.
 
-Read `docs/data-flow.md` first for where this fits overall.
+Read `../data-flow.md` first for where this fits overall.
 
 ## Status
 

@@ -35,7 +35,8 @@ Docs are organized by area. Cross-cutting concepts live at root; per-component i
 
 | Doc | What |
 |---|---|
-| [runtime/](runtime/README.md) | The orchestrator: Claude Code CLI in a Docker container on **Hetzner CAX11 + systemd** (Phases 0–2 shipped 2026-04-21; daily-digest + weekly-report cron-firing). Image contents, deployment, per-job prompts, secrets handling. |
+| [runtime/](runtime/README.md) | The current POC orchestrator: Claude Code CLI in a Docker container on **Hetzner CAX11 + systemd** (Phases 0–2 shipped 2026-04-21; daily-digest + weekly-report cron-firing). |
+| [runtime/rebuild-plan.md](runtime/rebuild-plan.md) | **Forward-looking.** The Python-based docker-compose stack that supersedes the POC: agent + Caddy + (future) Postgres slot. End state, derivers to ship, migration sequence. **Read this first if scaffolding `runtime/`.** |
 | [runtime/agent.md](runtime/agent.md) | **Subsumed.** Local-Claude-Code conventions, agent_role + agent_api.* RPC reference. The orchestrator's CLAUDE.md derives from this contract. |
 | [runtime/self-host.md](runtime/self-host.md) | Self-hosting the full stack — provisioning, credential management, monitoring. |
 
@@ -68,6 +69,7 @@ Multi-component features that span collection + derivation + render:
 |---|---|
 | [sessions/session-2026-04-21.md](sessions/session-2026-04-21.md) | First end-to-end day: state snapshot, credentials posture, outstanding follow-ups from the Codex audit. |
 | [sessions/session-2026-04-23-aw-forwarder.md](sessions/session-2026-04-23-aw-forwarder.md) | Mac-forwarder truncation bug (93% data loss): diagnosis, fix spec, AFK-model decision (since reversed — see postscript). |
+| [sessions/session-2026-04-25.md](sessions/session-2026-04-25.md) | Runtime-rebuild design + cleanup pass: location/places/workout deriver designs, AFK-gating decision, fresh-folder rationale, doc reorg. **Read this with rebuild-plan.md if picking up runtime work.** |
 | [sessions/handoff-architecture-prompt.md](sessions/handoff-architecture-prompt.md) | Meta-artifact: subagent onboarding prompt for continuing architecture work in a fresh session. |
 
 ## Not yet written
