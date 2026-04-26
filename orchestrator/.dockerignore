@@ -1,0 +1,9 @@
+# Files excluded from the Docker build context. Keep the image lean.
+**/.DS_Store
+**/.git
+**/.gitignore
+**/.env
+**/.env.*
+**/*.log
+runtime/memory/
+runtime/logs/

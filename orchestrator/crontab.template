@@ -1,0 +1,14 @@
+# scrollantir agent crontab
+#
+# entrypoint.sh prepends SHELL/PATH/ANTHROPIC_API_KEY/AGENT_DATABASE_URL
+# to this file at container boot. Do NOT set those here.
+#
+# Do NOT set CRON_TZ — Ubuntu's cron silently ignores it. Container
+# TZ=America/Chicago is set in the Dockerfile, so the schedules below
+# are in Chicago local time year-round (DST handled by tzdata).
+
+0 7 * * *  root /usr/local/bin/run-job.sh daily-digest
+0 9 * * 0  root /usr/local/bin/run-job.sh weekly-report
+# */15 * * * *  root /usr/local/bin/run-job.sh classifier   # enable with roadmap #8
+
+# trailing newline required by cron

@@ -8,14 +8,18 @@ Read `docs/data-flow.md` first for where this fits overall.
 
 ## Status
 
-📋 Planned. Not yet started.
+🚧 Phases 0 and 1 complete (2026-04-21). Phases 2 and 3 pending.
 
-Blocked on:
-- **#2 Ingest edge function** — the agent needs real events in
-  Postgres to reason over. Build that first.
-- **Admin CLI `setup-roles`** (shipped 2026-04-21, not yet invoked) —
-  produces the `agent_role` DSN in Keychain that the orchestrator
-  consumes.
+- **Phase 0 ✅** — local Claude Code wrote first daily-digest report
+  (`public.reports.id = c93d8d69-8f1a-42ff-b4bb-57755bb18ec1`).
+- **Phase 1 ✅** — cold-container `smoke` + `daily-digest` both write
+  reports identical in shape to Phase 0.
+  - Smoke: `a06e7c81-1618-487f-b228-c1981e2e1f41` (tag `{smoke}`).
+  - Daily-digest: `26862d14-6e45-4158-9bd4-1cc3a712c8cf` (tag `{daily}`,
+    24h window, 1740-char body).
+- **Phase 2** — blocked on explicit user OK to provision Oracle Free
+  tier.
+- **Phase 3** — blocked on Phase 2 soak time.
 
 ## Why this shape (one-line version)
 
@@ -45,20 +49,18 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-  subgraph HOST["Oracle Free ARM VM"]
-    subgraph COOLIFY["Coolify (reverse proxy + Docker orchestration)"]
-      subgraph CONTAINER["scrollantir-orchestrator container"]
-        CRON["cron daemon"]
-        CLAUDE["claude (CLI binary)"]
-        PSQL["psql + pg tools"]
-        CRON -- "invokes" --> CLAUDE
-        CLAUDE -- "shells out to" --> PSQL
-      end
-      VOL[("/scrollantir volume<br/>CLAUDE.md<br/>jobs/<br/>skills/<br/>memory/<br/>logs/")]
-      ENV[("Coolify env:<br/>ANTHROPIC_API_KEY<br/>AGENT_DATABASE_URL")]
-      CONTAINER -- "read/write" --> VOL
-      CONTAINER -. "read" .-> ENV
+  subgraph HOST["Oracle Free ARM VM (systemd + docker)"]
+    subgraph CONTAINER["scrollantir-orchestrator container"]
+      CRON["cron daemon"]
+      CLAUDE["claude (CLI binary)"]
+      PSQL["psql + pg tools"]
+      CRON -- "invokes" --> CLAUDE
+      CLAUDE -- "shells out to" --> PSQL
     end
+    VOL[("/opt/scrollantir/data<br/>(bind-mount → /scrollantir)<br/>CLAUDE.md, jobs/, skills/<br/>memory/, logs/")]
+    ENV[("/etc/scrollantir.env (0600)<br/>CLAUDE_CODE_OAUTH_TOKEN<br/>(or ANTHROPIC_API_KEY)<br/>AGENT_DATABASE_URL")]
+    CONTAINER -- "read/write" --> VOL
+    CONTAINER -. "--env-file" .-> ENV
   end
 
   PG[("Supabase Postgres<br/>:5432")]
@@ -127,7 +129,7 @@ Shakes out the image before you pay the VPS context-switch tax.
 3. One-shot smoke run — no cron, just the job:
    ```
    docker run --rm \
-     -e ANTHROPIC_API_KEY \
+     -e CLAUDE_CODE_OAUTH_TOKEN \
      -e AGENT_DATABASE_URL \
      -v scrollantir-data:/scrollantir \
      scrollantir-orchestrator \
@@ -135,7 +137,9 @@ Shakes out the image before you pay the VPS context-switch tax.
    ```
    (`smoke` runs `jobs/smoke.md` — a trivial "SELECT 1 and write a
    one-line report tagged `['smoke']`" prompt you add to catch
-   wiring issues cheaply.)
+   wiring issues cheaply. Swap `CLAUDE_CODE_OAUTH_TOKEN` for
+   `ANTHROPIC_API_KEY` to use a raw API key instead; `entrypoint.sh`
+   accepts either.)
 4. Verify logs in the mounted volume + a new smoke-tagged report in
    Postgres.
 5. Run `daily-digest` once the same way to confirm the real job works
@@ -144,39 +148,132 @@ Shakes out the image before you pay the VPS context-switch tax.
 **Exit criterion:** cold-container `smoke` + `daily-digest` both
 produce reports identical in shape to Phase 0.
 
-### Phase 2: Oracle Free + Coolify deploy
+### Phase 2: Oracle Free + systemd deploy
 
 Goal: same container, now running on the VPS, triggered by cron.
 
-1. Provision Oracle Cloud Always Free ARM VM (Ampere, Ubuntu LTS).
-   Capacity is often tight at instance-creation time ("Out of host
-   capacity"); retry in off-peak hours or try a different home
-   region. Once provisioned, the VM itself is stable — the
-   availability pain is at boot, not at runtime.
-2. Install Docker + Coolify on the VM per Coolify's docs.
-3. Add a Coolify application pointed at your `orchestrator/` source
-   (private GH repo subdir is cleanest).
-4. Set Coolify env vars: `ANTHROPIC_API_KEY`, `AGENT_DATABASE_URL`.
-5. Attach a persistent volume at `/scrollantir`.
-6. Deploy. **Validate immediately, don't wait 24 h:**
-   - `docker exec scrollantir-orchestrator run-job.sh smoke`
-     → confirms env + DSN + Claude Code + RPC write path all work.
-   - `docker exec scrollantir-orchestrator run-job.sh daily-digest`
-     → confirms the real job.
-   - `docker exec scrollantir-orchestrator grep -vE '^(ANTHROPIC_API_KEY|AGENT_DATABASE_URL)=' /etc/cron.d/scrollantir`
-     → confirms the crontab was rendered (SHELL/PATH lines + job
-     entries visible; secrets redacted).
-   - `docker logs scrollantir-orchestrator` → confirms the cron
-     daemon started. Per-job output will *not* appear here (cron
-     sends to syslog on Ubuntu — Debian bug #887035); use the
-     per-run files under `/scrollantir/logs/` for that.
-7. Let cron take over. Next morning, check
-   `/scrollantir/memory/last-success-daily-digest` has today's
-   timestamp.
+Earlier drafts of this doc used Coolify; we ended up not needing it.
+For a single container with no inbound HTTPS, systemd + a plain
+`docker run` is fewer moving parts, zero extra RAM, and no second
+control plane to patch. Coolify becomes worth it if you later host
+3+ services on the same VM.
+
+Artifacts in `orchestrator/systemd/` that this flow uses:
+- `scrollantir-orchestrator.service` — systemd unit.
+- `scrollantir.env.example` — template for `/etc/scrollantir.env`.
+
+Plus two helpers at `orchestrator/`:
+- `deploy.sh` — git pull + docker build + `systemctl restart` over SSH.
+- `sync-runtime.sh` — rsync `runtime/` to the VM's bind-mount for
+  prompt-only iteration (no restart, no rebuild).
+
+#### 2.1 Provision the VM
+
+1. Oracle Cloud Always Free ARM (Ampere Altra, Ubuntu LTS). Capacity
+   is often tight at instance-creation time ("Out of host capacity");
+   retry in off-peak hours or try a different home region. Once
+   provisioned, the VM is stable — availability pain is at boot, not
+   runtime.
+2. Open only SSH (22) inbound. No HTTP needed.
+3. Set up an SSH alias (e.g. `Host orch` in `~/.ssh/config`) so the
+   helper scripts can ssh without flags.
+
+#### 2.2 First-time bootstrap on the VM
+
+```bash
+# Install Docker CE from Docker's apt repo (gives you /usr/bin/docker
+# and the modern `docker compose` plugin). Follow docker.com's current
+# Ubuntu install doc; the snap package is NOT recommended.
+sudo apt-get update && sudo apt-get install -y git rsync
+
+# Let the login user run docker without sudo (takes effect on next login).
+sudo usermod -aG docker "$USER"
+
+# Clone the repo and prepare the bind-mount.
+sudo mkdir -p /opt/scrollantir
+sudo chown "$USER:$USER" /opt/scrollantir
+git clone https://github.com/joshua/scrollantir /opt/scrollantir/repo
+sudo mkdir -p /opt/scrollantir/data
+
+# Drop the env file with the two secrets.
+sudo install -m 600 -o root -g root \
+  /opt/scrollantir/repo/orchestrator/systemd/scrollantir.env.example \
+  /etc/scrollantir.env
+sudo $EDITOR /etc/scrollantir.env   # fill in CLAUDE_CODE_OAUTH_TOKEN + AGENT_DATABASE_URL
+
+# Install the systemd unit.
+sudo install -m 644 \
+  /opt/scrollantir/repo/orchestrator/systemd/scrollantir-orchestrator.service \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# First build.
+cd /opt/scrollantir/repo && docker build -t scrollantir-orchestrator orchestrator/
+
+# Bring it up.
+sudo systemctl enable --now scrollantir-orchestrator
+```
+
+#### 2.3 Validate immediately — don't wait 24 h
+
+```bash
+# On the VM:
+docker exec scrollantir-orchestrator /usr/local/bin/run-job.sh smoke
+docker exec scrollantir-orchestrator /usr/local/bin/run-job.sh daily-digest
+
+# Confirm the crontab was rendered with secrets redacted:
+docker exec scrollantir-orchestrator \
+  grep -vE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|AGENT_DATABASE_URL)=' \
+  /etc/cron.d/scrollantir
+
+# Confirm cron is actually running inside the container:
+docker exec scrollantir-orchestrator pgrep -af cron
+
+# Tail per-run logs from the host (no docker exec needed):
+sudo tail -n 50 /opt/scrollantir/data/logs/daily-digest-*.log
+sudo tail -n 5  /opt/scrollantir/data/memory/log.md
+```
+
+`docker logs scrollantir-orchestrator` shows only the cron-daemon
+startup — cron sends per-job output to syslog on Ubuntu (Debian bug
+#887035), so use the per-run files under
+`/opt/scrollantir/data/logs/` for that.
+
+#### 2.4 Update paths
+
+Two tiers, optimized for different change rates:
+
+| Change | Tool | Time | Restart? |
+|---|---|---|---|
+| `runtime/jobs/*.md`, `runtime/CLAUDE.md`, `runtime/skills/*` | `./orchestrator/sync-runtime.sh` | ~2 s | No |
+| Dockerfile, entrypoint.sh, run-job.sh, crontab.template, image bumps | `./orchestrator/deploy.sh` | ~1 min | Yes (systemd restart) |
+
+Both run from your Mac. Prereq: `export SCROLLANTIR_VM=orch` (ssh alias).
+
+`sync-runtime.sh` rsyncs directly into the bind-mount, so the next
+cron tick picks up the new prompt with no restart. The container's
+own rsync-on-boot uses `--ignore-existing` — meaning it won't
+overwrite your synced prompts on a restart either. The agent's
+`memory/` and `logs/` are never touched by the sync.
+
+`deploy.sh` does `git pull`, `docker build`, `systemctl restart`,
+and a smoke run as a post-deploy gate.
+
+#### 2.5 Steady state
+
+Let cron take over. Next morning, on the VM:
+
+```bash
+sudo cat /opt/scrollantir/data/memory/last-success-daily-digest
+sudo tail -10 /opt/scrollantir/data/memory/log.md
+psql "$AGENT_DATABASE_URL" -c \
+  "SELECT id, title, created_at FROM public.reports
+   WHERE 'daily' = ANY(tags) ORDER BY created_at DESC LIMIT 3"
+```
 
 **Exit criterion:** smoke + manual daily-digest pass inside 10
 minutes of deploy. Cron-triggered digest lands the next morning
-without intervention.
+without intervention — and again the morning after.
 
 ### Phase 3: add the rest
 
@@ -239,8 +336,17 @@ Notes:
 - Verify the Claude Code install path against whatever Anthropic's
   current docs recommend at build time — npm vs. native installer.
 - Your repo's `orchestrator/runtime/` directory is what ends up at
-  `/app/runtime/`. Structure: `CLAUDE.md`, `jobs/*.md`, `skills/`.
-  Non-versioned state (`memory/`, `logs/`) is never in this tree.
+  `/app/runtime/`. Structure: `CLAUDE.md`, `jobs/*.md`, `skills/`,
+  and `.claude/settings.json`. Non-versioned state (`memory/`,
+  `logs/`) is never in this tree.
+- **`runtime/.claude/settings.json`** ships an explicit Claude Code
+  permission allowlist (`Bash`, `Edit`, `Write`, `Read`, `Glob`,
+  `Grep`). This is the container's equivalent of the bypass-mode
+  setting on your Mac. `defaultMode: bypassPermissions` looks
+  cleaner but Claude Code refuses it when running as root — which
+  is the container's default. An explicit allowlist sidesteps the
+  root-check and is already tight (the container is the sandbox
+  boundary; the agent has `agent_role` credentials and nothing else).
 
 ### entrypoint.sh
 
@@ -251,8 +357,12 @@ Notes:
 #   <job-name>                 — run one job once and exit (smoke/manual)
 set -euo pipefail
 
-: "${ANTHROPIC_API_KEY:?missing}"
 : "${AGENT_DATABASE_URL:?missing}"
+# Either CLAUDE_CODE_OAUTH_TOKEN (subscription) or ANTHROPIC_API_KEY
+# (raw API) must be set; entrypoint.sh propagates whichever is
+# present into the crontab env. See §Secrets handling.
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]] \
+  || { echo "need CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY" >&2; exit 1; }
 
 # Populate /scrollantir from versioned image contents on first boot
 # (or when files are added in later image releases). rsync with
@@ -319,11 +429,12 @@ esac
 
 Pin:
 - At runtime, secrets live in three places inside the container:
-  the process env (inherited from Coolify), `/etc/cron.d/scrollantir`
-  (mode 0600, contains full DSN + API key so cron jobs inherit them),
-  and `/root/.pgpass` (mode 0600, contains only the DB password
-  split into PGPASS fields). The mounted volume `/scrollantir/*`
-  never touches secrets.
+  the process env (inherited from `/etc/scrollantir.env` via
+  `--env-file`), `/etc/cron.d/scrollantir` (mode 0600, contains full
+  DSN + token so cron jobs inherit them), and `/root/.pgpass`
+  (mode 0600, contains only the DB password split into PGPASS
+  fields). The bind-mount volume `/scrollantir/*` (i.e.
+  `/opt/scrollantir/data/*` on the host) never touches secrets.
 - Timezone handling: container-wide `TZ=America/Chicago` (Dockerfile
   ENV + `/etc/localtime` symlink). `0 7 * * *` means 7am Chicago
   year-round, DST handled by tzdata. Do NOT add `CRON_TZ` to the
@@ -523,14 +634,30 @@ server is the upgrade path. Don't pre-build it.
 
 ## Secrets handling
 
-At rest the secrets live in Coolify only. At runtime, each is
-reconstituted into two or three in-container locations so the
-process env, cron, and `psql` can all consume them:
+At rest the secrets live in `/etc/scrollantir.env` on the VM only
+(mode 0600, root-owned). At runtime, each is reconstituted into two
+or three in-container locations so the process env, cron, and
+`psql` can all consume them:
 
 | Secret | At rest | Runtime exposure |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Coolify env | `/etc/cron.d/scrollantir` (0600); process env |
-| `AGENT_DATABASE_URL` | Coolify env | `/etc/cron.d/scrollantir` (0600); `/root/.pgpass` (0600); process env |
+| `CLAUDE_CODE_OAUTH_TOKEN` **or** `ANTHROPIC_API_KEY` | `/etc/scrollantir.env` | `/etc/cron.d/scrollantir` (0600); process env |
+| `AGENT_DATABASE_URL` | `/etc/scrollantir.env` | `/etc/cron.d/scrollantir` (0600); `/root/.pgpass` (0600); process env |
+
+Auth for Claude Code: either env var works. Defaults:
+
+- **`CLAUDE_CODE_OAUTH_TOKEN`** (preferred) — a long-lived
+  subscription-backed token from `claude setup-token` run on your
+  Mac. No per-token billing; uses your existing Max plan.
+- **`ANTHROPIC_API_KEY`** — raw API key from console.anthropic.com.
+  Pay-per-token. Useful if you ever want the orchestrator to run
+  under a separate billing entity.
+
+`entrypoint.sh` requires *at least one* of these to be set and
+propagates whichever are present into the crontab env. Switching
+billing models at any point is a one-line edit to
+`/etc/scrollantir.env` + `systemctl restart` — no image rebuild,
+no code change.
 
 **What's deliberately NOT a surface:**
 - `/scrollantir/*` (mounted volume) — agent-written notes + logs.
@@ -551,18 +678,18 @@ bundles before sharing.
 **Rotation drill** (whenever you run `./admin setup-roles`):
 1. Run `./admin setup-roles` locally — rotates DB passwords, updates
    `scrollantir/agent-role` in Keychain.
-2. Extract the new DSN: `security find-generic-password -s scrollantir -a agent-role -w`
-3. Paste into Coolify's env for the orchestrator app.
-4. Coolify redeploys automatically; new container boots with new
-   `.pgpass` and new crontab.
-5. Manually fire `docker exec … run-job.sh smoke` to confirm the new
-   creds work.
+2. Extract the new DSN:
+   `security find-generic-password -s scrollantir -a agent-role -w`
+3. SSH in and edit `/etc/scrollantir.env`:
+   `ssh $SCROLLANTIR_VM sudo $EDITOR /etc/scrollantir.env`
+4. `ssh $SCROLLANTIR_VM sudo systemctl restart scrollantir-orchestrator`
+5. Confirm: `ssh $SCROLLANTIR_VM sudo docker exec scrollantir-orchestrator run-job.sh smoke`
 
-**Known annoyance:** step 2-3 is manual and you *will* forget a
+**Known annoyance:** step 2-4 is manual and you *will* forget a
 rotation eventually. A reasonable small improvement to the admin
-CLI later: `./admin export --role agent-role --target coolify` that
-writes to a Coolify API or just formats a `.env` snippet for paste.
-Not worth building now.
+CLI later: `./admin export --role agent-role --target remote --host
+$SCROLLANTIR_VM` that writes `/etc/scrollantir.env` over SSH and
+kicks the unit. Not worth building now.
 
 ## Observability
 
@@ -594,10 +721,13 @@ each `last-success-<job>` mtime against the expected cadence and
 exits non-zero if any is stale. Point an uptime monitor at a simple
 `docker exec … healthcheck.sh`.
 
-**Rollback:** Coolify retains previous deploys. If a new orchestrator
-image misbehaves, re-deploy the prior tag from Coolify's UI. The
-persistent volume survives redeploys, so `memory/` and `logs/` stay
-intact across rollbacks.
+**Rollback:** the image is built from git on the VM, so rolling back
+is `git checkout <prior-sha>` in `/opt/scrollantir/repo`, then
+`docker build` + `systemctl restart`. The bind-mount survives, so
+`memory/` and `logs/` stay intact. If you want a safety-net to pin
+to a known-good build, `docker tag scrollantir-orchestrator
+scrollantir-orchestrator:known-good` after each clean deploy and
+retag to `:latest` on rollback. Premature for v1.
 
 ## Risks and gotchas
 
@@ -607,10 +737,11 @@ intact across rollbacks.
    whichever one the official page currently recommends.
 2. **Cron environment.** Cron runs with a stripped env *and* a
    stripped `PATH`. entrypoint.sh addresses both by prepending
-   `SHELL`, `PATH`, `ANTHROPIC_API_KEY`, and `AGENT_DATABASE_URL`
-   into the crontab file — which is the only reliable way to get env
-   vars and binaries visible to cron jobs. Don't try to `ENV` in the
-   Dockerfile and expect it to survive.
+   `SHELL`, `PATH`, `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`,
+   and `AGENT_DATABASE_URL` into the crontab file — which is the
+   only reliable way to get env vars and binaries visible to cron
+   jobs. Don't try to `ENV` in the Dockerfile and expect it to
+   survive.
 3. **Timezone.** Ubuntu 24.04's cron package does **not** honor
    `CRON_TZ` directives inside the crontab. Set the container TZ
    via `ENV TZ=America/Chicago` + `/etc/localtime` symlink at image
@@ -630,11 +761,14 @@ intact across rollbacks.
 
 ## Open questions (still)
 
-1. **`AGENT_DATABASE_URL` delivery.** Manual paste into Coolify is
-   fine for MVP. Worth a small enhancement to `./admin setup-roles`
-   that also prints the agent-role DSN (like it does for
-   ingest_role) so you don't have to `security find-generic-password`
-   it out.
+1. **`AGENT_DATABASE_URL` delivery.** Manual paste into
+   `/etc/scrollantir.env` on the VM is fine for MVP. Worth a small
+   enhancement to `./admin setup-roles` that also prints the
+   agent-role DSN (like it does for ingest_role) so you don't have
+   to `security find-generic-password` it out. A further step: an
+   `admin export --role agent-role --target remote --host
+   $SCROLLANTIR_VM` subcommand that edits the VM's env file over
+   SSH and kicks the unit.
 2. **Chat transport** (SSE vs. WebSocket) — decide when Swift is being
    built, not now.
 3. **Classifier cadence** — batches vs. LISTEN/NOTIFY — decide when

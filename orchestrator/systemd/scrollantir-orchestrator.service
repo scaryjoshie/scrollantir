@@ -1,0 +1,32 @@
+[Unit]
+Description=Scrollantir orchestrator — Claude Code cron agent
+Documentation=https://github.com/joshua/scrollantir/blob/main/docs/orchestrator.md
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+# Crash-loop protection off: if the agent is wedged, let it hit the
+# Max-plan rate limit and we'll notice via stale last-success-<job>
+# markers. Better than silent flapping.
+StartLimitIntervalSec=0
+
+# --rm so a stopped container is always discarded; state lives on the
+# bind-mount volume. --env-file reads secrets from /etc/scrollantir.env
+# (mode 600, root-owned — see systemd/scrollantir.env.example). The
+# bind mount exposes /scrollantir (the agent's working directory) at
+# /opt/scrollantir/data so host-side rsync and log-tailing are trivial.
+ExecStartPre=-/usr/bin/docker stop scrollantir-orchestrator
+ExecStartPre=-/usr/bin/docker rm   scrollantir-orchestrator
+ExecStart=/usr/bin/docker run --rm \
+  --name scrollantir-orchestrator \
+  --env-file=/etc/scrollantir.env \
+  -v /opt/scrollantir/data:/scrollantir \
+  scrollantir-orchestrator
+ExecStop=/usr/bin/docker stop scrollantir-orchestrator
+
+[Install]
+WantedBy=multi-user.target
