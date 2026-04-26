@@ -70,7 +70,8 @@ Multi-component features that span collection + derivation + render:
 | [sessions/session-2026-04-21.md](sessions/session-2026-04-21.md) | First end-to-end day: state snapshot, credentials posture, outstanding follow-ups from the Codex audit. |
 | [sessions/session-2026-04-23-aw-forwarder.md](sessions/session-2026-04-23-aw-forwarder.md) | Mac-forwarder truncation bug (93% data loss): diagnosis, fix spec, AFK-model decision (since reversed — see postscript). |
 | [sessions/session-2026-04-25.md](sessions/session-2026-04-25.md) | Runtime-rebuild design + cleanup pass: location/places/workout deriver designs, AFK-gating decision, fresh-folder rationale, doc reorg. **Read this with rebuild-plan.md if picking up runtime work.** |
-| [sessions/handoff-architecture-prompt.md](sessions/handoff-architecture-prompt.md) | Meta-artifact: subagent onboarding prompt for continuing architecture work in a fresh session. |
+| [sessions/handoff-architecture-prompt.md](sessions/handoff-architecture-prompt.md) | Meta-artifact: subagent onboarding prompt for the data-model.md architecture-finalization conversation. |
+| [sessions/handoff-runtime-onboarding.md](sessions/handoff-runtime-onboarding.md) | **Meta-artifact: copy-paste prompt to onboard a fresh agent for `runtime/` rebuild work.** Self-contained — points at reading list, open questions, don't-touch list, verification checks. |
 
 ## Not yet written
 
