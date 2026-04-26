@@ -1,0 +1,171 @@
+/* Notion-blocky timeline styling — overrides vis-timeline defaults. */
+
+.vis-timeline {
+  border: none;
+  font-family: inherit;
+  background: rgb(var(--c-paper));
+}
+
+.vis-panel.vis-left,
+.vis-panel.vis-right,
+.vis-panel.vis-top,
+.vis-panel.vis-bottom {
+  border-color: rgb(var(--c-line));
+}
+
+.vis-labelset {
+  background: rgb(var(--c-paper));
+}
+
+.vis-labelset .vis-label {
+  border-color: rgb(var(--c-line));
+  background: rgb(var(--c-paper));
+  color: rgb(var(--c-ink-muted));
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* nested parent lane (Mac / Phone / Location rolls) */
+.vis-labelset .vis-label.vis-nesting-group {
+  background: rgb(var(--c-paper-panel));
+  color: rgb(var(--c-ink));
+  cursor: pointer;
+  font-size: 12px;
+}
+.vis-labelset .vis-label.vis-nesting-group:hover {
+  background: rgb(var(--c-paper-hover));
+}
+
+/* nested child lanes (Windows / Browser / AFK / etc.) */
+.vis-labelset .vis-label.vis-nested-group {
+  background: rgb(var(--c-paper));
+  color: rgb(var(--c-ink-subtle));
+  font-size: 11px;
+  padding-left: 24px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+}
+.vis-labelset .vis-label.vis-nested-group:hover {
+  background: rgb(var(--c-paper-soft));
+}
+
+/* any highly-specific override vis-timeline ships that forces a white-ish bg
+   on nested groups — normalize to our theme */
+.vis-labelset .vis-label.vis-nested-group.vis-group-level-unknown-but-gte1 {
+  background: rgb(var(--c-paper));
+}
+.dark .vis-labelset .vis-label.vis-nested-group.vis-group-level-unknown-but-gte1 {
+  background: rgb(var(--c-paper));
+}
+
+/* chevron arrow on parent lanes */
+.vis-labelset .vis-label.vis-nesting-group::before,
+.vis-labelset .vis-label.vis-nesting-group::after {
+  color: rgb(var(--c-ink-subtle));
+}
+.vis-labelset .vis-label.vis-nesting-group:hover::before,
+.vis-labelset .vis-label.vis-nesting-group:hover::after {
+  color: rgb(var(--c-ink));
+}
+
+/* stripe backgrounds behind items in the content area (parent vs child) */
+.vis-foreground .vis-group {
+  border-color: rgb(var(--c-line) / 0.6);
+  background: rgb(var(--c-paper));
+}
+.vis-foreground .vis-group.vis-nesting-group {
+  background: rgb(var(--c-paper-panel));
+}
+.vis-foreground .vis-group.vis-nested-group {
+  background: rgb(var(--c-paper));
+}
+.vis-time-axis .vis-grid.vis-minor { border-color: rgb(var(--c-line) / 0.5); }
+.vis-time-axis .vis-grid.vis-major { border-color: rgb(var(--c-line)); }
+.vis-time-axis .vis-text {
+  color: rgb(var(--c-ink-subtle));
+  font-size: 11px;
+  padding: 4px 6px;
+  font-variant-numeric: tabular-nums;
+}
+.vis-time-axis .vis-text.vis-major {
+  color: rgb(var(--c-ink-muted));
+  font-weight: 600;
+}
+
+.vis-current-time {
+  background: rgb(var(--c-accent));
+  width: 1.5px;
+  opacity: 0.7;
+}
+
+/* items — blocky rounded rectangles */
+.vis-item {
+  border: none;
+  border-radius: 5px;
+  color: rgb(var(--c-ink));
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0;
+  min-height: 18px;
+  box-shadow: 0 1px 0 rgba(15, 15, 15, 0.04);
+  overflow: hidden;
+  transition: filter 80ms ease;
+}
+.vis-item .vis-item-content {
+  padding: 2px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vis-item:hover { filter: brightness(0.95); }
+.dark .vis-item:hover { filter: brightness(1.1); }
+.vis-item.vis-selected {
+  box-shadow: 0 0 0 2px rgba(35, 131, 226, 0.55);
+  filter: none;
+}
+
+/* ───── per-source hues (light) ───── */
+.vis-item.src-sys-fg     { background: #E2EAFA; color: #2F50A5; }
+.vis-item.src-sys-win    { background: #EBF0FB; color: #4F6FBD; }
+.vis-item.src-zen        { background: #EDE5F9; color: #6E4BB4; }
+.vis-item.src-afk        { background: #EFEEEB; color: #6B6862; }
+.vis-item.src-screen     { background: #FAEED0; color: #8A6A21; }
+.vis-item.src-unlock     { background: #DFEFDF; color: #3F7E47; }
+.vis-item.src-shortform  { background: #FADFDF; color: #A83838; }
+.vis-item.src-miss       { background: #F0EEEC; color: #9B9A97; }
+.vis-item.src-default    { background: #EDEBE8; color: #6B6862; }
+
+/* ───── per-source hues (dark) — brighter text over darker, more saturated bg ───── */
+.dark .vis-item.src-sys-fg     { background: #273858; color: #B5C8F4; }
+.dark .vis-item.src-sys-win    { background: #222F4A; color: #A6BBE6; }
+.dark .vis-item.src-zen        { background: #2F2544; color: #C9B4EE; }
+.dark .vis-item.src-afk        { background: #2B2A27; color: #B5B3AD; }
+.dark .vis-item.src-screen     { background: #3A2F12; color: #E8C670; }
+.dark .vis-item.src-unlock     { background: #1F3322; color: #A4D4A9; }
+.dark .vis-item.src-shortform  { background: #3A1F1F; color: #E8A8A8; }
+.dark .vis-item.src-miss       { background: #252320; color: #7C7A75; }
+.dark .vis-item.src-default    { background: #2A2825; color: #A6A39E; }
+
+/* tooltip */
+.vis-tooltip {
+  background: rgb(var(--c-ink)) !important;
+  color: rgb(var(--c-paper)) !important;
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 8px 10px !important;
+  font-size: 11.5px !important;
+  line-height: 1.45 !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22) !important;
+  font-family: inherit !important;
+  max-width: 320px;
+}
+.dark .vis-tooltip {
+  background: #0E0E0E !important;
+  color: rgb(var(--c-ink)) !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6) !important;
+}
+

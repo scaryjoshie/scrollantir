@@ -1,0 +1,79 @@
+@import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --c-paper:        255 255 255;
+    --c-paper-soft:   251 251 250;
+    --c-paper-panel:  247 246 243;
+    --c-paper-hover:  241 241 239;
+    --c-ink:           55  53  47;
+    --c-ink-muted:    107 104  98;
+    --c-ink-subtle:   155 154 151;
+    --c-line:         237 237 236;
+    --c-line-strong:  227 226 224;
+    --c-accent:        35 131 226;
+    --c-accent-soft:  231 240 249;
+    --c-danger:       168  56  56;
+    --c-danger-soft:  251 230 230;
+    --c-success:       47 122  58;
+    --c-success-soft: 227 244 230;
+    color-scheme: light;
+  }
+
+  .dark {
+    --c-paper:         25  25  25;
+    --c-paper-soft:    32  32  32;
+    --c-paper-panel:   28  28  28;
+    --c-paper-hover:   42  42  42;
+    --c-ink:          230 230 229;
+    --c-ink-muted:    161 161 157;
+    --c-ink-subtle:   111 110 106;
+    --c-line:          45  45  45;
+    --c-line-strong:   62  62  61;
+    --c-accent:        70 162 238;
+    --c-accent-soft:   27  50  76;
+    --c-danger:       230 127 127;
+    --c-danger-soft:   54  30  30;
+    --c-success:      136 202 144;
+    --c-success-soft:  25  48  30;
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-feature-settings: 'ss01', 'cv11';
+  }
+  ::selection {
+    background: rgb(var(--c-accent-soft));
+  }
+}
+
+@layer components {
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+           bg-paper-panel text-ink-muted border border-line hover:bg-paper-hover
+           transition-colors cursor-pointer select-none;
+  }
+  .chip-active {
+    @apply bg-accent-soft text-accent border-accent/20 hover:bg-accent-soft;
+  }
+  .nav-item {
+    @apply flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-ink-muted
+           hover:bg-paper-hover transition-colors select-none cursor-pointer;
+  }
+  .nav-item-active {
+    @apply bg-paper-hover text-ink font-medium;
+  }
+  .card {
+    @apply bg-paper border border-line rounded-card shadow-card;
+  }
+}
