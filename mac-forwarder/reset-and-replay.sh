@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# One-shot reset for the mac-forwarder after the 2026-04-23
-# hold-the-tail fix. Deletes truncated mac events + all reports
-# from Supabase, clears the forwarder checkpoint, and reloads
-# launchd so the fixed forwarder replays from AW-local history.
+# One-shot reset for the mac-forwarder. Deletes mac events + all reports
+# from the runtime/ Postgres, clears the forwarder checkpoint, and
+# reloads launchd so the forwarder replays from AW-local history.
 #
-# See docs/session-2026-04-23-aw-forwarder.md for context. Does
-# NOT re-trigger orchestrator cron jobs (daily-digest etc.) — that
-# step is manual on Hetzner.
+# This is the runtime/ stack version. The earlier Supabase variant is
+# gone (cutover commit `mac-forwarder: cutover to runtime/ stack`).
 #
 # Usage:
 #   ./reset-and-replay.sh             # dry run: prints the plan
 #   ./reset-and-replay.sh --execute   # actually applies (prompts y/n)
 #
-# Requires DATABASE_URL in env pointing at the service_role DSN
-# (normally via your admin workflow / scripts/.env.admin).
+# Requires DATABASE_URL in env pointing at a role with DELETE on
+# public.events + public.reports. The local runtime/ compose stack
+# exposes one via the postgres superuser inside the postgres container;
+# for Hetzner, supply the prod DSN.
 #
 set -euo pipefail
 
@@ -34,24 +34,9 @@ fail()    { echo "error: $*" >&2; exit 2; }
 
 section "Preconditions"
 
-# If DATABASE_URL isn't exported but the admin env file exists, pull
-# from there. `source` alone doesn't export, so users who run
-# `source scripts/.env.admin` in their shell won't propagate it to
-# this subshell unless we auto-load.
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  ENV_ADMIN="$(cd "$SCRIPT_DIR/.." && pwd)/scripts/.env.admin"
-  if [[ -f "$ENV_ADMIN" ]]; then
-    printf '  loading DATABASE_URL from %s\n' "$ENV_ADMIN"
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_ADMIN"
-    set +a
-  fi
-fi
-
-if [[ -z "${DATABASE_URL:-}" ]]; then
-  fail "DATABASE_URL not set. Expected service_role DSN in scripts/.env.admin or env."
+  fail "DATABASE_URL not set. Point it at the runtime/ Postgres
+       (local: see runtime/.env; remote: the Hetzner DSN)."
 fi
 
 role=$(psql "$DATABASE_URL" -At -c "SELECT current_user" 2>/dev/null || true)
@@ -59,9 +44,6 @@ if [[ -z "$role" ]]; then
   fail "can't connect to Postgres with provided DATABASE_URL"
 fi
 printf '  connected as: %s\n' "$role"
-if [[ "$role" != "service_role" && "$role" != postgres ]]; then
-  fail "DATABASE_URL must be service_role (need DELETE privilege). got: $role"
-fi
 
 if ! curl -sSf http://localhost:5600/api/0/info >/dev/null 2>&1; then
   fail "can't reach ActivityWatch at localhost:5600. Is aw-qt running?"
@@ -77,12 +59,8 @@ printf '  forwarder plist present: %s\n' "$PLIST"
 
 section "Current state"
 psql "$DATABASE_URL" -c "
-  SELECT 'mac events (window/afk/zen.tab)' AS what,
-         COUNT(*) FROM public.events
-         WHERE device='mac' AND source IN ('system.window','system.afk','zen.tab')
-  UNION ALL
-  SELECT 'mac events (test.curl stray)',
-         COUNT(*) FROM public.events WHERE source='test.curl'
+  SELECT 'mac events' AS what,
+         COUNT(*) FROM public.events WHERE device='mac'
   UNION ALL
   SELECT 'reports (not soft-deleted)',
          COUNT(*) FROM public.reports WHERE deleted_at IS NULL;
@@ -94,12 +72,10 @@ section "Plan"
 cat <<EOF
   1. launchctl unload $LABEL
   2. DELETE FROM public.events WHERE device='mac'
-       AND source IN ('system.window','system.afk','zen.tab')
-  3. DELETE FROM public.events WHERE source='test.curl'
-  4. DELETE FROM public.reports
-  5. rm $CHECKPOINT
-  6. launchctl load $PLIST
-  (manual step:  trigger orchestrator jobs on Hetzner to regenerate reports)
+  3. DELETE FROM public.reports
+  4. rm $CHECKPOINT
+  5. launchctl load $PLIST
+  (manual step:  trigger agent jobs to regenerate reports)
 EOF
 
 if [[ "$MODE" == "dry-run" ]]; then
@@ -125,12 +101,8 @@ section "Executing"
 echo "  stopping forwarder..."
 launchctl unload "$PLIST" 2>/dev/null || true
 
-echo "  deleting mac events + stray test.curl..."
-psql "$DATABASE_URL" -c "
-  DELETE FROM public.events
-  WHERE device='mac' AND source IN ('system.window','system.afk','zen.tab');
-  DELETE FROM public.events WHERE source='test.curl';
-"
+echo "  deleting mac events..."
+psql "$DATABASE_URL" -c "DELETE FROM public.events WHERE device='mac';"
 
 echo "  deleting reports..."
 psql "$DATABASE_URL" -c "DELETE FROM public.reports;"
@@ -145,7 +117,7 @@ launchctl load "$PLIST"
 
 section "After"
 psql "$DATABASE_URL" -c "
-  SELECT 'mac events (all sources)' AS what,
+  SELECT 'mac events' AS what,
          COUNT(*) FROM public.events WHERE device='mac'
   UNION ALL
   SELECT 'reports (not soft-deleted)',
@@ -157,17 +129,12 @@ psql "$DATABASE_URL" -c "
 section "Next steps"
 cat <<'EOF'
   1. Wait ~5-10 minutes for the forwarder to replay AW history.
-     Watch:  tail -f ~/Library/Logs/scrollantir-forwarder.log
-     (path depends on your plist's StandardOutPath; adjust if different)
+     Watch:  tail -f ~/Library/Logs/scrollantir-forwarder.out.log
 
   2. After replay, re-run the 'Current state' query to confirm row
      counts roughly match AW-local (with a few fewer due to tails
      still being held).
 
-  3. Regenerate orchestrator reports. On Hetzner, either:
-       a. wait for the next scheduled cron tick (07:00 CT daily,
-          Sun 09:00 CT weekly), or
-       b. manually invoke the job files under /scrollantir/jobs/
-          via `claude -p` on the orchestrator.
-     Not automated by this script.
+  3. Regenerate reports via the runtime/ agent jobs (manual today;
+     not automated by this script).
 EOF

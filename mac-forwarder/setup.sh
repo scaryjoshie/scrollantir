@@ -1,85 +1,72 @@
 #!/usr/bin/env bash
-# One-shot setup for the scrollantir Mac forwarder.
+# One-shot setup for the scrollantir Mac forwarder (runtime/ stack).
 #
-#   - Creates ~/.scrollantir/ and writes server URL into config.json
-#   - Stores the bearer token in the macOS login keychain (via `security`,
-#     no Python deps needed for this step)
+#   - Stores the bearer token in the macOS login keychain under
+#     service=scrollantir-local, account=mac (via `security`)
 #   - Builds a Python venv alongside this script and installs requirements
-#   - Renders the launchd plist with absolute paths and loads it
+#   - Renders the launchd plist with absolute paths + the ingest URL,
+#     writes it to ~/Library/LaunchAgents/, and reloads launchd
 #
-# Safe to re-run: overwrites config, replaces plist, re-loads agent.
+# Safe to re-run: replaces the keychain entry, the plist, and reloads
+# the agent.
+#
+# Note: there's no config.json anymore — the ingest base URL is baked
+# into the launchd plist as EnvironmentVariables.SCROLLANTIR_INGEST_URL,
+# and the token lives in the keychain.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="$HOME/.scrollantir"
-CONFIG_PATH="$CONFIG_DIR/config.json"
 VENV_DIR="$SCRIPT_DIR/.venv"
 PLIST_TEMPLATE="$SCRIPT_DIR/com.scrollantir.forwarder.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.scrollantir.forwarder.plist"
 LOG_DIR="$HOME/Library/Logs"
 
-KEYRING_SERVICE="scrollantir"
-KEYRING_ACCOUNT="ingest-token"
+KEYCHAIN_SERVICE="scrollantir-local"
+KEYCHAIN_ACCOUNT="mac"
 
 say() { printf "\033[1;34m[setup]\033[0m %s\n" "$*"; }
 die() { printf "\033[1;31m[setup]\033[0m %s\n" "$*" >&2; exit 1; }
 
-# ─── prompt for ingest URL + token ────────────────────────────────────────
-# Expect the FULL ingest URL — e.g.
-#   https://<ref>.supabase.co/functions/v1/ingest  (Supabase edge function)
-#   http://localhost:8069/ingest                   (dev stub server)
+# ─── prompt for ingest base URL + token ───────────────────────────────────
+# Expect the BASE URL of the runtime stack (no path, no /rpc/...) — e.g.
+#   https://ingest.178-104-253-30.nip.io   (Hetzner)
+#   http://localhost                       (local dev runtime/ compose stack)
 #
-# If SCROLLANTIR_INGEST_URL is set in the environment, use it as the
-# default (handy for fork setups). Otherwise fall back to the value
-# already in config, otherwise no default — the user must paste it.
+# The forwarder appends `/rpc/accept_event` itself.
 default_url="${SCROLLANTIR_INGEST_URL:-}"
-if [[ -z "$default_url" && -f "$CONFIG_PATH" ]]; then
-    default_url=$(python3 -c "import json; c=json.load(open('$CONFIG_PATH')); print(c.get('ingest_url') or c.get('server_url') or '')" 2>/dev/null || true)
-fi
 
 if [[ -n "$default_url" ]]; then
-    read -rp "Ingest endpoint URL [$default_url]: " ingest_url
+    read -rp "Ingest base URL [$default_url]: " ingest_url
     ingest_url="${ingest_url:-$default_url}"
 else
-    read -rp "Ingest endpoint URL (e.g. https://<project-ref>.supabase.co/functions/v1/ingest): " ingest_url
+    read -rp "Ingest base URL (e.g. https://ingest.178-104-253-30.nip.io): " ingest_url
 fi
-[[ -z "$ingest_url" ]] && die "ingest_url is required"
+[[ -z "$ingest_url" ]] && die "ingest URL is required"
 
-# Forgiving fixup: if someone pastes just the base URL without /ingest,
-# append it so they don't hit 404.
+# Strip trailing slash and any accidental /rpc/* path the user pasted.
+ingest_url="${ingest_url%/}"
 case "$ingest_url" in
-    */ingest) ;;
-    *) ingest_url="${ingest_url%/}/ingest" ;;
+    */rpc/accept_event) ingest_url="${ingest_url%/rpc/accept_event}" ;;
+    */rpc) ingest_url="${ingest_url%/rpc}" ;;
 esac
 
 read -rsp "Bearer token (input hidden): " token
 echo
 [[ -z "$token" ]] && die "token is required"
 
-# ─── write config.json (no token) ─────────────────────────────────────────
-mkdir -p "$CONFIG_DIR"
-chmod 700 "$CONFIG_DIR"
-cat > "$CONFIG_PATH" <<EOF
-{
-  "ingest_url": "$ingest_url"
-}
-EOF
-chmod 600 "$CONFIG_PATH"
-say "wrote $CONFIG_PATH"
-
 # ─── store token in keychain ──────────────────────────────────────────────
 # -U: update if already present. -s service, -a account, -w password.
 security delete-generic-password \
-    -s "$KEYRING_SERVICE" -a "$KEYRING_ACCOUNT" >/dev/null 2>&1 || true
+    -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" >/dev/null 2>&1 || true
 security add-generic-password \
-    -s "$KEYRING_SERVICE" \
-    -a "$KEYRING_ACCOUNT" \
+    -s "$KEYCHAIN_SERVICE" \
+    -a "$KEYCHAIN_ACCOUNT" \
     -w "$token" \
     -T /usr/bin/security \
     -T "$(command -v python3)" \
     -U
-say "stored token in login keychain ($KEYRING_SERVICE / $KEYRING_ACCOUNT)"
+say "stored token in login keychain ($KEYCHAIN_SERVICE / $KEYCHAIN_ACCOUNT)"
 
 # ─── Python venv + deps ───────────────────────────────────────────────────
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -97,14 +84,17 @@ say "installed Python deps into $VENV_DIR"
 mkdir -p "$(dirname "$PLIST_DST")"
 mkdir -p "$LOG_DIR"
 
-# Template uses @@VENV_PY@@ and @@FORWARDER@@ as placeholders. Replace with
-# absolute paths. `sed` in-place with backup is portable on macOS.
 VENV_PY="$VENV_DIR/bin/python3"
 FORWARDER="$SCRIPT_DIR/forwarder.py"
+
+# Escape `&` and `|` in the URL so sed doesn't choke (URLs can hold
+# query strings later). `|` is our delimiter, so escape it explicitly.
+ingest_url_esc="${ingest_url//|/\\|}"
 
 sed \
     -e "s|@@VENV_PY@@|$VENV_PY|g" \
     -e "s|@@FORWARDER@@|$FORWARDER|g" \
+    -e "s|@@INGEST_URL@@|$ingest_url_esc|g" \
     -e "s|@@LOG_DIR@@|$LOG_DIR|g" \
     "$PLIST_TEMPLATE" > "$PLIST_DST"
 chmod 644 "$PLIST_DST"

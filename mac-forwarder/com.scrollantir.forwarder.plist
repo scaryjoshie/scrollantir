@@ -6,6 +6,8 @@
     `setup.sh` renders this template by replacing:
         @@VENV_PY@@   → /…/mac-forwarder/.venv/bin/python3
         @@FORWARDER@@ → /…/mac-forwarder/forwarder.py
+        @@INGEST_URL@@→ base URL of the runtime stack
+                        (e.g. https://ingest.178-104-253-30.nip.io)
         @@LOG_DIR@@   → /Users/<you>/Library/Logs
     and writes the result to ~/Library/LaunchAgents/com.scrollantir.forwarder.plist.
 
@@ -13,6 +15,10 @@
     15-minute phone cadence. If you want the agent to settle faster after
     login, set RunAtLoad=true (default below) — that fires one run at
     session start in addition to the interval schedule.
+
+    SCROLLANTIR_INGEST_URL is set via EnvironmentVariables below; the
+    bearer token is read from the macOS login keychain at run time
+    (service=`scrollantir-local`, account=`mac`).
 -->
 <plist version="1.0">
 <dict>
@@ -24,6 +30,12 @@
         <string>@@VENV_PY@@</string>
         <string>@@FORWARDER@@</string>
     </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SCROLLANTIR_INGEST_URL</key>
+        <string>@@INGEST_URL@@</string>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>
