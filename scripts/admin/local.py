@@ -89,11 +89,14 @@ def mint(device_id: str, ingest_url_override: str | None, show_token: bool) -> N
             (device_id, token_hash, prefix),
         )
 
+    # QR schema v3 — matches android/.../OnboardScanScreen.kt parser.
+    # `device` is canonical; `device_id` legacy alias still accepted by
+    # the Android app for transitional compat (we emit canonical only).
     payload = {
-        "v": 2,
+        "v": 3,
         "url": url,
         "token": plaintext,
-        "device_id": device_id,
+        "device": device_id,
         "label": label,
         "platform": platform,
     }
