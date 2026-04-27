@@ -5,6 +5,20 @@
 -- in private.
 
 -- =========================================================================
+-- Generic helper: BEFORE UPDATE trigger that maintains updated_at.
+-- Attached below to places, reports, annotations.
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- =========================================================================
 -- public.devices
 -- Physical hosts (phone, mac) and synthetic services (cloud).
 -- Referenced as the FK target for events.device (the generated first
@@ -31,6 +45,9 @@ CREATE TABLE public.devices (
 --
 -- device is derived from source's first segment, so collectors can't
 -- emit a mismatched (device, source) pair.
+--
+-- Date-bound CHECKs catch clock-skewed collectors. Bounds are hard-coded
+-- because Postgres forbids NOW() in CHECK constraints (volatile).
 -- =========================================================================
 
 CREATE TABLE public.events (
@@ -45,12 +62,17 @@ CREATE TABLE public.events (
                  (EXTRACT(EPOCH FROM (end_ts - start_ts))) STORED,
   data         JSONB NOT NULL DEFAULT '{}'::jsonb,
   received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CHECK (end_ts >= start_ts)
+  CHECK (end_ts >= start_ts),
+  CHECK (start_ts >= '2020-01-01'::timestamptz),
+  CHECK (start_ts <  '2050-01-01'::timestamptz)
 );
 
-CREATE INDEX events_device_source_start ON public.events (device, source, start_ts);
-CREATE INDEX events_start_desc          ON public.events (start_ts DESC);
-CREATE INDEX events_source              ON public.events (source);
+-- Composite (source, start_ts) supports both source-only filters
+-- (leading column) and source+window filters. device is determined by
+-- source's leading segment, so a separate (device, source, ...) index
+-- would be redundant.
+CREATE INDEX events_source_start ON public.events (source, start_ts);
+CREATE INDEX events_start_desc   ON public.events (start_ts DESC);
 
 
 -- =========================================================================
@@ -59,13 +81,14 @@ CREATE INDEX events_source              ON public.events (source);
 -- Replace-window primitive (DELETE WHERE source=? AND start_ts in [w0,w1))
 -- keys on (source, start_ts).
 --
--- provenance JSONB is mandatory: {inputs, source_event_ids, confirmation}.
+-- provenance JSONB is mandatory and structured: {inputs, source_event_ids,
+-- confirmation}. CHECK enforces the object shape and required keys.
 -- =========================================================================
 
 CREATE TABLE public.derived_events (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source      TEXT NOT NULL
-                CHECK (source ~ '^[a-z][a-z0-9_]*/v[0-9]+$'),
+                CHECK (source ~ '^[a-z][a-z0-9_]*/v[1-9][0-9]*$'),
   start_ts    TIMESTAMPTZ NOT NULL,
   end_ts      TIMESTAMPTZ NOT NULL,
   duration_s  DOUBLE PRECISION GENERATED ALWAYS AS
@@ -73,7 +96,14 @@ CREATE TABLE public.derived_events (
   data        JSONB NOT NULL DEFAULT '{}'::jsonb,
   provenance  JSONB NOT NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CHECK (end_ts >= start_ts)
+  CHECK (end_ts >= start_ts),
+  CHECK (start_ts >= '2020-01-01'::timestamptz),
+  CHECK (start_ts <  '2050-01-01'::timestamptz),
+  CHECK (
+    jsonb_typeof(provenance) = 'object'
+    AND provenance ? 'inputs'
+    AND provenance ? 'source_event_ids'
+  )
 );
 
 CREATE INDEX derived_events_source_start ON public.derived_events (source, start_ts);
@@ -101,6 +131,10 @@ CREATE TABLE public.source_tags (
 --
 -- ctx JSONB is the between-stages state store for LLM derivers — what
 -- forward() needs preserved at complete() time.
+--
+-- Lifecycle CHECKs enforce: expires_at after created_at, can't be
+-- "answered" without an answer event, can't be "derived" without being
+-- answered first.
 -- =========================================================================
 
 CREATE TABLE public.prompts (
@@ -114,7 +148,10 @@ CREATE TABLE public.prompts (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   answered_at      TIMESTAMPTZ,
   answer_event_id  UUID REFERENCES public.events(id),
-  derived_at       TIMESTAMPTZ
+  derived_at       TIMESTAMPTZ,
+  CHECK (expires_at > created_at),
+  CHECK ((answered_at IS NULL) = (answer_event_id IS NULL)),
+  CHECK ((derived_at IS NULL) OR (answered_at IS NOT NULL))
 );
 
 -- Runner's "answered, not yet derived" poll uses this.
@@ -150,6 +187,10 @@ CREATE TABLE public.reports (
 CREATE INDEX reports_tags_gin     ON public.reports USING gin (tags);
 CREATE INDEX reports_created_desc ON public.reports (created_at DESC);
 
+CREATE TRIGGER reports_set_updated_at
+  BEFORE UPDATE ON public.reports
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
 
 -- =========================================================================
 -- public.annotations
@@ -168,12 +209,21 @@ CREATE TABLE public.annotations (
 
 CREATE INDEX annotations_scope ON public.annotations (scope, scope_ref);
 
+CREATE TRIGGER annotations_set_updated_at
+  BEFORE UPDATE ON public.annotations
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
 
 -- =========================================================================
 -- public.places
 -- Named-location layer. Joined query-time against phone.location.reading
 -- by the place_visit/v1 deriver (radius via earth_distance).
 -- Single-user; if multi-user ever, user_id is a new column.
+--
+-- See concepts/places.md "Index-using radius queries" — the GiST index
+-- below only serves earth_box(...) @> ll_to_earth(...) bounding-box
+-- prefilters, not earth_distance(...) < radius directly. Derivers must
+-- use the two-stage prefilter+exact pattern.
 -- =========================================================================
 
 CREATE TABLE public.places (
@@ -186,23 +236,31 @@ CREATE TABLE public.places (
   schedule    JSONB,
   metadata    JSONB,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (lat BETWEEN -90 AND 90),
+  CHECK (lng BETWEEN -180 AND 180),
+  CHECK (radius_m > 0)
 );
 
 CREATE INDEX places_category ON public.places (category);
 CREATE INDEX places_geo      ON public.places USING gist (ll_to_earth(lat, lng));
+
+CREATE TRIGGER places_set_updated_at
+  BEFORE UPDATE ON public.places
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 -- =========================================================================
 -- private.tokens
 -- Bearer-token credential store. Stores sha256(plaintext); plaintext
 -- never lives server-side. Revocable via revoked_at.
+-- token_hash length CHECK pins it to a SHA-256 digest (32 bytes).
 -- =========================================================================
 
 CREATE TABLE private.tokens (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   device_id     TEXT NOT NULL REFERENCES public.devices(id) ON DELETE RESTRICT,
-  token_hash    BYTEA NOT NULL UNIQUE,
+  token_hash    BYTEA NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
   prefix        TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   revoked_at    TIMESTAMPTZ,

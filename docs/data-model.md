@@ -134,7 +134,7 @@ on read only.
 
 ```sql
 CREATE TABLE public.derived_events (
-  id          UUID PRIMARY KEY,
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source      TEXT NOT NULL,                           -- '<kind>/<version>', e.g. 'sleep/v1'
   start_ts    TIMESTAMPTZ NOT NULL,
   end_ts      TIMESTAMPTZ NOT NULL,
@@ -246,7 +246,7 @@ Fixed 2026-04-23 with hold-the-tail semantics.
 | `instagram.reels`        | `{}`                                                | accessibility-service content detector               | medium      | Same limitations as `youtube.shorts`. |
 | `tiktok.feed`            | `{}`                                                | accessibility-service content detector               | medium      | Same. |
 | `instagram.stories`      | `{}`                                                | accessibility-service content detector               | medium      | Same. |
-| `detector.miss`          | `{package, view_ids}`                               | 0-duration diagnostic; rate-limited 1/60s per package | —           | Not user-facing. Filter out by default. Useful for classifier development. |
+| `phone.detector.miss`    | `{package, view_ids}`                               | 0-duration diagnostic; rate-limited 1/60s per package | —           | Not user-facing. Filter out by default. Useful for classifier development. |
 | `phone.location.reading` | `{lat, lng, accuracy_m, provider, reason}`          | fused-provider polls; 0-duration point events          | medium      | Raw pings; do not render directly — consume via `VisitDeriver` (future). |
 | `phone.activity.state`   | `{state: 'still'\|'walking'\|…}`                    | fused activity-recognition API; state-change events   | medium      | Android's own classification; treat confidence as inherent. |
 

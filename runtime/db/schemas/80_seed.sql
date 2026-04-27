@@ -2,12 +2,18 @@
 -- runs once on first boot from /docker-entrypoint-initdb.d/, but we
 -- write it idempotently so a manual re-run during ops doesn't error.
 
--- Devices. Three rows: two physical, one synthetic for service-polled events.
+-- Devices. Two physical, two synthetic services. Synthetic devices
+-- exist so events whose source segment-zero is non-physical (cloud-
+-- polled APIs, user prompt answers) satisfy the events.device FK.
+--   cloud  — service-polled (github, spotify, gcal — emitted by agent)
+--   prompt — user prompt answers (source format `prompt.<kind>` per
+--            data-model.md §2 prompt-answer pseudo-sources)
 INSERT INTO public.devices (id, kind, label, platform)
 VALUES
-  ('phone', 'physical', 'Pixel 9',                'android'),
-  ('mac',   'physical', 'MacBook',                 'macos'),
-  ('cloud', 'service',  'Service-polled events',   'service')
+  ('phone',  'physical', 'Pixel 9',               'android'),
+  ('mac',    'physical', 'MacBook',                'macos'),
+  ('cloud',  'service',  'Service-polled events',  'service'),
+  ('prompt', 'service',  'User prompt answers',    'service')
 ON CONFLICT (id) DO NOTHING;
 
 -- Source tags (ontology). Cross-cutting categorization keyed on full

@@ -14,23 +14,25 @@ Raw location events (`phone.location.reading`) are `(lat, lng, accuracy_m)` tupl
 ```sql
 CREATE TABLE places (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL,                       -- for future multi-user; Josh-only initially
-  name TEXT NOT NULL,                           -- "Math 221", "Home", "Bartlett"
-  category TEXT,                                -- "class", "residence", "food", "study", "social", "work"
+  name TEXT NOT NULL UNIQUE,                    -- "Math 221", "Home", "Bartlett"
+  category TEXT,                                 -- "class", "residence", "food", "study", "social", "work", "mixed"
   lat DOUBLE PRECISION NOT NULL,
   lng DOUBLE PRECISION NOT NULL,
-  radius_m REAL NOT NULL DEFAULT 50,            -- "at this place" tolerance
+  radius_m REAL NOT NULL DEFAULT 50,             -- "at this place" tolerance
   schedule JSONB,                                -- see below
   metadata JSONB,                                -- arbitrary: class code, instructor, etc.
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (user_id, name)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (lat BETWEEN -90 AND 90),
+  CHECK (lng BETWEEN -180 AND 180),
+  CHECK (radius_m > 0)
 );
 
-CREATE INDEX places_user_category ON places (user_id, category);
-CREATE INDEX places_latlng ON places USING gist (
-  ll_to_earth(lat, lng)                          -- earthdistance ext for radius queries
-);
+CREATE INDEX places_category ON places (category);
+CREATE INDEX places_geo      ON places USING gist (ll_to_earth(lat, lng));
 ```
+
+Single-user: `user_id` is intentionally absent. If multi-user ever happens, it's an additive column with a backfill default.
 
 ### `schedule` JSONB shape
 
@@ -49,25 +51,42 @@ Optional. Absent for places without a recurring schedule (home, dining hall). Pr
 
 ## Matching at query time
 
-No OS-level geofencing. Every `phone.location.reading` event is joined against `places` at query time:
+No OS-level geofencing. Every `phone.location.reading` event is joined against `places` at query time. **Use the two-stage bounding-box prefilter pattern** (see "Index-using radius queries" below) — `earth_distance(...) < p.radius_m` alone does NOT use the GiST index and seq-scans `places`:
 
 ```sql
--- Events tagged with the place they fall inside of (if any)
+-- Events tagged with the place they fall inside of (if any).
+-- :max_radius_m is a constant ≥ MAX(p.radius_m); compute once or
+-- inline (e.g. 200 if no place's radius exceeds 200 m).
 SELECT
-  e.timestamp_utc,
+  e.start_ts,
   e.data->>'lat' AS lat,
   e.data->>'lng' AS lng,
-  p.id  AS place_id,
+  p.id   AS place_id,
   p.name AS place_name
 FROM events e
 LEFT JOIN places p
-  ON earth_distance(
+  ON earth_box(
+       ll_to_earth((e.data->>'lat')::float, (e.data->>'lng')::float),
+       :max_radius_m
+     ) @> ll_to_earth(p.lat, p.lng)
+ AND earth_distance(
        ll_to_earth((e.data->>'lat')::float, (e.data->>'lng')::float),
        ll_to_earth(p.lat, p.lng)
      ) < p.radius_m
 WHERE e.source = 'phone.location.reading'
-  AND e.timestamp_utc > NOW() - INTERVAL '24 hours';
+  AND e.start_ts > NOW() - INTERVAL '24 hours';
 ```
+
+### Index-using radius queries
+
+The `places_geo` GiST index built on `ll_to_earth(lat, lng)` only fires for the `earth_box(...) @> ll_to_earth(...)` operator. The natural-looking single-line query `earth_distance(...) < p.radius_m` does **not** use the index — Postgres seq-scans `places` for every reading.
+
+Deriver convention: two-stage filter.
+
+1. **Bounding-box prefilter** at the global maximum radius (`:max_radius_m`, a small constant — pre-compute as `SELECT MAX(radius_m) FROM places` once at deriver start, or inline). Index lookup; reduces candidates from N to a few.
+2. **Exact `earth_distance` filter** against each candidate's per-place `radius_m`. Runs over the small candidate set, no index needed.
+
+Skipping stage 1 will work correctly but scale linearly with `|places|` per reading. With a `place_visit/v1` cron tick processing thousands of readings, that becomes the bottleneck.
 
 ### Why query-time, not OS geofence
 
@@ -123,7 +142,6 @@ WITH scheduled AS (
     ) AS day
   FROM places p
   WHERE p.schedule IS NOT NULL
-    AND p.user_id = :user_id
 ),
 expected AS (
   SELECT
