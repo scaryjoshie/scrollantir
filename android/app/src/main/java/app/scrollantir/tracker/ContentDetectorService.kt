@@ -37,20 +37,39 @@ class ContentDetectorService : AccessibilityService() {
 
     private data class DetectorRule(
         val source: String,                              // e.g. "youtube.shorts"
-        val primaryViewId: String,                       // must be present
-        val requiresPresent: List<String> = emptyList(), // all must be present
+        // Any-of: rule matches if ANY of these viewIds is present in the
+        // tree. Add fallbacks here so a single ID rename in a minor app
+        // update doesn't silently break detection.
+        val primaryViewIds: List<String>,
+        // All-of corroborators (rare). Prefer making `primaryViewIds`
+        // sufficiently specific instead — every entry here is one more
+        // way the rule can silently break on app updates.
+        val requiresPresent: List<String> = emptyList(),
         val eventTypeMask: Int                           // which event types can trigger detection
     )
 
     /**
      * Ordered rules per package. First match wins. Default AccessibilityEvent
      * type masks match DigiPaws' ReelAppConfig values.
+     *
+     * Robustness note: each rule lists multiple acceptable `primaryViewIds`.
+     * As of 2026-04, YouTube/Revanced removed `reel_recycler` from the
+     * Shorts top-of-tree (visible in detector.miss event tail) — `reel_time_bar`
+     * (Shorts progress bar) is the new most-reliable signal. Keeping the
+     * historical IDs in the list means we still match on older app versions.
      */
     private val rulesByPackage: Map<String, List<DetectorRule>> = mapOf(
         ContentDetection.PKG_YOUTUBE to listOf(
             DetectorRule(
                 source = "youtube.shorts",
-                primaryViewId = "com.google.android.youtube:id/reel_recycler",
+                primaryViewIds = listOf(
+                    // Shorts-only progress bar (most reliable post-2026-04).
+                    "com.google.android.youtube:id/reel_time_bar",
+                    // Historical IDs — keep as fallbacks for older builds.
+                    "com.google.android.youtube:id/reel_recycler",
+                    "com.google.android.youtube:id/reel_player_underlay",
+                    "com.google.android.youtube:id/reel_player_overlay"
+                ),
                 eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             )
@@ -60,23 +79,40 @@ class ContentDetectorService : AccessibilityService() {
                 // Emit under the same source as stock YouTube so downstream
                 // queries don't have to handle "YouTube" vs "YouTube Revanced"
                 source = "youtube.shorts",
-                primaryViewId = "app.revanced.android.youtube:id/reel_recycler",
+                primaryViewIds = listOf(
+                    "app.revanced.android.youtube:id/reel_time_bar",
+                    "app.revanced.android.youtube:id/reel_recycler",
+                    "app.revanced.android.youtube:id/reel_player_underlay",
+                    "app.revanced.android.youtube:id/reel_player_overlay"
+                ),
                 eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             )
         ),
         ContentDetection.PKG_INSTAGRAM to listOf(
+            // Reels rule — `clips_viewer_*` IDs are already Reels-specific
+            // (only present inside the Reels tab/player), so we drop the
+            // `clips_ufi_component` corroborator that was silently breaking
+            // detection whenever IG renamed the UFI overlay.
             DetectorRule(
                 source = "instagram.reels",
-                primaryViewId = "com.instagram.android:id/clips_viewer_view_pager",
-                requiresPresent = listOf("com.instagram.android:id/clips_ufi_component"),
+                primaryViewIds = listOf(
+                    "com.instagram.android:id/clips_viewer_view_pager",
+                    "com.instagram.android:id/clips_viewer_recyclerview",
+                    "com.instagram.android:id/clips_viewer_layout",
+                    "com.instagram.android:id/clips_video_container"
+                ),
                 eventTypeMask = AccessibilityEvent.TYPE_VIEW_SCROLLED or
                                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             ),
             DetectorRule(
                 source = "instagram.stories",
-                primaryViewId = "com.instagram.android:id/reel_viewer_root",
+                primaryViewIds = listOf(
+                    "com.instagram.android:id/reel_viewer_root",
+                    "com.instagram.android:id/reel_viewer_media_layout",
+                    "com.instagram.android:id/reel_viewer_content_layout"
+                ),
                 eventTypeMask = AccessibilityEvent.TYPE_VIEW_SCROLLED or
                                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -88,7 +124,7 @@ class ContentDetectorService : AccessibilityService() {
             // the feed.
             DetectorRule(
                 source = "tiktok.feed",
-                primaryViewId = "*",  // sentinel — skip viewId check
+                primaryViewIds = listOf("*"),  // sentinel — skip viewId check
                 eventTypeMask = AccessibilityEvent.TYPES_ALL_MASK
             )
         )
@@ -148,10 +184,21 @@ class ContentDetectorService : AccessibilityService() {
         }
 
         var matched: String? = null
+        // Track which rule got partway through (primary matched but
+        // a `requiresPresent` corroborator failed) so the miss
+        // diagnostic can call out the exact ID that drifted.
+        var nearMissSource: String? = null
+        var nearMissAbsentCorroborators: List<String> = emptyList()
         for (rule in rules) {
             if (event.eventType and rule.eventTypeMask == 0) continue
-            if (!hasNodeId(root, rule.primaryViewId)) continue
-            if (rule.requiresPresent.any { !hasNodeId(root, it) }) continue
+            val primaryMatched = rule.primaryViewIds.any { hasNodeId(root, it) }
+            if (!primaryMatched) continue
+            val absent = rule.requiresPresent.filter { !hasNodeId(root, it) }
+            if (absent.isNotEmpty()) {
+                nearMissSource = rule.source
+                nearMissAbsentCorroborators = absent
+                continue
+            }
             matched = rule.source
             break
         }
@@ -161,28 +208,64 @@ class ContentDetectorService : AccessibilityService() {
         } else {
             Log.i(TAG, "no rule matched for $pkg — emitting detector.miss if cooldown allows")
             onMiss(now)
-            maybeEmitMissDiagnostic(pkg, root, now)
+            maybeEmitMissDiagnostic(pkg, root, now, nearMissSource, nearMissAbsentCorroborators)
         }
     }
 
     /**
      * When a target app is foreground but no rule matched, emit a
      * `detector.miss` point event once per [MISS_DIAGNOSTIC_COOLDOWN_MS]
-     * per package. Carries up to 20 view IDs seen in the tree so we can
-     * see what the app actually exposes and update detectors if needed.
+     * per package. Carries up to 40 view IDs seen in the tree, plus —
+     * if a rule's primary matched but its `requiresPresent` corroborators
+     * failed — which corroborators were missing. That makes future ID
+     * drift trivially debuggable: detector.miss tells you exactly which
+     * ID disappeared instead of just dumping a tree fragment.
+     *
+     * Rule presence-checks: for each registered rule on this package,
+     * record which of the rule's primaryViewIds was found (if any) and
+     * which were absent. Lets us see "Reels rule failed because none of
+     * [pager, recyclerview, layout] were present" at a glance.
      */
-    private fun maybeEmitMissDiagnostic(pkg: String, root: AccessibilityNodeInfo, now: Long) {
+    private fun maybeEmitMissDiagnostic(
+        pkg: String,
+        root: AccessibilityNodeInfo,
+        now: Long,
+        nearMissSource: String?,
+        nearMissAbsentCorroborators: List<String>
+    ) {
         val last = lastMissEmitByPkg[pkg] ?: 0L
         if (now - last < MISS_DIAGNOSTIC_COOLDOWN_MS) return
         lastMissEmitByPkg[pkg] = now
 
-        val ids = topLevelViewIds(root, max = 20)
+        val ids = topLevelViewIds(root, max = 40)
+        val rules = rulesByPackage[pkg].orEmpty()
+        // Per-rule presence breakdown: which primary IDs were searched
+        // for, which were found. Stored as a list of maps so it serialises
+        // cleanly through the existing JSON event pipeline.
+        val rulePresence: List<Map<String, Any>> = rules.map { rule ->
+            val present = rule.primaryViewIds.filter { it != "*" && hasNodeId(root, it) }
+            val absent = rule.primaryViewIds.filter { it != "*" && !hasNodeId(root, it) }
+            mapOf(
+                "source" to rule.source,
+                "primary_present" to present,
+                "primary_absent" to absent
+            )
+        }
+        val data = mutableMapOf<String, Any>(
+            "package" to pkg,
+            "view_ids" to ids,
+            "rule_presence" to rulePresence
+        )
+        if (nearMissSource != null) {
+            data["near_miss_source"] = nearMissSource
+            data["near_miss_absent_corroborators"] = nearMissAbsentCorroborators
+        }
         scope.launch {
             emit(
                 dao = dao,
                 source = "detector.miss",
                 durationS = 0.0,
-                data = mapOf("package" to pkg, "view_ids" to ids)
+                data = data
             )
         }
     }
