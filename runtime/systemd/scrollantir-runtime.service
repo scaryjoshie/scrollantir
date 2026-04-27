@@ -1,0 +1,20 @@
+[Unit]
+Description=scrollantir runtime — docker-compose stack
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scrollantir/repo/runtime
+# `up` blocks (foreground) so systemd can supervise the stack.
+# `down` runs on stop / restart so we get a clean teardown.
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
