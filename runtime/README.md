@@ -87,9 +87,11 @@ boot. Beyond that, still pending:
 
 ## Local-dev override
 
-`compose.override.yaml` (gitignored) is the place to bind-mount source
-into the api container so uvicorn `--reload` picks up edits without a
-rebuild:
+`compose.override.yaml` (gitignored) is auto-merged when present. The
+Hetzner VM never has it, so production always uses internal-only
+networking + the baked image.
+
+**Bind-mount source for live reload:**
 
 ```yaml
 services:
@@ -106,5 +108,22 @@ services:
       - --reload
 ```
 
-The override is auto-merged when present. The Hetzner VM never has it,
-so production always uses the baked image.
+**Expose postgres for the admin CLI** (so `./admin local mint …` can
+reach it from the host shell):
+
+```yaml
+services:
+  postgres:
+    ports:
+      - "55432:5432"
+```
+
+Then on your Mac:
+
+```bash
+export SCROLLANTIR_LOCAL_DSN="postgresql://scrollantir:$(grep ^POSTGRES_PASSWORD runtime/.env | cut -d= -f2)@localhost:55432/scrollantir"
+export SCROLLANTIR_INGEST_URL="http://localhost"   # or the nip.io URL post-deploy
+./admin local mint --device-id phone --show-token
+```
+
+Both blocks can coexist in the same override file.

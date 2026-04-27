@@ -18,6 +18,7 @@ if str(_HERE) not in sys.path:
 import click  # noqa: E402
 
 from admin import devices as devices_mod  # noqa: E402
+from admin import local as local_mod  # noqa: E402
 from admin import roles as roles_mod  # noqa: E402
 from admin import tokens as tokens_mod  # noqa: E402
 
@@ -128,6 +129,42 @@ def rotate(device_id: str, finalize: bool) -> None:
     --finalize to revoke superseded tokens immediately. Rotation always
     prints plaintext — the new token needs to reach the device."""
     tokens_mod.rotate(device_id, finalize)
+
+
+# ── local self-hosted runtime/ stack subgroup ──────────────────────
+#
+# Parallel commands for the new self-hosted backend (runtime/ folder).
+# Different DSN, different schema. Eventually replaces the Supabase-
+# pointed commands above; for now they coexist during cutover.
+
+@cli.group()
+def local() -> None:
+    """Operations against the local self-hosted runtime/ stack."""
+
+
+@local.command("mint")
+@click.option("--device-id", required=True,
+              type=click.Choice(["phone", "mac", "cloud", "prompt"]))
+@click.option("--ingest-url", default=None,
+              help="Override (defaults to $SCROLLANTIR_INGEST_URL).")
+@click.option("--show-token", is_flag=True,
+              help="Also print plaintext (default: prefix + QR only).")
+def local_mint(device_id: str, ingest_url: str | None, show_token: bool) -> None:
+    """Mint a bearer token for a device on the local stack."""
+    local_mod.mint(device_id, ingest_url, show_token)
+
+
+@local.command("list")
+def local_list() -> None:
+    """List tokens on the local stack."""
+    local_mod.list_tokens()
+
+
+@local.command("revoke")
+@click.option("--prefix", required=True, help="8-char token prefix.")
+def local_revoke(prefix: str) -> None:
+    """Revoke a token by prefix on the local stack."""
+    local_mod.revoke(prefix)
 
 
 if __name__ == "__main__":
