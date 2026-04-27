@@ -16,8 +16,15 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO user_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT ON TABLES TO user_role;
 
--- anon: nothing here yet. Specific EXECUTE grants on ingest_api.*
--- functions land in commit #3. Default is "anon can't see anything".
+-- anon: EXECUTE on the three ingest_api RPCs and nothing else.
+-- These are SECURITY DEFINER functions that validate bearer tokens
+-- internally; anon never sees private.tokens or writes events directly.
+GRANT USAGE ON SCHEMA ingest_api TO anon;
+GRANT EXECUTE ON FUNCTION
+  ingest_api.accept_event(TEXT, UUID, TEXT, TIMESTAMPTZ, DOUBLE PRECISION, JSONB),
+  ingest_api.accept_prompt_answer(TEXT, UUID, UUID, JSONB),
+  ingest_api.pending_prompts(TEXT)
+TO anon;
 
 -- private.*: postgres superuser only. Roles never have direct access.
 -- Token validation happens inside SECURITY DEFINER functions in
