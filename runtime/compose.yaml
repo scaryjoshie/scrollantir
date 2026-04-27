@@ -32,8 +32,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-scrollantir}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing in .env}
       POSTGRES_DB: ${POSTGRES_DB:-scrollantir}
+      # Read by db/schemas/20_roles.sh on first boot.
+      AUTHENTICATOR_PW: ${AUTHENTICATOR_PW:?missing in .env}
+      USER_PW: ${USER_PW:?missing in .env}
+      AGENT_PW: ${AGENT_PW:?missing in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/schemas:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -49,11 +54,12 @@ services:
     expose:
       - "3000"
     environment:
-      # v0: connect as the postgres superuser; anon-role separation comes
-      # in commit #2 when db/schemas/ lands the authenticator + anon roles.
-      PGRST_DB_URI: postgres://${POSTGRES_USER:-scrollantir}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-scrollantir}
-      PGRST_DB_SCHEMAS: public
-      PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-scrollantir}
+      # PostgREST connects as `authenticator` (NOINHERIT LOGIN) and
+      # SET ROLEs into `anon` for unauthenticated requests. Specific
+      # ingest/agent_api EXECUTE grants on anon land in commit #3.
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PW}@postgres:5432/${POSTGRES_DB:-scrollantir}
+      PGRST_DB_SCHEMAS: public,ingest_api,agent_api
+      PGRST_DB_ANON_ROLE: anon
     depends_on:
       postgres:
         condition: service_healthy

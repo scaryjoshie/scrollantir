@@ -28,12 +28,20 @@ compose services with different `command:` directives.
 ```bash
 cd runtime
 cp .env.example .env
-# set POSTGRES_PASSWORD (any non-empty value for dev)
+# Set the four required passwords (POSTGRES_PASSWORD, AUTHENTICATOR_PW,
+# USER_PW, AGENT_PW). For dev, any non-empty values work; in production
+# generate strong random ones (e.g. `openssl rand -hex 32`).
 docker compose up -d
 docker compose ps                       # all 5 services healthy
 curl http://localhost/health            # → {"ok":true}
+curl http://localhost/                  # → PostgREST OpenAPI doc
 docker compose logs -f agent            # tick lines once a minute
 ```
+
+First boot runs every `*.sql` and `*.sh` in `db/schemas/` against a
+fresh data volume, in alphabetical order — extensions, schemas, roles,
+tables, seed, grants. Subsequent boots skip init and just start the
+existing DB.
 
 ## Restart cleanly
 
@@ -54,19 +62,28 @@ Pulls `main` on the VM, rebuilds the Python image, recreates only
 (`postgres_data`, `caddy_data`, `caddy_config`) survive everything
 except `docker volume rm`.
 
-## v0 caveats (this commit)
+## What's still missing
 
-Commit #1 proves orchestration. It does **not** yet have:
+The schema foundation is in place — extensions + roles + 8 public + 2
+private tables, mounted from `db/schemas/` into postgres init on first
+boot. Beyond that, still pending:
 
-- A real schema. PostgREST connects as the postgres superuser; the
-  `authenticator` / `anon` / `ingest_role` / `user_role` / `agent_role`
-  split lands in commit #2 alongside the `db/schemas/` port from
-  `supabase/schemas/`.
-- A migrations runner. `dbmate` against the live DB is the planned
-  tool.
-- Any deriver, model, or DB-access code in `app/src/scrollantir/`.
-- A real `forward()`/`complete()` scheduler. The current `agent`
-  ticks once a minute and logs "tick".
+- **`ingest_api.*` RPCs** — `accept_event`, `accept_prompt_answer`,
+  `pending_prompts`. Devices can't post events until these land.
+- **Views** — `events_enriched`, `mac_active`, `phone_active`,
+  `phone_activity_gated`, etc.
+- **`agent_api.*` RPCs** — `upsert_report`, `upsert_annotation`,
+  `create_prompt`, `replace_derived_window`.
+- **Migrations runner** — `dbmate` against the live DB once a real
+  forward-only migration is needed.
+- **Deriver / model / db-access Python code** — `app/src/scrollantir/`
+  is still skeletal beyond the api `/health` endpoint and the agent
+  tick stub.
+- **Real `forward()` / `complete()` scheduling** — the agent currently
+  just ticks once a minute.
+- **Client cutover** — android/ + mac-forwarder/ + dashboard/ still
+  point at Supabase. The local stack will receive its first real event
+  only after `accept_event` ships and clients re-mint tokens.
 
 ## Local-dev override
 
