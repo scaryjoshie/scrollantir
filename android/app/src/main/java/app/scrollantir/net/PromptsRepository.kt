@@ -32,17 +32,18 @@ object PromptsRepository {
     private val refreshMutex = Mutex()
 
     /**
-     * Refresh from `/pending-prompts`. Safe to call concurrently — the
-     * mutex coalesces overlapping refreshes so a LaunchedEffect + a
-     * manual "pull to refresh" never fire parallel requests.
+     * Refresh from `ingest_api.pending_prompts`. Safe to call
+     * concurrently — the mutex coalesces overlapping refreshes so a
+     * LaunchedEffect + a manual "pull to refresh" never fire parallel
+     * requests.
      *
      * Returns true on success (whether or not the list changed), false
      * on any error (network, non-2xx, unparseable body, or the device
-     * isn't configured against a Supabase URL).
+     * isn't configured yet).
      */
     suspend fun refresh(context: Context): Boolean = refreshMutex.withLock {
         val api = buildApi(context) ?: run {
-            _lastError.value = "Scan the onboarding QR first — prompts are Supabase-only."
+            _lastError.value = "Scan the onboarding QR first to configure the runtime URL + token."
             return@withLock false
         }
         when (val result = api.pendingPrompts()) {
@@ -71,7 +72,7 @@ object PromptsRepository {
         data: JSONObject
     ): SubmitResult {
         val api = buildApi(context)
-            ?: return SubmitResult.Error(0, "Not configured against Supabase.")
+            ?: return SubmitResult.Error(0, "Not configured. Scan the onboarding QR.")
         val answerEventId = UUID.randomUUID().toString()
         val result = api.submitAnswer(prompt.id, answerEventId, data)
         if (result is SubmitResult.Success || result is SubmitResult.AlreadyAnswered) {
@@ -82,11 +83,9 @@ object PromptsRepository {
 
     private fun buildApi(context: Context): PromptsApi? {
         val prefs = SecurePrefs.get(context)
-        val url = prefs.getString(SecurePrefs.KEY_SERVER_URL, null)?.takeIf { it.isNotBlank() }
-            ?: return null
-        val token = prefs.getString(SecurePrefs.KEY_TOKEN, null)?.takeIf { it.isNotBlank() }
-            ?: return null
-        return PromptsApi.fromIngestUrl(url, token)
+        val url = prefs.getString(SecurePrefs.KEY_SERVER_URL, null)
+        val token = prefs.getString(SecurePrefs.KEY_TOKEN, null)
+        return PromptsApi.fromBaseUrl(url, token)
     }
 
     private const val TAG = "ScrollantirPrompts"

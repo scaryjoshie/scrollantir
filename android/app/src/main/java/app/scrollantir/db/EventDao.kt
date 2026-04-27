@@ -14,13 +14,13 @@ interface EventDao {
 
     // --- Outgoing queue: unforwarded events ---
     //
-    // All sources flow to Supabase. Location/activity rows were previously
-    // held local-only (see docs/concepts/location.md) while the ingest target was a
-    // LAN stub over plaintext HTTP; now that we POST to Supabase over TLS,
-    // that blocker is gone. Coordinates ship at full device precision —
-    // the prior 4-decimal egress snap was removed since this is a
-    // self-hosted single-user setup and ~sub-meter fidelity is wanted for
-    // the place-matching layer.
+    // All sources flow to the self-hosted runtime stack. Location/activity
+    // rows were previously held local-only (see docs/concepts/location.md)
+    // while the ingest target was a LAN stub over plaintext HTTP; now that
+    // we POST to the runtime over TLS, that blocker is gone. Coordinates
+    // ship at full device precision — the prior 4-decimal egress snap was
+    // removed since this is a self-hosted single-user setup and ~sub-meter
+    // fidelity is wanted for the place-matching layer.
 
     @Query("""
         SELECT * FROM events
@@ -112,7 +112,7 @@ interface EventDao {
     //
     // Location and activity rows are kept locally for ~98 days regardless of
     // forward status so the on-phone LocationScreen can page back through
-    // prior days without refetching from Supabase. Everything else is dropped
+    // prior days without refetching from the server. Everything else is dropped
     // 48h after server ACK.
 
     @Query("""

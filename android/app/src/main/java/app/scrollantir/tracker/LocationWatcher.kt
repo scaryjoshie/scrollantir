@@ -37,9 +37,9 @@ import kotlin.math.round
  * Privacy posture:
  *   - PRIORITY_BALANCED_POWER_ACCURACY (~100m typical, wifi-assisted; not GPS-hot)
  *   - Drop readings with accuracy > 200m (tunnels, indoor with weak signal)
- *   - Real coordinates persisted locally and shipped to Supabase as-is —
- *     self-hosted single-user setup, full precision wanted for place
- *     matching and dashboard fidelity.
+ *   - Real coordinates persisted locally and shipped to the runtime
+ *     stack as-is — self-hosted single-user setup, full precision wanted
+ *     for place matching and dashboard fidelity.
  */
 class LocationWatcher(
     private val context: Context,

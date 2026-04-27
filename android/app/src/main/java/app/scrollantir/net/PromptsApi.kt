@@ -11,17 +11,21 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Client for the Supabase edge functions `/pending-prompts` (GET) and
- * `/prompt-answer` (POST). Derives its base URL from the stored ingest
- * URL by stripping the trailing `/ingest` segment — the three edge
- * functions are siblings under `/functions/v1/`.
+ * Client for the runtime stack's prompt RPCs:
  *
- * Prompts are a Supabase-only feature; the LAN stub server doesn't
- * implement them. Callers should surface a "configure ingest URL"
- * message to the user if [fromIngestUrl] returns null.
+ *   POST <baseUrl>/rpc/pending_prompts          → list unanswered prompts
+ *   POST <baseUrl>/rpc/accept_prompt_answer     → submit a prompt answer
+ *
+ * Both go through PostgREST with `Content-Profile: ingest_api`. The
+ * bearer token is a body parameter (`p_token`), not an Authorization
+ * header — same convention as `accept_event`.
+ *
+ * Note: `pending_prompts` is a SELECT-shaped function; PostgREST
+ * accepts POST for it because the token argument can't safely live in
+ * the URL.
  */
 class PromptsApi(
-    private val functionsBaseUrl: String,
+    private val baseUrl: String,
     private val token: String
 ) {
     private val client = OkHttpClient.Builder()
@@ -30,17 +34,15 @@ class PromptsApi(
         .build()
 
     suspend fun pendingPrompts(): PendingPromptsResult = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url("$functionsBaseUrl/pending-prompts")
-            .header("Authorization", "Bearer $token")
-            .get()
-            .build()
+        val payload = JSONObject().put("p_token", token).toString()
+        val request = buildPostRequest("pending_prompts", payload)
         client.newCall(request).execute().use { response ->
             val bodyText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                return@withContext PendingPromptsResult.Error(response.code, bodyText.take(200))
+                return@withContext PendingPromptsResult.Error(response.code, bodyText.take(400))
             }
-            val parsed = runCatching { JSONObject(bodyText).getJSONArray("prompts") }
+            // PostgREST returns a JSON array of rows for setof functions.
+            val parsed = runCatching { JSONArray(bodyText) }
                 .getOrElse {
                     return@withContext PendingPromptsResult.Error(
                         response.code, "bad JSON: ${bodyText.take(200)}"
@@ -55,38 +57,51 @@ class PromptsApi(
         answerEventId: String,
         data: JSONObject
     ): SubmitResult = withContext(Dispatchers.IO) {
-        val body = JSONObject()
-            .put("prompt_id", promptId)
-            .put("answer_event_id", answerEventId)
-            .put("data", data)
+        val payload = JSONObject()
+            .put("p_token", token)
+            .put("p_prompt_id", promptId)
+            .put("p_answer_event_id", answerEventId)
+            .put("p_data", data)
             .toString()
-            .toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url("$functionsBaseUrl/prompt-answer")
-            .header("Authorization", "Bearer $token")
-            .post(body)
-            .build()
+        val request = buildPostRequest("accept_prompt_answer", payload)
         client.newCall(request).execute().use { response ->
             val bodyText = response.body?.string().orEmpty()
             when (response.code) {
                 in 200..299 -> SubmitResult.Success
-                409 -> SubmitResult.AlreadyAnswered(bodyText.take(200))
-                else -> SubmitResult.Error(response.code, bodyText.take(200))
+                // The function raises plain (no ERRCODE) exceptions for
+                // "not answerable"; PostgREST surfaces those as 400. Treat
+                // 400/409 as "already answered or expired" since both end
+                // up the same way for the UI: clear the prompt.
+                400, 409 -> SubmitResult.AlreadyAnswered(bodyText.take(400))
+                else -> SubmitResult.Error(response.code, bodyText.take(400))
             }
         }
     }
 
+    private fun buildPostRequest(fn: String, jsonBody: String): Request {
+        val body = jsonBody.toRequestBody(JSON)
+        val trimmed = baseUrl.trim().trimEnd('/')
+        return Request.Builder()
+            .url("$trimmed/rpc/$fn")
+            .header("Content-Type", "application/json")
+            .header("Content-Profile", "ingest_api")
+            .post(body)
+            .build()
+    }
+
     companion object {
+        private val JSON = "application/json".toMediaType()
+
         /**
-         * Derive the functions base URL from the stored ingest URL. Returns
-         * null when the URL doesn't end in `/ingest` — typically means the
-         * device is pointing at the LAN stub, which doesn't ship prompts.
+         * Build a PromptsApi from the SecurePrefs-stored base URL +
+         * token. Returns null if either is missing — the UI should
+         * tell the user to scan the QR.
          */
-        fun fromIngestUrl(ingestUrl: String, token: String): PromptsApi? {
-            val trimmed = ingestUrl.trim().trimEnd('/')
-            val base = trimmed.removeSuffix("/ingest")
-            if (base == trimmed) return null
-            return PromptsApi(base, token)
+        fun fromBaseUrl(baseUrl: String?, token: String?): PromptsApi? {
+            val u = baseUrl?.trim().orEmpty()
+            val t = token?.trim().orEmpty()
+            if (u.isBlank() || t.isBlank()) return null
+            return PromptsApi(u, t)
         }
 
         private fun parsePrompts(arr: JSONArray): List<Prompt> = buildList {
@@ -97,7 +112,8 @@ class PromptsApi(
                         id = row.optString("id").takeIf { it.isNotBlank() } ?: continue,
                         kind = row.optString("kind"),
                         question = row.optString("question"),
-                        context = row.optJSONObject("context"),
+                        // Schema column is `ctx` (not `context`).
+                        context = row.optJSONObject("ctx"),
                         answerSchema = row.optJSONObject("answer_schema") ?: JSONObject(),
                         createdAt = row.optString("created_at"),
                         expiresAt = row.optString("expires_at").takeIf { it.isNotBlank() }

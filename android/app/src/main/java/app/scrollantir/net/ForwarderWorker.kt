@@ -16,9 +16,26 @@ import app.scrollantir.db.AppDatabase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
+/**
+ * Periodic forwarder.
+ *
+ * The runtime's `ingest_api.accept_event` is a single-event RPC, so
+ * instead of one batch POST per run we loop over the batch and POST
+ * each event individually. One bad event (e.g. a malformed source the
+ * server rejects with 4xx) MUST NOT poison the rest of the batch — we
+ * mark it forwarded anyway and move on. The whole point of the
+ * forwarder is to keep the queue draining; permanently-bad rows that
+ * loop forever waste battery and network.
+ *
+ * Categories per row, in priority:
+ *   - 2xx                            → mark forwarded
+ *   - permanent (4xx, 401/403)       → mark forwarded, log loudly
+ *   - transient (5xx, 408, 429, IO)  → leave queued, return Result.retry()
+ */
 class ForwarderWorker(
     ctx: Context,
     params: WorkerParameters
@@ -26,10 +43,10 @@ class ForwarderWorker(
 
     override suspend fun doWork(): Result {
         val prefs = SecurePrefs.get(applicationContext)
-        val serverUrl = prefs.getString(SecurePrefs.KEY_SERVER_URL, null)
+        val baseUrl = prefs.getString(SecurePrefs.KEY_SERVER_URL, null)
         val token = prefs.getString(SecurePrefs.KEY_TOKEN, null)
 
-        if (serverUrl.isNullOrBlank() || token.isNullOrBlank()) {
+        if (baseUrl.isNullOrBlank() || token.isNullOrBlank()) {
             Log.i(TAG, "skipping: server URL or token not configured")
             return Result.success()
         }
@@ -43,39 +60,109 @@ class ForwarderWorker(
             return Result.success()
         }
 
-        Log.i(TAG, "forwarding ${batch.size} events to $serverUrl")
+        Log.i(TAG, "forwarding ${batch.size} events to $baseUrl (one-by-one)")
 
-        return try {
-            val client = IngestClient(serverUrl, token)
-            val code = client.postBatch(batch)
-            when {
-                code in 200..299 -> {
+        val client = IngestClient(baseUrl, token)
+        val forwardedIds = ArrayList<String>(batch.size)
+        var transientCount = 0
+        var permanentCount = 0
+        var lastTransientCode: Int? = null
+        var lastPermanentCode: Int? = null
+
+        for (row in batch) {
+            val outcome = try {
+                client.postEvent(row)
+            } catch (t: IOException) {
+                // Pure network/IO — transient. Stop the run; WorkManager
+                // will back off and re-drain the queue.
+                Log.w(TAG, "IO failure on event ${row.id} — bailing", t)
+                updateStatus(
+                    success = false,
+                    count = forwardedIds.size,
+                    error = t.message ?: "io error"
+                )
+                if (forwardedIds.isNotEmpty()) {
                     val nowIso = Instant.now().toString()
-                    dao.markForwarded(batch.map { it.id }, nowIso)
-                    Log.i(TAG, "forwarded ${batch.size} events; marked in queue at $nowIso")
-                    updateStatus(success = true, count = batch.size, error = null)
-                    Result.success()
+                    dao.markForwarded(forwardedIds, nowIso)
                 }
-                code in 400..499 && code != 408 && code != 429 -> {
-                    // Client-side problem (bad token, malformed payload, etc.).
-                    // Retrying won't fix it — user must reconfigure. Mark this
-                    // run "success" so WorkManager backs off instead of
-                    // infinitely retrying and burning battery/bandwidth.
-                    Log.e(TAG, "non-retryable $code — queue preserved, fix server config in Settings")
-                    updateStatus(success = false, count = batch.size, error = "HTTP $code (non-retryable)")
-                    Result.success()
+                return Result.retry()
+            } catch (t: Throwable) {
+                // Anything else (programmer error, OkHttp blowing up).
+                // Treat as transient — better to retry than to silently
+                // skip rows that may be valid.
+                Log.e(TAG, "unexpected throw on event ${row.id}", t)
+                updateStatus(
+                    success = false,
+                    count = forwardedIds.size,
+                    error = t.message ?: "unknown"
+                )
+                if (forwardedIds.isNotEmpty()) {
+                    val nowIso = Instant.now().toString()
+                    dao.markForwarded(forwardedIds, nowIso)
                 }
-                else -> {
-                    // 5xx or 408/429 — transient. Retry with backoff.
-                    Log.w(TAG, "transient $code — will retry")
-                    updateStatus(success = false, count = batch.size, error = "HTTP $code")
-                    Result.retry()
+                return Result.retry()
+            }
+
+            when (outcome) {
+                is IngestResult.Ok -> forwardedIds.add(row.id)
+                is IngestResult.Permanent -> {
+                    Log.e(
+                        TAG,
+                        "PERMANENT ${outcome.httpCode} on event id=${row.id} " +
+                            "source=${row.source} — dropping. body=${outcome.body}"
+                    )
+                    // Mark forwarded so we don't retry this row forever.
+                    forwardedIds.add(row.id)
+                    permanentCount += 1
+                    lastPermanentCode = outcome.httpCode
+                }
+                is IngestResult.Transient -> {
+                    // Stop draining; let backoff retry. Future runs
+                    // re-pick this row off the queue.
+                    Log.w(
+                        TAG,
+                        "transient ${outcome.httpCode} on event ${row.id} — " +
+                            "stopping batch. body=${outcome.body}"
+                    )
+                    transientCount += 1
+                    lastTransientCode = outcome.httpCode
+                    break
                 }
             }
-        } catch (t: Throwable) {
-            Log.e(TAG, "forward failed (network/IO)", t)
-            updateStatus(success = false, count = batch.size, error = t.message ?: "unknown")
+        }
+
+        // Flush whatever we managed to send.
+        if (forwardedIds.isNotEmpty()) {
+            val nowIso = Instant.now().toString()
+            dao.markForwarded(forwardedIds, nowIso)
+            Log.i(
+                TAG,
+                "forwarded ${forwardedIds.size}/${batch.size} events at $nowIso " +
+                    "(perm-drop=$permanentCount, transient=$transientCount)"
+            )
+        }
+
+        return if (transientCount > 0) {
+            updateStatus(
+                success = false,
+                count = forwardedIds.size,
+                error = "HTTP $lastTransientCode (transient)"
+            )
             Result.retry()
+        } else {
+            // Everything either landed or was a permanent skip. Note
+            // that a fully-permanent run returns "success" so
+            // WorkManager doesn't escalate backoff — there's no point
+            // retrying rows the server already rejected.
+            val errorMsg = if (permanentCount > 0)
+                "HTTP $lastPermanentCode on $permanentCount row(s) — dropped"
+            else null
+            updateStatus(
+                success = permanentCount == 0,
+                count = forwardedIds.size,
+                error = errorMsg
+            )
+            Result.success()
         }
     }
 

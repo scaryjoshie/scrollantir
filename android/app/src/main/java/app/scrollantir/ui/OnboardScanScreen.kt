@@ -61,10 +61,23 @@ import org.json.JSONObject
 import java.util.concurrent.Executors
 
 /**
- * Onboarding QR-scan screen. Parses the `./admin mint` payload
- * {v:2, url, token, device_id, label, platform} and writes url + token +
- * device_id into SecurePrefs so the ForwarderWorker posts to Supabase as
- * the intended device.
+ * Onboarding QR-scan screen. Parses the runtime admin's mint payload:
+ *
+ *   {
+ *     "v": 3,                 // version bump from the Supabase-era v2
+ *     "url": "https://...",   // base URL of the runtime stack — no
+ *                             //   trailing path; client appends
+ *                             //   /rpc/<func> for each call
+ *     "token": "...",         // bearer (validated server-side as
+ *                             //   p_token in the RPC body)
+ *     "device": "phone",      // matches the first segment of every
+ *                             //   event source emitted from this device
+ *     "label": "...",         // optional human label
+ *     "platform": "..."       // optional, free-form
+ *   }
+ *
+ * Writes url + token + device into SecurePrefs so the ForwarderWorker
+ * posts to the runtime as the intended device.
  */
 @Composable
 fun OnboardScanScreen(
@@ -300,7 +313,7 @@ private fun SuccessCard(details: ScanResult.Success, onDone: () -> Unit) {
             )
             KeyValueRow("Device id", details.deviceId)
             KeyValueRow("Token prefix", details.tokenPrefix)
-            KeyValueRow("Ingest URL", details.url)
+            KeyValueRow("Runtime URL", details.url)
             Text(
                 text = "A sync has been kicked off. Verify with " +
                     "`./admin list` — last_used_at should advance shortly.",
@@ -347,23 +360,38 @@ private fun parseOnboardPayload(raw: String): ScanResult {
     val json = try {
         JSONObject(raw)
     } catch (_: Throwable) {
-        return ScanResult.Error("QR does not contain JSON. Scan a QR minted by ./admin mint.")
+        return ScanResult.Error("QR does not contain JSON. Scan a QR minted by the runtime admin CLI.")
     }
     val version = json.optInt("v", -1)
-    if (version != 2) {
-        return ScanResult.Error("Unsupported QR version $version (expected 2).")
+    if (version != 3) {
+        return ScanResult.Error(
+            "Unsupported QR version $version (expected 3 — runtime stack)."
+        )
     }
     val url = json.optString("url").takeIf { it.isNotBlank() }
         ?: return ScanResult.Error("QR is missing `url`.")
     val token = json.optString("token").takeIf { it.isNotBlank() }
         ?: return ScanResult.Error("QR is missing `token`.")
-    val deviceId = json.optString("device_id").takeIf { it.isNotBlank() }
-        ?: return ScanResult.Error("QR is missing `device_id`.")
+    // Accept legacy `device_id` for transitional compatibility, but the
+    // canonical key is `device` (matches the source-prefix on the wire).
+    val deviceId = json.optString("device").takeIf { it.isNotBlank() }
+        ?: json.optString("device_id").takeIf { it.isNotBlank() }
+        ?: return ScanResult.Error("QR is missing `device`.")
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return ScanResult.Error("QR `url` is not http(s).")
     }
+    // The runtime URL is a base origin; the client appends /rpc/<func>.
+    // Reject obvious legacy paths so we fail loudly on a stale QR
+    // instead of silently double-pathing later.
+    val normalized = url.trimEnd('/')
+    if (normalized.endsWith("/ingest") || normalized.contains("/functions/v1/")) {
+        return ScanResult.Error(
+            "QR `url` looks like a Supabase ingest endpoint. The runtime " +
+                "stack expects a base URL (e.g. https://api.example.com)."
+        )
+    }
     return ScanResult.Success(
-        url = url,
+        url = normalized,
         token = token,
         deviceId = deviceId,
         label = json.optString("label").takeIf { it.isNotBlank() },

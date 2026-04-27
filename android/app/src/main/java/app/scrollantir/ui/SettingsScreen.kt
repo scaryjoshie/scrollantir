@@ -457,7 +457,7 @@ private fun LocationTrackingCard(
                 )
             } else {
                 Text(
-                    text = "Forwarded to Supabase at full device precision.",
+                    text = "Forwarded to the runtime stack at full device precision.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -642,17 +642,17 @@ private fun ServerSettingsCard(context: Context, onSaved: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "Fallback for LAN stub debugging or when the QR " +
-                    "scanner is unavailable. URL is used verbatim — include " +
-                    "the `/ingest` (or `/functions/v1/ingest`) suffix.",
+                text = "Fallback when the QR scanner is unavailable. " +
+                    "URL is the runtime stack's base origin only (no " +
+                    "path) — the client appends `/rpc/<func>` per call.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it; saved = false },
-                label = { Text("Ingest URL") },
-                placeholder = { Text("http://192.168.1.x:8069/ingest") },
+                label = { Text("Runtime base URL") },
+                placeholder = { Text("https://api.example.com") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth()
