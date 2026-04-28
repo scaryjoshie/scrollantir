@@ -9,12 +9,14 @@ import app.scrollantir.db.EventDao
 import app.scrollantir.db.emit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.time.Instant
 
 /**
@@ -345,14 +347,22 @@ class ContentDetectorService : AccessibilityService() {
     }
 
     private fun closeCurrentSessionBestEffort() {
+        // Called from onDestroy, immediately before scope.cancel(). The
+        // previous implementation scheduled the final emit via scope.launch,
+        // which got canceled before the DB write ran. runBlocking with
+        // NonCancellable + IO dispatcher is the same shape used in
+        // TrackerForegroundService.onDestroy for the poller flush — the
+        // emit completes synchronously even though teardown is in flight.
         val c = current ?: return
         val now = System.currentTimeMillis()
         val durS = (now - c.startMs) / 1000.0
-        scope.launch {
-            try {
+        try {
+            runBlocking(Dispatchers.IO + NonCancellable) {
                 emit(dao = dao, source = c.source,
                      start = Instant.ofEpochMilli(c.startMs), durationS = durS)
-            } catch (_: Throwable) {}
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "closeCurrentSessionBestEffort emit failed", t)
         }
         current = null
         _currentMode.value = null

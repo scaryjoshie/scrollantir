@@ -1,5 +1,6 @@
 package app.scrollantir.tracker
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -9,7 +10,10 @@ import android.util.Log
 import app.scrollantir.db.EventDao
 import app.scrollantir.db.emit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.time.Instant
 
 /**
@@ -48,28 +52,74 @@ class ScreenWatcher(
         }
         context.registerReceiver(receiver, filter)
 
-        // Bootstrap from current screen state. Without this, registration
-        // while the screen is already on (boot, sideload, restart-after-
-        // kill) leaves screenOnSince null until the user does a full
-        // power-button cycle — and the next ACTION_SCREEN_OFF gets
-        // dropped by the screenOnSince?.let guard. Result: long stretches
-        // of foreground/usage with no system.screen rows.
+        // Bootstrap from current OS state. Without this, registration
+        // while screen is on / device unlocked (boot, sideload, restart-
+        // after-kill) leaves screenOnSince/unlockedSince null until the
+        // user does a full off→on cycle — and the next ACTION_SCREEN_OFF
+        // gets dropped by the screenOnSince?.let guard. Result: long
+        // stretches of foreground/usage with no system.screen rows and
+        // unlocked spans that never get sealed.
+        //
+        // The bootstrapped unlocked span starts at register-time, not the
+        // real (unknown) unlock instant — slightly imprecise on the first
+        // post-restart span, but better than dropping it entirely. No
+        // synthetic system.unlock POINT event is emitted (we don't know
+        // when unlock actually happened), so the first bootstrapped
+        // unlocked span has no paired unlock point. Subsequent spans are
+        // accurate.
+        val now = Instant.now()
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (pm.isInteractive) {
-            screenOnSince = Instant.now()
+            screenOnSince = now
             Log.i(TAG, "SCREEN on (bootstrapped from PowerManager.isInteractive)")
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            if (!km.isDeviceLocked) {
+                unlockedSince = now
+                Log.i(TAG, "UNLOCKED (bootstrapped from KeyguardManager.isDeviceLocked=false)")
+            }
         }
 
         Log.i(TAG, "registered")
     }
 
     fun unregister() {
+        // Seal any in-flight spans BEFORE removing the receiver, so service
+        // teardown doesn't drop them silently. Same shape as the poller
+        // flush in TrackerForegroundService.onDestroy: runBlocking on the
+        // IO dispatcher with NonCancellable so the DB write completes even
+        // if the caller's scope is being canceled.
+        flushOpenSpansBlocking(Instant.now())
         try {
             context.unregisterReceiver(receiver)
             Log.i(TAG, "unregistered")
         } catch (_: IllegalArgumentException) {
             // Receiver wasn't registered — safe to ignore
         }
+    }
+
+    private fun flushOpenSpansBlocking(t: Instant) {
+        val screenSince = screenOnSince
+        val unlockedAt = unlockedSince
+        if (screenSince == null && unlockedAt == null) return
+        try {
+            runBlocking(Dispatchers.IO + NonCancellable) {
+                if (screenSince != null) {
+                    val durS = (t.toEpochMilli() - screenSince.toEpochMilli()) / 1000.0
+                    Log.i(TAG, "SCREEN seal on unregister  (${"%.1f".format(durS)}s)")
+                    emit(dao, "system.screen", start = screenSince, durationS = durS,
+                         data = mapOf("state" to "on"))
+                }
+                if (unlockedAt != null) {
+                    val durS = (t.toEpochMilli() - unlockedAt.toEpochMilli()) / 1000.0
+                    Log.i(TAG, "UNLOCKED seal on unregister  (${"%.1f".format(durS)}s)")
+                    emit(dao, "system.unlocked", start = unlockedAt, durationS = durS)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "flushOpenSpansBlocking failed", t)
+        }
+        screenOnSince = null
+        unlockedSince = null
     }
 
     private fun onScreenOn(t: Instant) {
@@ -114,13 +164,17 @@ class ScreenWatcher(
     }
 
     private fun onUserPresent(t: Instant) {
+        // Idempotent on duplicate USER_PRESENT broadcasts (some Android
+        // versions / OEM builds fire it twice on a single unlock).
+        // Without this guard we'd emit two unlock POINT events for one
+        // unlocked span, which is the 5-vs-4 unlock/unlocked mismatch
+        // observed in live data.
+        if (unlockedSince != null) return
         Log.i(TAG, "UNLOCK (user present)")
         scope.launch {
             emit(dao, "system.unlock", start = t, durationS = 0.0)
         }
-        if (unlockedSince == null) {
-            unlockedSince = t
-        }
+        unlockedSince = t
     }
 
     /**
