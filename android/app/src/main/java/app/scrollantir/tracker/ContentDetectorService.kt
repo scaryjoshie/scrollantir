@@ -1,6 +1,7 @@
 package app.scrollantir.tracker
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -54,11 +55,16 @@ class ContentDetectorService : AccessibilityService() {
      * Ordered rules per package. First match wins. Default AccessibilityEvent
      * type masks match DigiPaws' ReelAppConfig values.
      *
-     * Robustness note: each rule lists multiple acceptable `primaryViewIds`.
-     * As of 2026-04, YouTube/Revanced removed `reel_recycler` from the
-     * Shorts top-of-tree (visible in detector.miss event tail) — `reel_time_bar`
-     * (Shorts progress bar) is the new most-reliable signal. Keeping the
-     * historical IDs in the list means we still match on older app versions.
+     * Why presence-only matching is not enough: YouTube uses a ViewPager-style
+     * root layout where Home / Shorts / Subscriptions are all inflated in the
+     * accessibility tree at all times, with non-active tabs positioned
+     * off-screen. Both `reel_time_bar` and `reel_recycler` are returned by
+     * `findAccessibilityNodeInfosByViewId` regardless of the active tab —
+     * before the bounds check below was added, a single open of YouTube
+     * attributed 100% of foreground time to `youtube.shorts`. The on-screen
+     * bounds check in `hasNodeId` is what actually distinguishes "user is on
+     * Shorts" from "Shorts exists as a tab in the app." Mirrors DigiPaws'
+     * `ReelBlocker.isViewOpened`.
      */
     private val rulesByPackage: Map<String, List<DetectorRule>> = mapOf(
         ContentDetection.PKG_YOUTUBE to listOf(
@@ -135,6 +141,7 @@ class ContentDetectorService : AccessibilityService() {
     @Volatile private var current: CurrentMode? = null
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
+    @Volatile private var screenWidth: Int = 0
     private val lastMissEmitByPkg: MutableMap<String, Long> = mutableMapOf()
 
     override fun onServiceConnected() {
@@ -142,7 +149,8 @@ class ContentDetectorService : AccessibilityService() {
         dao = AppDatabase.get(applicationContext).events()
         instance = this
         _enabled.value = true
-        Log.i(TAG, "onServiceConnected")
+        screenWidth = resources.displayMetrics.widthPixels
+        Log.i(TAG, "onServiceConnected screenWidth=$screenWidth")
     }
 
     override fun onDestroy() {
@@ -375,7 +383,22 @@ class ContentDetectorService : AccessibilityService() {
         } catch (_: Throwable) {
             return false
         } ?: return false
-        val found = nodes.isNotEmpty()
+        // Bounds check: a node returned by findAccessibilityNodeInfosByViewId
+        // can be off-screen (ViewPager-style layouts keep all tabs inflated).
+        // Reject nodes positioned entirely left of x=0 or right of screenWidth.
+        // Mirrors DigiPaws' ReelBlocker.isViewOpened.
+        val sw = screenWidth
+        val rect = Rect()
+        val found = if (sw <= 0) {
+            // screenWidth not initialized yet (should only happen pre-onServiceConnected).
+            nodes.isNotEmpty()
+        } else {
+            nodes.any { node ->
+                if (node == null) return@any false
+                node.getBoundsInScreen(rect)
+                !(rect.right <= 0 || rect.left >= sw)
+            }
+        }
         nodes.forEach { it?.recycle() }
         return found
     }
