@@ -24,3 +24,15 @@
 		reverse_proxy postgrest:3000
 	}
 }
+
+# Dashboard (read-only PostgREST as user_role, basic-auth gated).
+# Local dev: leave DASHBOARD_HOSTNAME unset → block listens on
+# container port :9999 (not mapped to host = unreachable).
+# Production: set DASHBOARD_HOSTNAME=dashboard.<your>.nip.io →
+# Caddy auto-ACMEs and basic_auth gates every request.
+{$DASHBOARD_HOSTNAME::9999} {
+	basic_auth {
+		josh {$DASHBOARD_BCRYPT}
+	}
+	reverse_proxy postgrest-dashboard:3000
+}

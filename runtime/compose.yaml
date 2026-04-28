@@ -1,6 +1,8 @@
 # scrollantir runtime — local self-hosted backend stack.
-# Five services: caddy (TLS + reverse proxy), postgres (data plane),
-# postgrest (REST over Postgres), api (FastAPI), agent (scheduler).
+# Six services: caddy (TLS + reverse proxy), postgres (data plane),
+# postgrest (REST over Postgres for ingest_api/agent_api),
+# postgrest-dashboard (read-only PostgREST as user_role for the
+# dashboard, behind Caddy basic_auth), api (FastAPI), agent (scheduler).
 # api + agent share one Python image, two commands.
 #
 # Local dev:    docker compose up -d
@@ -20,12 +22,22 @@ services:
       # In production set to the public hostname so Caddy auto-ACMEs:
       # e.g. INGEST_HOSTNAME=ingest.178-104-253-30.nip.io
       INGEST_HOSTNAME: ${INGEST_HOSTNAME:-:80}
+      # Optional second hostname for the dashboard (basic_auth + PostgREST
+      # read-only). Default `:9999` is an unmapped container port = the
+      # dashboard route is dormant locally. Set to a real hostname in
+      # prod e.g. dashboard.178-104-253-30.nip.io.
+      DASHBOARD_HOSTNAME: ${DASHBOARD_HOSTNAME:-:9999}
+      # bcrypt hash of the dashboard password (caddy hash-password).
+      # Default is a placeholder that won't match anything; gates the
+      # dormant local route harmlessly.
+      DASHBOARD_BCRYPT: ${DASHBOARD_BCRYPT:-$$2a$$14$$dormant.dormant.dormant.dormant.dormant.dormant.dormant.dormant.}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - postgrest
+      - postgrest-dashboard
       - api
 
   postgres:
@@ -71,6 +83,22 @@ services:
       # first in the list).
       PGRST_DB_SCHEMAS: ingest_api,agent_api
       PGRST_DB_ANON_ROLE: anon
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgrest-dashboard:
+    # Read-only PostgREST instance for dashboard reads. Caddy gates
+    # access via basic_auth on a separate hostname. `anon` falls
+    # through to `user_role`, which has SELECT on public via 90_grants.
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PW}@postgres:5432/${POSTGRES_DB:-scrollantir}
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: user_role
     depends_on:
       postgres:
         condition: service_healthy
