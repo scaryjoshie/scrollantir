@@ -2,16 +2,30 @@
 
 Personal "palantir for yourself" time-tracking. Structured events across Mac and Android, owned end-to-end, queryable like a real database.
 
+> **Status update 2026-04-27 — Supabase removed; runtime/ on Hetzner is the data plane.**
+> The Supabase data plane and the bash-shaped `orchestrator/` were retired in
+> favor of a self-hosted docker-compose stack at `runtime/` on the same
+> Hetzner CAX11 VM. The new stack runs Caddy + PostgREST + Postgres + a
+> Python `api` (FastAPI) + a Python `agent` (APScheduler). Public ingest
+> endpoint: `https://ingest.178-104-253-30.nip.io`. Old orchestrator
+> image archived at `scrollantir-orchestrator:archived-2026-04-27`. Phone
+> + Mac forwarder both cut over and posting to the new stack as of
+> 2026-04-27. Both the device collectors (this doc's primary subject) and
+> the event schema are unchanged in shape; the data plane swap is behind
+> the same `ingest` boundary. Deeper detail in
+> `docs/runtime/rebuild-plan.md` + the 2026-04-26 postscript on
+> `docs/sessions/session-2026-04-25.md`.
+
 ## Status
 
 | Component | State |
 |---|---|
-| Android app (phone data) | ✅ Built, running on Pixel 9. Posts to Supabase via QR-onboarding (since 2026-04-21). |
-| Mac collector (ActivityWatch + forwarder) | ✅ launchd agent on 30 s interval, posting to Supabase. Hold-the-tail fix landed 2026-04-25 (`session-2026-04-23-aw-forwarder.md`). |
-| Ingest pipeline (Supabase edge functions → Postgres) | ✅ `/ingest`, `/prompt-answer`, `/pending-prompts` live. Event row count in the tens of thousands. |
-| Admin CLI (`./admin`) | ✅ Device/token/role lifecycle. |
-| Orchestrator (Claude Code CLI) | ✅ Phases 0–2 shipped on Hetzner CAX11 + systemd. Daily-digest (07:00 CT) + weekly-report (Sun 09:00 CT) cron-firing. |
-| Dashboard (web — Vite + React + TS) | 🚧 In progress at `dashboard/`. (Earlier SwiftUI attempt was parked then deleted; see git history if curious.) |
+| Android app (phone data) | ✅ Built, running on Pixel 9. Cut over from Supabase to runtime/ stack via QR re-onboarding 2026-04-27. |
+| Mac collector (ActivityWatch + forwarder) | ✅ launchd agent on 30 s interval. Cut over from Supabase to runtime/ stack 2026-04-27 via `mac-forwarder/setup.sh`. |
+| Ingest pipeline | ✅ `runtime/` stack on Hetzner: Caddy (Let's Encrypt) → PostgREST → `ingest_api.{accept_event, accept_prompt_answer, pending_prompts}` → `public.events`. |
+| Admin CLI (`./admin`) | ✅ Device/token/role lifecycle. `./admin local mint` for new-stack tokens (existing Supabase commands left intact during transition). |
+| Reasoning runtime | 🚧 New `runtime/agent` is APScheduler-driven; daily-digest + weekly-report port from old `orchestrator/jobs/` is pending. |
+| Dashboard (web — Vite + React + TS) | 🚧 In progress at `dashboard/`. Cutover to PostgREST read path pending. |
 
 ## Goals
 

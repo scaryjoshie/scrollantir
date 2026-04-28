@@ -6,6 +6,23 @@ future-you should be able to read this one doc and know where every
 piece of work lives. Deep-dive references live in the per-component
 docs (`supabase.md`, `edge-functions.md`, `admin-cli.md`, etc.).
 
+> **Status update 2026-04-27 — Supabase removed; this doc captures the
+> design phase.** The Supabase managed data plane and the bash
+> `orchestrator/` POC were both retired on 2026-04-27 in favor of a
+> self-hosted docker-compose stack at `runtime/` on Hetzner. Public
+> ingest endpoint is now `https://ingest.178-104-253-30.nip.io` (Caddy
+> + Let's Encrypt → PostgREST → Postgres, all on the VM's Docker
+> bridge). The five-runtime-planes structure below collapses to three:
+> devices (unchanged), runtime/ on Hetzner (Caddy + PostgREST + Postgres
+> + api + agent), and admin CLI on the local Mac. Trust + credential
+> map: `anon` calls `ingest_api.*` RPCs through PostgREST with bearer
+> token in body; `agent_role` connects directly via psycopg from the
+> agent container; admin uses the postgres superuser DSN over SSH +
+> `docker exec`. The body of this doc remains as a snapshot of the
+> design phase that produced runtime/. For current state see
+> `docs/runtime/rebuild-plan.md` (post-cutover update at the top) and
+> the 2026-04-26 postscript on `docs/sessions/session-2026-04-25.md`.
+
 ## TL;DR
 
 Four planes of runtime, strictly separated:

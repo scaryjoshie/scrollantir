@@ -14,21 +14,42 @@ historical context; this doc supersedes it for forward work.
 
 ## Status
 
-📋 Planned. No code in `runtime/` yet; layout proposed below.
-`orchestrator/` continues running daily-digest + weekly-report on
-Hetzner CAX11 until `runtime/` reaches parity, then gets retired.
+✅ **Shipped 2026-04-27.** Runtime/ stack is live on the same Hetzner
+CAX11 VM that previously ran the `orchestrator/` POC. Public ingest:
+`https://ingest.178-104-253-30.nip.io` (Caddy + Let's Encrypt). Phone
++ Mac forwarder cut over and posting through the new endpoint.
+Old `orchestrator/` systemd unit stopped + disabled; image archived
+as `scrollantir-orchestrator:archived-2026-04-27` plus a portable
+tarball at `/opt/scrollantir/archives/orchestrator-snapshot-2026-04-27.tar`.
+Supabase data plane no longer receives traffic; project pending pause.
 
-> **Status update 2026-04-26:** Decision #4 below — *"postgres/ reserved
-> but not populated in v1; Supabase remains the data plane"* — was
-> **reversed**. `runtime/` v1 now adopts the full self-hosted stack
-> from [self-host.md](self-host.md): Caddy + PostgREST + local Postgres
-> in the compose file from day one. The internal layout has also
-> evolved since this doc was written — `runtime/app/` is the single
+What's still pending after the cutover:
+
+- daily-digest + weekly-report port from `orchestrator/jobs/*.md` into
+  the new agent's APScheduler (the cron jobs went silent when the old
+  orchestrator was stopped)
+- views (commit #4 in the original migration sequence): events_enriched,
+  mac_active, phone_active, idle_span, concurrent, top_apps_*,
+  phone_activity_gated
+- agent_api.* RPCs (commit #5): upsert_report, upsert_annotation,
+  create_prompt, replace_derived_window
+- first deriver implementation (place_visit/v1)
+- dashboard cutover from Supabase direct-Postgres → PostgREST
+
+The migration sequence in this doc was a useful design artifact; the
+actual cutover landed in eight commits (a7c2706 → 704ad92). The
+sequence below reads as the historical plan rather than a forward
+checklist.
+
+> **Earlier status update 2026-04-26:** Decision #4 below —
+> *"postgres/ reserved but not populated in v1; Supabase remains the
+> data plane"* — was **reversed**. `runtime/` v1 adopted the full
+> self-hosted stack from [self-host.md](self-host.md) from day one.
+> The internal layout also evolved — `runtime/app/` is the single
 > Python image hosting both `api` (FastAPI) and `agent` (APScheduler)
 > as two compose services. See
 > [session-2026-04-25.md postscript](../sessions/session-2026-04-25.md#postscript--2026-04-26-self-host-pivot)
-> for rationale and the broader set of calls. `runtime/README.md` has
-> the current layout.
+> for rationale.
 
 ## Why a fresh folder
 

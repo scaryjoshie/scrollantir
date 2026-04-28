@@ -1,14 +1,16 @@
 # Scrollantir — Local agent tooling spec
 
-> **Status:** Subsumed by [`orchestrator.md`](README.md). The
-> local-Claude-Code-on-the-Mac pattern described here was the
-> precursor design; the production reasoning runtime is now a Docker
-> container on Hetzner CAX11 running cron-fired jobs as `agent_role`.
-> This doc is retained because the `agent_role` capabilities, the
-> `agent_api.*` RPC surface, and the report/annotation/prompt
-> conventions all still apply (the orchestrator's `CLAUDE.md` is
-> derived from the contract below). For deployment, lifecycle, and
-> the actual runtime, read `orchestrator.md` first.
+> **Status:** Historical. The local-Claude-Code-on-the-Mac pattern
+> here was the precursor design; the bash `orchestrator/` POC that
+> superseded it was retired on 2026-04-27 in favor of the
+> docker-compose `runtime/` stack on Hetzner. The current reasoning
+> runtime is a Python APScheduler-driven `agent` container; the
+> `agent_api.*` RPC surface (which this doc covers in detail) is the
+> contract that ports forward but is not yet shipped against the new
+> stack. Read [rebuild-plan.md](rebuild-plan.md) and
+> [README.md](README.md) (the POC orchestrator) for current state and
+> the bridging design. The `agent_role` capabilities + the
+> report/annotation/prompt conventions described below remain accurate.
 
 How a local Claude Code (or comparable) agent connects to scrollantir
 data, reasons over it, and writes reports/annotations/prompts.
