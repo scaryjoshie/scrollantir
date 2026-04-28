@@ -30,3 +30,13 @@ TO anon;
 -- Token validation happens inside SECURITY DEFINER functions in
 -- ingest_api.* that own the necessary privileges.
 REVOKE ALL ON SCHEMA private FROM PUBLIC;
+
+-- pgcrypto + earthdistance install functions into public schema with
+-- default EXECUTE TO PUBLIC. Even with PostgREST's db-schemas excluding
+-- `public`, PUBLIC-callable extension functions are a defense-in-depth
+-- gap. SECURITY DEFINER functions (ingest_api.*) still reach digest()
+-- etc. via search_path because they run as postgres (the function
+-- owner), not as anon.
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;

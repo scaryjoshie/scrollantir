@@ -63,7 +63,13 @@ services:
       # SET ROLEs into `anon` for unauthenticated requests. Specific
       # ingest/agent_api EXECUTE grants on anon land in commit #3.
       PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PW}@postgres:5432/${POSTGRES_DB:-scrollantir}
-      PGRST_DB_SCHEMAS: public,ingest_api,agent_api
+      # `public` is intentionally NOT exposed: pgcrypto + earthdistance
+      # install functions into it with default EXECUTE TO PUBLIC, which
+      # PostgREST would surface as anonymous /rpc/gen_salt etc. — a
+      # CPU-tunable DoS amplifier. Clients reach ingest_api via the
+      # `Content-Profile: ingest_api` header (or the default since it's
+      # first in the list).
+      PGRST_DB_SCHEMAS: ingest_api,agent_api
       PGRST_DB_ANON_ROLE: anon
     depends_on:
       postgres:

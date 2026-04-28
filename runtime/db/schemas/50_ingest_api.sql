@@ -65,7 +65,8 @@ BEGIN
 
   -- Wire-format sanity.
   IF p_duration_s < 0 THEN
-    RAISE EXCEPTION 'duration_s cannot be negative';
+    RAISE EXCEPTION 'duration_s cannot be negative'
+      USING ERRCODE = '22023';  -- invalid_parameter_value
   END IF;
 
   -- Rate-limit peek. Read current minute's count without incrementing.
