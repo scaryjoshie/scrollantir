@@ -71,7 +71,8 @@ Multi-component features that span collection + derivation + render:
 | [sessions/session-2026-04-23-aw-forwarder.md](sessions/session-2026-04-23-aw-forwarder.md) | Mac-forwarder truncation bug (93% data loss): diagnosis, fix spec, AFK-model decision (since reversed — see postscript). |
 | [sessions/session-2026-04-25.md](sessions/session-2026-04-25.md) | Runtime-rebuild design + cleanup pass: location/places/workout deriver designs, AFK-gating decision, fresh-folder rationale, doc reorg. **Read this with rebuild-plan.md if picking up runtime work.** |
 | [sessions/handoff-architecture-prompt.md](sessions/handoff-architecture-prompt.md) | Meta-artifact: subagent onboarding prompt for the data-model.md architecture-finalization conversation. |
-| [sessions/handoff-runtime-onboarding.md](sessions/handoff-runtime-onboarding.md) | **Onboarding doc for a fresh agent picking up `runtime/` rebuild work.** Reading list, session-specific decisions not yet in canonical docs, don't-touch list, verification commands, open questions. Reference this doc directly when handing off. |
+| [sessions/handoff-runtime-onboarding.md](sessions/handoff-runtime-onboarding.md) | Onboarding doc for the runtime/ rebuild — used at the start of session-2026-04-27. Mostly historical now; current entry point is `session-2026-04-27.md`. |
+| [sessions/session-2026-04-27.md](sessions/session-2026-04-27.md) | **Current entry point for a fresh agent.** Post-cutover state: runtime/ live on Hetzner, devices cut over, ingest_api shipped, dashboard rewritten to PostgREST, multiple Android tracker bugs fixed via two audit passes. Operational reference (URLs, deploy commands, token mint) + open issues + key files map. |
 
 ## Not yet written
 

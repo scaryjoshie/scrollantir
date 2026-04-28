@@ -46,7 +46,7 @@ export default function DeviceLastSeenBadges() {
 function Badge({ d }: { d: DeviceLastSeen }) {
   const secondsAgo = differenceInSeconds(new Date(), parseISO(d.received_at));
   const tier = staleness(d.device, secondsAgo);
-  const ago = formatDistanceToNowStrict(parseISO(d.received_at), { addSuffix: false });
+  const ago = formatDistanceToNowStrict(parseISO(d.received_at), { addSuffix: true });
 
   return (
     <div

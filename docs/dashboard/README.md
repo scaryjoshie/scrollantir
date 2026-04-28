@@ -1,9 +1,45 @@
-# Dashboard — planned module
+# Dashboard
 
-Main portal to access Scrollantir data. Originally planned as a Mac Swift
-app; pivoted on 2026-04-21 to a **web-first stack** (Vite + React +
-TypeScript, optionally Tauri-wrapped later). Three-timeline design below
-is unchanged.
+Vite + React + TypeScript web app at `dashboard/`. Reads via PostgREST
+(Caddy basic-auth on `dashboard.<host>.nip.io` → postgrest-dashboard
+running as `user_role`). No server-side transforms — all rendering is
+client-side. Currently a single Raw view.
+
+> **Status update 2026-04-27 — cutover complete; this doc body below
+> describes the design phase before the web rewrite landed.**
+>
+> What's actually shipped:
+>
+> - **Single page: Raw view** (`dashboard/src/pages/Raw.tsx`). One swim
+>   lane per distinct source in the fetched window, vis-timeline-based,
+>   click-to-inspect side panel, device last-seen pills in header
+>   (red/yellow/green by staleness).
+> - **Reports page** stubbed — fetches `public.reports?deleted_at=is.null`
+>   but the orchestrator's daily-digest jobs are silent post-cutover, so
+>   the list is empty.
+> - **Settings page** — theme + filter toggles + connection status.
+> - **No Summary / Timeline / per-app aggregate** pages yet — they
+>   require views (events_enriched, mac_active, etc.) that are commit
+>   #4 in the original migration sequence and not yet shipped.
+>
+> The original three-timeline design described below remains the
+> long-term direction; today's Raw view is the v0 debug surface that
+> works against the current schema. As views and derivers ship, the
+> Summary + Timeline pages come back online from this file's described
+> design.
+>
+> Operational details live in
+> [`docs/sessions/session-2026-04-27.md`](../sessions/session-2026-04-27.md):
+> dev setup (`.env.local`, `npm run dev`), basic-auth flow, viz lessons
+> from comparing against ActivityWatch's web UI, modular timeline
+> contract.
+
+---
+
+## Original design (pre-cutover, kept as the long-term direction)
+
+(Originally planned as a Mac Swift app; pivoted 2026-04-21 to a
+web-first stack.)
 
 ## Status
 

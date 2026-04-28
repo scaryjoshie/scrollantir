@@ -1,3 +1,40 @@
+// ─── Timeline rendering — modular boundary ───────────────────────────────
+//
+// THIS FILE is the only place vis-timeline is imported from. Swapping it
+// for a different library (d3, custom CSS-grid, react-vis, anything) is
+// a single-file rewrite — the public contract below is what any
+// implementation must honor.
+//
+// Public contract (props):
+//   events    — DashboardEvent[] in [fromIso, toIso); arbitrary sources
+//   fromIso   — visible-window start (ISO 8601)
+//   toIso     — visible-window end (ISO 8601)
+//   onSelect  — fires with the clicked event or null (deselect)
+//
+// Output expectations (any implementation):
+//   - One swim lane per distinct source in `events`
+//   - Duration events as horizontal bars; point events (start_ts == end_ts)
+//     as small markers
+//   - Per-source colors stable across renders (current approach: HSL
+//     hashed from source string — works regardless of library)
+//   - Inline label drawn from `data` per source — see `inlineLabel()`
+//   - Hover tooltip with source/time/duration
+//   - Click → selects an event → calls onSelect(event)
+//
+// Don't add cross-cutting state to this file (filters, settings, etc.) —
+// keep it a leaf renderer. Page-level wiring lives in pages/Raw.tsx.
+//
+// Notes for future viz iteration:
+//   - vis-timeline's default tooltip pops at fixed offset with delay;
+//     ActivityWatch tunes followMouse:true + delay:0 + overflowMethod:flip
+//     for the smoother feel. See VisTimeline.vue in aw-webui for reference.
+//   - `setData()` is preferred over destroy+recreate for re-rendering on
+//     data change; current implementation rebuilds for simplicity.
+//   - Pre-filtering sub-1s flicker (zen.tab, system.window) before render
+//     is a known viz win; not yet applied here.
+//
+// ─────────────────────────────────────────────────────────────────────────
+
 import { useEffect, useMemo, useRef } from 'react';
 import { Timeline, DataSet } from 'vis-timeline/standalone';
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
