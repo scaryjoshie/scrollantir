@@ -60,18 +60,15 @@ export default function SettingsPage() {
           <Section title="Connection">
             <div className="flex items-center justify-between py-3">
               <div>
-                <div className="text-sm text-ink font-medium">Supabase (user_role)</div>
+                <div className="text-sm text-ink font-medium">PostgREST (user_role)</div>
                 <div className="text-xs text-ink-subtle mt-0.5">
-                  Read-only access to <span className="font-mono">public.*</span> via the DSN in your macOS keychain.
+                  Read-only access to <span className="font-mono">public.*</span>{' '}
+                  via Caddy basic_auth + PostgREST on{' '}
+                  <span className="font-mono">dashboard.178-104-253-30.nip.io</span>.
                 </div>
               </div>
               <StatusPill ok={ok} />
             </div>
-            {health && (
-              <div className="text-xs text-ink-subtle pb-3 tabular-nums">
-                db time: {health.now}
-              </div>
-            )}
             {error && (
               <div className="text-xs text-danger pb-3 break-all">
                 {(error as Error).message}
@@ -82,14 +79,14 @@ export default function SettingsPage() {
           <Section title="About">
             <div className="space-y-2 py-2 text-sm text-ink-muted">
               <p>
-                Scrollantir dashboard v1 — reports + a 24-hour timeline across
-                your Mac and phone. Everything shown is read straight from your
-                own Postgres; nothing leaves this machine.
+                Scrollantir dashboard — reads straight from your own
+                self-hosted Postgres (runtime/ stack on Hetzner). Nothing
+                leaves this machine beyond the authenticated read.
               </p>
               <p className="text-xs text-ink-subtle">
-                Location lane is intentionally blank until the{' '}
-                <span className="font-mono">place_visits</span> /{' '}
-                <span className="font-mono">travel_legs</span> derivation ships.
+                Summary + Timeline pages will return once views and
+                derivations ship; until then the Raw page shows every
+                source live.
               </p>
             </div>
           </Section>

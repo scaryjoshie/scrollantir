@@ -1,8 +1,15 @@
-// Type-only re-exports from server/. No runtime cost in the client bundle —
-// `import type` is erased by TypeScript.
+// Schema-aligned types for the runtime/ stack.
 
-export type { Block } from '../../server/blocks';
-export type { Summary, AppTime } from '../../server/summarize';
+export type DashboardEvent = {
+  id: string;
+  source: string;       // e.g. 'phone.youtube.shorts', 'mac.system.window'
+  device: string;       // generated; first dotted segment of source
+  start_ts: string;     // ISO 8601 UTC
+  end_ts: string;       // ISO 8601 UTC; equals start_ts for point events
+  duration_s: number;   // generated; (end_ts - start_ts) in seconds
+  data: Record<string, unknown>;
+  received_at: string;
+};
 
 export type Report = {
   id: string;
@@ -12,15 +19,4 @@ export type Report = {
   window_start: string | null;
   window_end: string | null;
   created_at: string;
-};
-
-export type DeviceKind = 'mac' | 'phone';
-
-export type BlocksResponse = {
-  blocks: import('../../server/blocks').Block[];
-  stats: {
-    events_total: number;
-    events_kept: number;
-    blocks: number;
-  };
 };

@@ -1,10 +1,9 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Calendar, FileText, LayoutDashboard, Settings as SettingsIcon } from 'lucide-react';
+import { Activity, FileText, Settings as SettingsIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 const NAV = [
-  { to: '/', label: 'Summary', icon: LayoutDashboard, end: true },
-  { to: '/timeline', label: 'Timeline', icon: Calendar },
+  { to: '/', label: 'Raw', icon: Activity, end: true },
   { to: '/reports', label: 'Reports', icon: FileText },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;
@@ -44,7 +43,11 @@ export default function Layout() {
         </nav>
 
         <div className="mt-auto px-4 py-3 text-xs text-ink-subtle border-t border-line">
-          <div>Reading <span className="text-ink-muted">public.*</span> as <span className="text-ink-muted">user_role</span></div>
+          <div>
+            Reading <span className="text-ink-muted">public.*</span> as{' '}
+            <span className="text-ink-muted">user_role</span>
+          </div>
+          <div className="mt-0.5">via PostgREST + Caddy basic_auth</div>
         </div>
       </aside>
 

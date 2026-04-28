@@ -1,29 +1,56 @@
-import type { BlocksResponse, Report, Summary } from './types';
+// Thin PostgREST client. All requests go through Vite's /api proxy
+// (dev) or Caddy reverse-proxy (prod); same code path in both.
+//
+// Auth: HTTP Basic with credentials from VITE_DASHBOARD_USER /
+// VITE_DASHBOARD_PASSWORD (set in .env.local). Caddy gates every
+// request via basic_auth; without creds you get 401.
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+import type { DashboardEvent, Report } from './types';
+
+const USER = (import.meta.env.VITE_DASHBOARD_USER as string) || 'josh';
+const PASSWORD = (import.meta.env.VITE_DASHBOARD_PASSWORD as string) || '';
+
+const AUTH_HEADER: Record<string, string> = PASSWORD
+  ? { Authorization: `Basic ${btoa(`${USER}:${PASSWORD}`)}` }
+  : {};
+
+async function pgrst<T>(path: string): Promise<T> {
+  const res = await fetch(`/api${path}`, { headers: AUTH_HEADER });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
   }
   return (await res.json()) as T;
 }
 
-export function fetchReports(limit = 50) {
-  return get<Report[]>(`/api/reports?limit=${limit}`);
+// PostgREST URL filter syntax for "between two timestamps":
+// ?start_ts=gte.<from>&start_ts=lt.<to>
+// URLSearchParams collapses duplicate keys, so build manually.
+export function fetchEvents(
+  fromIso: string,
+  toIso: string,
+): Promise<DashboardEvent[]> {
+  const url =
+    `/events` +
+    `?start_ts=gte.${encodeURIComponent(fromIso)}` +
+    `&start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&order=start_ts.asc` +
+    `&limit=20000`;
+  return pgrst<DashboardEvent[]>(url);
 }
 
-export function fetchBlocks(fromIso: string, toIso: string, hideSources: string[] = []) {
-  const params = new URLSearchParams({ from: fromIso, to: toIso });
-  if (hideSources.length) params.set('hide', hideSources.join(','));
-  return get<BlocksResponse>(`/api/blocks?${params.toString()}`);
+export function fetchReports(limit = 50): Promise<Report[]> {
+  return pgrst<Report[]>(
+    `/reports?deleted_at=is.null&order=created_at.desc&limit=${limit}`,
+  );
 }
 
-export function fetchHealth() {
-  return get<{ ok: true; now: string }>(`/api/health`);
-}
-
-export function fetchSummary(fromIso: string, toIso: string) {
-  const params = new URLSearchParams({ from: fromIso, to: toIso });
-  return get<Summary>(`/api/summary?${params.toString()}`);
+export function fetchHealth(): Promise<{ ok: boolean; count: number }> {
+  // PostgREST returns Content-Range in headers; for a simple "alive?"
+  // check we just verify a HEAD-style request returns 200 by counting
+  // a single row.
+  return pgrst<DashboardEvent[]>('/events?limit=1').then((rows) => ({
+    ok: true,
+    count: rows.length,
+  }));
 }
