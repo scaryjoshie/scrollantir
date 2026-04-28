@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.PowerManager
 import android.util.Log
 import app.scrollantir.db.EventDao
 import app.scrollantir.db.emit
@@ -46,6 +47,19 @@ class ScreenWatcher(
             addAction(Intent.ACTION_USER_PRESENT)
         }
         context.registerReceiver(receiver, filter)
+
+        // Bootstrap from current screen state. Without this, registration
+        // while the screen is already on (boot, sideload, restart-after-
+        // kill) leaves screenOnSince null until the user does a full
+        // power-button cycle — and the next ACTION_SCREEN_OFF gets
+        // dropped by the screenOnSince?.let guard. Result: long stretches
+        // of foreground/usage with no system.screen rows.
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isInteractive) {
+            screenOnSince = Instant.now()
+            Log.i(TAG, "SCREEN on (bootstrapped from PowerManager.isInteractive)")
+        }
+
         Log.i(TAG, "registered")
     }
 
