@@ -54,6 +54,10 @@ const config: Config = {
           DEFAULT: withVar('--c-success'),
           soft: withVar('--c-success-soft'),
         },
+        warning: {
+          DEFAULT: withVar('--c-warning'),
+          soft: withVar('--c-warning-soft'),
+        },
         lane: {
           mac: '#6B8EF2',
           phone: '#7DB98A',

@@ -21,6 +21,8 @@
     --c-danger-soft:  251 230 230;
     --c-success:       47 122  58;
     --c-success-soft: 227 244 230;
+    --c-warning:      170 105  20;
+    --c-warning-soft: 250 235 200;
     color-scheme: light;
   }
 
@@ -40,6 +42,8 @@
     --c-danger-soft:   54  30  30;
     --c-success:      136 202 144;
     --c-success-soft:  25  48  30;
+    --c-warning:      230 175  90;
+    --c-warning-soft:  60  44  18;
     color-scheme: dark;
   }
 

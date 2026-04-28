@@ -6,6 +6,7 @@ import DatePicker from '@/components/DatePicker';
 import EmptyState from '@/components/EmptyState';
 import RawTimeline from '@/features/raw/RawTimeline';
 import RawInspector from '@/features/raw/RawInspector';
+import DeviceLastSeenBadges from '@/features/raw/DeviceLastSeenBadges';
 import { fetchEvents } from '@/lib/api';
 import type { DashboardEvent } from '@/lib/types';
 
@@ -35,7 +36,12 @@ export default function RawPage() {
               ? 'Error'
               : `${events.length} events across ${sourceCount} sources — one swim lane per source`
         }
-        right={<DatePicker value={day} onChange={setDay} />}
+        right={
+          <div className="flex items-center gap-3">
+            <DeviceLastSeenBadges />
+            <DatePicker value={day} onChange={setDay} />
+          </div>
+        }
       />
 
       <div className="grid grid-cols-[1fr_360px] min-h-0 flex-1">

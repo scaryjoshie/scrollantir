@@ -54,3 +54,23 @@ export function fetchHealth(): Promise<{ ok: boolean; count: number }> {
     count: rows.length,
   }));
 }
+
+export type DeviceLastSeen = {
+  device: string;
+  start_ts: string;     // most recent observation time
+  received_at: string;  // most recent server-receive time
+};
+
+// Latest event per device — pulled from the most-recent 200 rows
+// regardless of the picked viz window. Used by the Raw page header
+// to show "is each device still alive?"
+export async function fetchDeviceLastSeen(): Promise<DeviceLastSeen[]> {
+  const rows = await pgrst<DeviceLastSeen[]>(
+    '/events?select=device,start_ts,received_at&order=received_at.desc&limit=200',
+  );
+  const seen: Record<string, DeviceLastSeen> = {};
+  for (const r of rows) {
+    if (!seen[r.device]) seen[r.device] = r;
+  }
+  return Object.values(seen).sort((a, b) => a.device.localeCompare(b.device));
+}
