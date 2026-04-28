@@ -35,7 +35,9 @@ import kotlin.math.round
  * reading every 40–100m (tuned per activity).
  *
  * Privacy posture:
- *   - PRIORITY_BALANCED_POWER_ACCURACY (~100m typical, wifi-assisted; not GPS-hot)
+ *   - PRIORITY_HIGH_ACCURACY (GPS-led; coalesces with other apps already
+ *     keeping the chip hot, e.g. Life360, so marginal battery cost is small
+ *     when another high-accuracy subscriber is active)
  *   - Drop readings with accuracy > 200m (tunnels, indoor with weak signal)
  *   - Real coordinates persisted locally and shipped to the runtime
  *     stack as-is — self-hosted single-user setup, full precision wanted
@@ -100,7 +102,7 @@ class LocationWatcher(
         }
         stopPeriodic()
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            Priority.PRIORITY_HIGH_ACCURACY,
             tuning.intervalMs
         )
             .setMinUpdateDistanceMeters(tuning.minDistanceM)
@@ -133,7 +135,7 @@ class LocationWatcher(
         }
 
         val request = CurrentLocationRequest.Builder()
-            .setPriority(Priority.PRIORITY_BALANCED_POWER_ACCURACY)
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
             .setMaxUpdateAgeMillis(60_000L) // accept cached reading up to 1min old
             .setDurationMillis(20_000L)     // give up after 20s
             .build()
