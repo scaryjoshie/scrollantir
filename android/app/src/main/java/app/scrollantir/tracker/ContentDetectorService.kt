@@ -70,13 +70,19 @@ class ContentDetectorService : AccessibilityService() {
         ContentDetection.PKG_YOUTUBE to listOf(
             DetectorRule(
                 source = "youtube.shorts",
+                // Shorts-exclusive container/player IDs; verified absent from
+                // tree on regular watch screens (with embedded Shorts shelves)
+                // and present with content-area bounds on the immersive Shorts
+                // player. `reel_time_bar` was REMOVED — in current ReVanced/YT
+                // it's a template overlay element with full-screen bounds that
+                // exists on every watch state, including non-Shorts. It used
+                // to be Shorts-only; not anymore.
                 primaryViewIds = listOf(
-                    // Shorts-only progress bar (most reliable post-2026-04).
-                    "com.google.android.youtube:id/reel_time_bar",
-                    // Historical IDs — keep as fallbacks for older builds.
                     "com.google.android.youtube:id/reel_recycler",
+                    "com.google.android.youtube:id/reel_watch_player",
+                    "com.google.android.youtube:id/reel_player_page_container",
                     "com.google.android.youtube:id/reel_player_underlay",
-                    "com.google.android.youtube:id/reel_player_overlay"
+                    "com.google.android.youtube:id/reel_player_overlay_root"
                 ),
                 eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -85,13 +91,16 @@ class ContentDetectorService : AccessibilityService() {
         ContentDetection.PKG_YOUTUBE_REVANCED to listOf(
             DetectorRule(
                 // Emit under the same source as stock YouTube so downstream
-                // queries don't have to handle "YouTube" vs "YouTube Revanced"
+                // queries don't have to handle "YouTube" vs "YouTube Revanced".
+                // ID set verified empirically on 2026-04-28 via uiautomator
+                // dump diff between watch+shelf state and active Shorts state.
                 source = "youtube.shorts",
                 primaryViewIds = listOf(
-                    "app.revanced.android.youtube:id/reel_time_bar",
                     "app.revanced.android.youtube:id/reel_recycler",
+                    "app.revanced.android.youtube:id/reel_watch_player",
+                    "app.revanced.android.youtube:id/reel_player_page_container",
                     "app.revanced.android.youtube:id/reel_player_underlay",
-                    "app.revanced.android.youtube:id/reel_player_overlay"
+                    "app.revanced.android.youtube:id/reel_player_overlay_root"
                 ),
                 eventTypeMask = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -142,6 +151,14 @@ class ContentDetectorService : AccessibilityService() {
     @Volatile private var lastCheckMs: Long = 0L
     @Volatile private var missCount: Int = 0
     @Volatile private var screenWidth: Int = 0
+    // Pending-match counter: require MIN_MATCHES_TO_START consecutive matches
+    // for the same source before transitioning into a new MODE. Filters out
+    // transient single-event false-positives during app load — without it, a
+    // YouTube open would briefly attribute ~4s to youtube.shorts because one
+    // of our reel_* IDs is fleetingly present + on-screen during the
+    // open animation before the actual watch UI takes over.
+    @Volatile private var pendingMatchSource: String? = null
+    @Volatile private var pendingMatchCount: Int = 0
     private val lastMissEmitByPkg: MutableMap<String, Long> = mutableMapOf()
 
     override fun onServiceConnected() {
@@ -214,11 +231,33 @@ class ContentDetectorService : AccessibilityService() {
         }
 
         if (matched != null) {
-            onDetected(matched, now)
+            if (current?.source == matched) {
+                // Already detecting this mode; just keep the session alive.
+                missCount = 0
+                pendingMatchSource = null
+                pendingMatchCount = 0
+            } else {
+                // Different mode (or no current mode): require N consecutive
+                // matches for the same source before declaring MODE start.
+                // See pendingMatch* field comment.
+                if (pendingMatchSource != matched) {
+                    pendingMatchSource = matched
+                    pendingMatchCount = 1
+                } else {
+                    pendingMatchCount++
+                }
+                if (pendingMatchCount >= MIN_MATCHES_TO_START) {
+                    onDetected(matched, now)
+                    pendingMatchSource = null
+                    pendingMatchCount = 0
+                }
+            }
         } else {
             Log.i(TAG, "no rule matched for $pkg — emitting detector.miss if cooldown allows")
             onMiss(now)
             maybeEmitMissDiagnostic(pkg, root, now, nearMissSource, nearMissAbsentCorroborators)
+            pendingMatchSource = null
+            pendingMatchCount = 0
         }
     }
 
@@ -409,6 +448,7 @@ class ContentDetectorService : AccessibilityService() {
         const val TAG = "ScrollantirDetect"
         private const val THROTTLE_MS = 500L
         private const val MAX_MISSES_BEFORE_CLOSE = 3  // ~1.5s at 500ms throttle
+        private const val MIN_MATCHES_TO_START = 2     // filter transient open-animation matches
         private const val MISS_DIAGNOSTIC_COOLDOWN_MS = 60_000L  // 1 per minute per pkg
 
         @Volatile private var instance: ContentDetectorService? = null
