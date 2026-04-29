@@ -523,8 +523,8 @@ or another deriver kind referenced as `derived.<kind>`. Aliases like
 | `top_apps_mac`         | Deterministic  | `mac.system.window` (per-app), `derived.mac_active` (mask)                             | on_read        | on_read     | Per-app duration totals, clipped to mac_active so passive-window time isn't credited. |
 | `top_apps_phone`       | Deterministic  | `phone.system.foreground` (per-app), `derived.phone_active` (mask)                     | on_read        | on_read     | Per-app duration totals, clipped to phone_active. Pixel-launcher caveat: weight down or exclude. |
 | `sleep`                | LLM, `if_uncertain` (threshold ≈ 0.85) | `mac.system.afk`, `phone.system.unlocked`, `phone.system.screen` | daily 16:00 (local CT) | stored      | Longest silence in night window ≥ 4h. Heuristic proposes; agent asks if ambiguous. |
-| `place_visit`          | Deterministic  | `phone.location.reading`                                                               | every 15 min   | stored      | GPS clustering with bathroom-break tolerance. (`places` is a separate spec table — see `places.md` — referenced for label resolution, not as derivation input.) |
-| `travel_leg`           | Deterministic  | `derived.place_visit`, `phone.activity.state`                                          | every 15 min   | stored      | Between consecutive visits. Blocked on `place_visit`. |
+| `place_visit/v1`       | Deterministic ✅ shipped 2026-04-29 | `phone.location.reading`                                          | every 5 min, rolling 24h | stored      | Stay-Point Detection over GPS + OSM Tilequery for place attribution + brief-exit (≤10 min) and long-gap (≤12h, same place_id) merges. See [places.md](concepts/places.md) and [session-2026-04-29-place-visit.md](sessions/session-2026-04-29-place-visit.md). |
+| `travel_leg/v1`        | Deterministic ✅ shipped 2026-04-29 | `derived.place_visit/v1`, `phone.activity.state`, `phone.location.reading` | every 5 min, rolling 24h | stored      | Fills gaps between consecutive visits. Skips legs whose dominant_activity resolves to 'still' (phantom transit when GPS drops out indoors). Path inlined into `data` as `[lng, lat]` array. |
 | `project_attribution`  | LLM, `if_uncertain` | `derived.session`                                                                | on_demand      | stored      | Classifier tags sessions with a project. Blocked on roadmap #8. |
 | `media_playing` (planned) | Deterministic | (planned: `mac.media.playing` from `nowplaying-cli`)                                | on_event       | on_read     | Media as presence signal; requires new collector. |
 
@@ -560,8 +560,8 @@ shape here. Adding a new kind means adding to this table.
 |------------------------|----------------------------------------------------------------------------------------------|
 | `session`              | `{device, dominant_app, apps: [{app, ms}], event_count}`                                     |
 | `sleep`                | `{disrupted_count, source: 'heuristic' \| 'user_confirmed'}`                                 |
-| `place_visit`          | `{place_id?: uuid, lat, lng, brief_exit_count}`                                              |
-| `travel_leg`           | `{from_visit_id, to_visit_id, dominant_activity, distance_m, reading_count}`                 |
+| `place_visit/v1`       | `{place_id: uuid \| null, lat, lng, brief_exit_count}` — `provenance` carries `p95_accuracy_m`, `match_confidence`, `stay_dwell_s`, `stay_point_count` |
+| `travel_leg/v1`        | `{from_visit_id, to_visit_id, dominant_activity, distance_m, reading_count, path: [[lng, lat], ...]}` — `path` inlined into `data` for self-contained JSONB; the dashboard read-path view splits it back out as a sibling column |
 | `project_attribution`  | `{project_id: uuid, sessions: [uuid], confidence?: number}`                                  |
 | `media_playing`        | `{app, title?, source}`                                                                       |
 
@@ -667,8 +667,8 @@ primitive X is broken, what breaks downstream?"
 | `derived.phone_active`  | `summary.phone_active`, `summary.concurrent`, `summary.top_apps_phone` (mask) |
 | `derived.idle_span`     | `summary.idle`                                       |
 | `derived.sleep`         | `sleep.today`, weekly-report (via orchestrator)      |
-| `derived.place_visit`   | `timeline.day` (location lane, planned)              |
-| `derived.travel_leg`    | `timeline.day` (location lane, planned)              |
+| `derived.place_visit/v1` | `/today` (live; reads `v_place_visit_today`)        |
+| `derived.travel_leg/v1`  | `/today` (live; reads `v_travel_leg_today`)         |
 | `derived.project_attribution` | project views (planned, roadmap #8)             |
 
 ---
@@ -706,6 +706,11 @@ with dates and one-line rationale.
 | 2026-04-25 | One `prompt_kind` per LLM deriver, enforced at runtime startup | Single dispatch path from answered-prompt → deriver. Two derivers claiming the same kind is misconfig the runtime should refuse. |
 | 2026-04-25 | No special handling for expired-unanswered prompts; dashboard renders unconfirmed heuristic on-read with a badge | Honest behavior: deriver asked, user didn't answer, no row exists. Don't re-ask; the don't-ask-twice guard would block it anyway. |
 | 2026-04-25 | `Deriver.source` is `<kind>/<version>` and is the single registry / row-source / replace-window key | Unified identifier across registry, written rows, and rerun rule. Bumping version is non-destructive (per-source replace-window scope). |
+| 2026-04-29 | Auto-discovery via Mapbox Tilequery instead of homegrown clustering for `place_visit/v1` | Mapbox already has Northwestern's buildings named + categorized; no DBSCAN/α-shapes/threshold-tuning needed. Cuts hundreds of lines and gives better names than we'd discover ourselves. Picker prefers `poi_label.class=building` (the building NAME label) over tenant POIs (e.g. dorm beats cafe-inside-dorm). |
+| 2026-04-29 | `place_visit/v1` ids are deterministic: `uuid5(NAMESPACE_URL, "place_visit/v1:{start_ts:seconds}:{lat:.5f},{lng:.5f}")` | Re-deriving the same window produces the same id; `travel_leg/v1` rows that reference visit ids by `from_visit_id`/`to_visit_id` survive replays without dangling. |
+| 2026-04-29 | `place_visit` deriver reads events from `[start - 2*gap_threshold, end]` with lookback; skips emitting stays whose `start_ts < window_start` | A visit started before the rolling window but extending into it would otherwise get a phantom new row anchored at the first in-window reading (replace_window can't delete the original; its start_ts is outside the window). Lookback lets SPD see the true anchor; skip-on-emit prevents the duplicate. |
+| 2026-04-29 | Long-gap merge by same `place_id` (≤12h gap) for `place_visit/v1` | Indoor periods produce no GPS readings under the phone's GPS-attestation gate. Two short same-place visits separated by hours collapse into one. Place_id-based (not centroid-distance based) so adjacent buildings can't fold together. |
+| 2026-04-29 | `agent_role` granted blanket `EXECUTE ON ALL FUNCTIONS IN SCHEMA public` (vs. enumerating earthdistance fns) | Caught from real-data run: `places` GiST index calls `ll_to_earth` on insert, which calls `earth()`, etc. Function-by-function grants are whack-a-mole; PUBLIC stays revoked for ingest defense-in-depth, agent_role gets blanket access since it's a trusted internal role. |
 
 ## Pointers
 

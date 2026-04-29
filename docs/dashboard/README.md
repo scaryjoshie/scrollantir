@@ -28,6 +28,15 @@ client-side. Currently a single Raw view.
 > Summary + Timeline pages come back online from this file's described
 > design.
 >
+> ✅ **Update 2026-04-29:** `/today` (the day-narrative page) is live.
+> It reads `place_visit/v1` and `travel_leg/v1` derived rows via
+> `v_place_visit_today` / `v_travel_leg_today`, refreshing every 5
+> minutes through the agent service's rolling-window deriver tick.
+> See
+> [`docs/sessions/session-2026-04-29-place-visit.md`](../sessions/session-2026-04-29-place-visit.md)
+> for the implementation chronicle. Summary + Timeline pages
+> remain unbuilt; `/today` is the first page off the long-term design.
+>
 > Operational details live in
 > [`docs/sessions/session-2026-04-27.md`](../sessions/session-2026-04-27.md):
 > dev setup (`.env.local`, `npm run dev`), basic-auth flow, viz lessons

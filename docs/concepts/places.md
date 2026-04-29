@@ -4,10 +4,134 @@ Raw location events (`phone.location.reading`) are `(lat, lng, accuracy_m)` tupl
 
 ## Status
 
-🚧 Planned. Depends on:
+✅ **Shipped 2026-04-29**. `place_visit/v1` and `travel_leg/v1`
+derivers are live; the agent service runs them every 5 minutes
+over a rolling 24h window. `/today` reads from the resulting
+`derived_events` rows via two read-path views. See
+[session-2026-04-29-place-visit.md](../sessions/session-2026-04-29-place-visit.md)
+for the implementation chronicle.
 
-1. [location.md](location.md) collection implemented first (need `phone.location.reading` events flowing)
-2. Supabase schema extensions (see `supabase.md`)
+The "as designed" prose below is preserved for context — much of it
+is still accurate, but the implementation diverged from the original
+plan in two big ways:
+
+1. **No homegrown auto-discovery clustering** — Mapbox's existing
+   POI data already names every Northwestern building. The
+   `place_visit/v1` deriver matches each stay-point centroid to the
+   nearest named OSM feature via Mapbox Tilequery; no DBSCAN, no
+   α-shape polygons, no cluster-qualification thresholds. Saved
+   hundreds of lines and gave us better names than we'd discover
+   ourselves.
+2. **Bathroom-break consolidation is two-tier**: a SPD-level
+   brief-exit merge (10-min gap, 40m centroid distance) handles
+   "step outside and back" cases; a post-OSM long-gap merge
+   (≤12-hour gap, same `place_id`) handles overnight indoor periods
+   where the phone's new GPS-attestation gate produces no readings.
+
+## OSM-backed identity
+
+The `places` table got six additive columns in migration 0001:
+
+```sql
+osm_feature_type TEXT,                  -- 'building' | 'poi_label' | 'landuse'
+osm_feature_id   BIGINT,                -- Mapbox feature id (Streets v8 tileset)
+centroid_lat     DOUBLE PRECISION,      -- OSM POI coords (canonical)
+centroid_lng     DOUBLE PRECISION,
+first_seen_ts    TIMESTAMPTZ,
+last_seen_ts    TIMESTAMPTZ,
+UNIQUE (osm_feature_type, osm_feature_id)
+```
+
+`(osm_feature_type, osm_feature_id)` is the natural key for
+auto-discovered places. Hand-seeded places (none yet) leave both
+NULL — the UNIQUE constraint allows multiple NULL pairs. Legacy
+`lat/lng/radius_m` columns are kept as shadows of `centroid_lat/lng`
+until v1 of the schema cleanup.
+
+The `places.name` column is **never overwritten by the deriver after
+first INSERT** — `places_repo.upsert_place` uses `INSERT ... ON
+CONFLICT DO UPDATE` with `name` deliberately omitted from the SET
+clause. This is the manual-override mechanism: rename a place via
+SQL once and it sticks across every future deriver tick.
+
+```sql
+UPDATE public.places SET name = 'SPAC' WHERE osm_feature_id = 275854338;
+```
+
+## OSM picker priority (`runtime/app/src/scrollantir/core/osm.py`)
+
+For each stay-point centroid, the deriver runs Mapbox Tilequery and
+walks the returned features (pre-sorted by ascending distance) into
+four priority buckets, returning the first non-empty:
+
+1. **Named building-class POI** — `poi_label` features with
+   `class='building'`. These ARE the building's name label
+   (`Willard Residential College`, `Foster-Walker Complex`). Mapbox
+   often tags the building polygon as anonymous and puts the name
+   on a sibling poi_label. The Standard renderer prefers these
+   labels for building-level rendering, and so do we.
+2. **Named feature with non-`mixed` category** — typed POIs like
+   `cls=education`, `cls=library`, `cls=food_and_drink`.
+3. **Any named non-landuse feature** — landuse polygons (campus
+   boundary "Northwestern University", parks) are excluded; they
+   cover whole blocks and would outrank specific buildings.
+4. **Closest feature regardless** — guarantees attribution.
+
+Within a tier, the closest match wins (Tilequery returns features
+pre-sorted by distance).
+
+The default search radius is 50m. Tightening helped at first but
+lost legitimate matches like Kellogg Global Hub at 36.5m;
+`provenance.match_confidence = 1 - distance/radius` encodes
+uncertainty better than a hard cutoff.
+
+## Auto-discovery in practice
+
+There's no separate "discovery" deriver. `place_visit/v1` does the
+work: each stay-point that matches a new OSM feature triggers an
+`upsert_place` that creates a `places` row with the matched name,
+category (mapped from OSM tags), centroid, and `first_seen_ts`.
+`last_seen_ts` updates on every subsequent visit.
+
+Categories are inferred from Mapbox tags via lookup tables in
+`osm.py`:
+
+- `building.class=residential|apartments|house|dormitory` → `residence`
+- `building.class=university|school|college` → `class`
+- `poi_label.class=education|school|library` → `class` / `study`
+- `poi_label.class=food_and_drink|restaurant|cafe` → `food`
+- `poi_label.class=building` → looks at `type` field
+  (`Dormitory`→`residence`, `Office`→`work`, `University`→`class`, ...)
+- everything unknown → `mixed`
+
+If the wrong category lands on a place, edit it in SQL — same
+override semantics as `name`:
+
+```sql
+UPDATE public.places SET category = 'residence' WHERE osm_feature_id = NNN;
+```
+
+The deriver's upsert preserves a non-NULL existing category via
+`COALESCE`.
+
+## Visits + brief-exit / long-gap merge
+
+After Stay-Point Detection produces stays, two merge passes run:
+
+1. **`merge_brief_exits`** (in `stay_points.py`): collapse consecutive
+   stays whose centroids are within 40m and gap is ≤10 min. The
+   bathroom-break / coffee-run case. Bumps `brief_exit_count`.
+2. **`_merge_same_place_long_gaps`** (in `place_visit.py`, post-OSM):
+   collapse consecutive visits whose `place_id` is identical and
+   non-null and whose gap is ≤12 hours. The overnight-indoor case.
+   Place_id is the safe signal — adjacent buildings have different
+   place_ids and won't fold together accidentally.
+
+The original plan was a single category-keyed gap-tolerance table
+(class:15min, residence:60min, food:5min). What we shipped is
+simpler: one short-gap merge by centroid-distance + one long-gap
+merge by place_id. Same outcome for the bathroom-and-back case;
+better outcome for overnight stays.
 
 ## Schema
 

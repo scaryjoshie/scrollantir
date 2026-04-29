@@ -1,5 +1,17 @@
 # Handoff — derived views + dashboard timeline
 
+> ✅ **SUPERSEDED 2026-04-29.** The deriver runtime, `place_visit/v1`,
+> `travel_leg/v1`, the read-path views, and the dashboard cutover all
+> shipped today. See
+> [session-2026-04-29-place-visit.md](session-2026-04-29-place-visit.md)
+> for the implementation chronicle and current state. The body below
+> is preserved as the original plan-of-record but is no longer the
+> entry point for new work.
+>
+> The phone-side GPS-noise filtering work referenced in this doc also
+> shipped today: see
+> [session-2026-04-29-gps-noise.md](session-2026-04-29-gps-noise.md).
+
 You are picking up scrollantir, a personal "palantir for yourself"
 time tracker. Data collection is **stable as of 2026-04-28**: phone
 and Mac both posting to the self-hosted runtime/ stack on Hetzner;

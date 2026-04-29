@@ -1,14 +1,22 @@
 # Plan: `place_visit/v1` + `travel_leg/v1`
 
-> **Date:** 2026-04-29 · **Status:** revised post-audit, ready to
-> implement. Lands the first two derivers and swaps the /today
-> dashboard from fixtures to real data. Builds on the design
-> discussion captured in
-> [handoff-derived-dashboard.md](handoff-derived-dashboard.md), a
-> four-agent research pass on GPS place detection (problem-space,
-> library survey, algorithm survey, Codex), and a two-agent audit of
-> the v1 plan (Plan + Codex). Audit-driven fixes are inline below;
-> see end-of-doc for the changelog.
+> **Date:** 2026-04-29 · **Status:** ✅ **SHIPPED 2026-04-29**. Both
+> derivers, the agent_api RPC, the deriver framework, the read-path
+> views, and the dashboard cutover all landed in this session.
+> Implementation chronicle (with the deviations from this plan,
+> bugs caught from running on real data, and current knob values)
+> in
+> [session-2026-04-29-place-visit.md](session-2026-04-29-place-visit.md).
+> The plan body below is preserved as the source for design
+> decisions, audit findings, and rationale.
+
+Lands the first two derivers and swaps the /today dashboard from
+fixtures to real data. Builds on the design discussion captured in
+[handoff-derived-dashboard.md](handoff-derived-dashboard.md), a
+four-agent research pass on GPS place detection (problem-space,
+library survey, algorithm survey, Codex), and a two-agent audit of
+the v1 plan (Plan + Codex). Audit-driven fixes are inline below;
+see end-of-doc for the changelog.
 
 ## What we're building
 
