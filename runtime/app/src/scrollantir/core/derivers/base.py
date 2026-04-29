@@ -30,10 +30,15 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-import psycopg
+# psycopg is a runtime dep but only needed inside concrete derivers when
+# they actually run. Importing it lazily keeps `from .stay_points import
+# GPSReading` (and other algorithm-only modules) usable in tests
+# without psycopg installed on the host.
+if TYPE_CHECKING:
+    import psycopg
 
 log = logging.getLogger("scrollantir.derivers")
 
