@@ -159,6 +159,61 @@ def extract_stay_points(
     return stays
 
 
+def merge_brief_exits(
+    stays: Sequence[StayPoint],
+    *,
+    max_gap_min: float = 10.0,
+    dist_threshold_m: float = 40.0,
+) -> list[tuple[StayPoint, int]]:
+    """Merge consecutive stays at (effectively) the same place that
+    are separated by a short gap. Returns `[(stay, brief_exit_count)]`
+    tuples — `brief_exit_count` is how many merges this stay absorbed.
+
+    This is the bathroom-break / step-outside-and-come-back tolerance:
+    if you leave Norris for 5 minutes and come back, that's still one
+    visit, not two. SPD treats them as separate stays because the
+    out-of-fence walk breaks the run; this pass stitches them back.
+
+    Centroids combine point-count-weighted; dwell_s sums; p95_accuracy
+    takes the max (worst case wins for visibility); event_ids
+    concatenate.
+    """
+    if not stays:
+        return []
+    out: list[tuple[StayPoint, int]] = [(stays[0], 0)]
+    for nxt in stays[1:]:
+        prev, prev_count = out[-1]
+        gap_min = (nxt.start_ts - prev.end_ts).total_seconds() / 60.0
+        d = haversine_m(
+            prev.centroid_lat, prev.centroid_lng,
+            nxt.centroid_lat, nxt.centroid_lng,
+        )
+        if gap_min <= max_gap_min and d <= dist_threshold_m:
+            total_pts = prev.point_count + nxt.point_count
+            new_lat = (
+                prev.centroid_lat * prev.point_count
+                + nxt.centroid_lat * nxt.point_count
+            ) / total_pts
+            new_lng = (
+                prev.centroid_lng * prev.point_count
+                + nxt.centroid_lng * nxt.point_count
+            ) / total_pts
+            merged = StayPoint(
+                start_ts=prev.start_ts,
+                end_ts=nxt.end_ts,
+                centroid_lat=new_lat,
+                centroid_lng=new_lng,
+                event_ids=prev.event_ids + nxt.event_ids,
+                point_count=total_pts,
+                p95_accuracy_m=max(prev.p95_accuracy_m, nxt.p95_accuracy_m),
+                dwell_s=prev.dwell_s + nxt.dwell_s,
+            )
+            out[-1] = (merged, prev_count + 1)
+        else:
+            out.append((nxt, 0))
+    return out
+
+
 def _stay_from_run(run: Sequence[GPSReading], dwell_s: float) -> StayPoint:
     """Compute the centroid + summary stats for a run of readings."""
     # Weighted centroid by 1/accuracy_m. Floor accuracy to 1m so a
