@@ -224,22 +224,42 @@ CREATE TRIGGER annotations_set_updated_at
 -- below only serves earth_box(...) @> ll_to_earth(...) bounding-box
 -- prefilters, not earth_distance(...) < radius directly. Derivers must
 -- use the two-stage prefilter+exact pattern.
+--
+-- OSM-backed identity (added 2026-04-29 for place_visit/v1):
+-- `(osm_feature_type, osm_feature_id)` is the natural key for places
+-- auto-discovered via Mapbox Tilequery. Manual entries leave both NULL
+-- (UNIQUE allows multiple NULL pairs). `centroid_lat/lng` are the
+-- canonical coords; legacy `lat/lng` shadow them until v1 drops the
+-- shadow columns. `first_seen_ts` / `last_seen_ts` are deriver-
+-- maintained activity timestamps.
 -- =========================================================================
 
 CREATE TABLE public.places (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name        TEXT NOT NULL UNIQUE,
-  category    TEXT,
-  lat         DOUBLE PRECISION NOT NULL,
-  lng         DOUBLE PRECISION NOT NULL,
-  radius_m    REAL NOT NULL DEFAULT 50,
-  schedule    JSONB,
-  metadata    JSONB,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name            TEXT NOT NULL UNIQUE,
+  category        TEXT,
+  lat             DOUBLE PRECISION NOT NULL,
+  lng             DOUBLE PRECISION NOT NULL,
+  radius_m        REAL NOT NULL DEFAULT 50,
+  schedule        JSONB,
+  metadata        JSONB,
+  -- OSM identity (nullable for hand-added places; UNIQUE on the pair).
+  osm_feature_type TEXT,
+  osm_feature_id   BIGINT,
+  centroid_lat    DOUBLE PRECISION,
+  centroid_lng    DOUBLE PRECISION,
+  first_seen_ts   TIMESTAMPTZ,
+  last_seen_ts    TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (lat BETWEEN -90 AND 90),
   CHECK (lng BETWEEN -180 AND 180),
-  CHECK (radius_m > 0)
+  CHECK (radius_m > 0),
+  CHECK (centroid_lat IS NULL OR centroid_lat BETWEEN -90 AND 90),
+  CHECK (centroid_lng IS NULL OR centroid_lng BETWEEN -180 AND 180),
+  -- Both NULL or both NOT NULL — partial OSM identity is an error.
+  CHECK ((osm_feature_type IS NULL) = (osm_feature_id IS NULL)),
+  UNIQUE (osm_feature_type, osm_feature_id)
 );
 
 CREATE INDEX places_category ON public.places (category);
