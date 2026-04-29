@@ -34,6 +34,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from . import register
 from ..osm import OSMFeature, lookup_nearest_feature
 from ..places_repo import upsert_place
 from .base import DerivedRow, DeterministicDeriver
@@ -241,3 +242,11 @@ def _deterministic_visit_id(
         f"{lat:.5f},{lng:.5f}"
     )
     return uuid5(NAMESPACE_URL, key)
+
+
+# Auto-register the default-tuned instance at module load. The CLI
+# (tools.run_deriver) and the agent's scheduler both rely on
+# `import scrollantir.core.derivers.place_visit` populating the
+# REGISTRY. Alternate-tuned instances can be registered manually with
+# a different SOURCE; collisions raise on import.
+register(PlaceVisitV1Deriver())
