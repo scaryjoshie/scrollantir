@@ -13,6 +13,17 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT ON TABLES TO agent_role;
 GRANT INSERT, UPDATE ON public.places TO agent_role;
 
+-- agent_role needs EXECUTE on extension functions (earthdistance's
+-- ll_to_earth, which calls earth() internally; future derivers may
+-- use cube/pgcrypto helpers too). PUBLIC's EXECUTE is revoked below
+-- for ingest-side defense-in-depth — anon stays locked out, but
+-- agent_role gets blanket access to public.* functions since it's
+-- a trusted internal role. Default privileges keep this true for
+-- functions installed by future migrations / extensions.
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO agent_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO agent_role;
+
 -- agent_api.* — SECURITY DEFINER RPCs the agent calls for every write.
 -- agent_role has EXECUTE; the function bodies own the necessary
 -- privileges on public.derived_events etc. via the function owner.
