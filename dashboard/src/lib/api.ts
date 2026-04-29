@@ -6,6 +6,10 @@
 // request via basic_auth; without creds you get 401.
 
 import type { DashboardEvent, Report } from './types';
+import type {
+  PlaceVisit,
+  TravelLeg,
+} from '@/features/today/types';
 
 const USER = (import.meta.env.VITE_DASHBOARD_USER as string) || 'josh';
 const PASSWORD = (import.meta.env.VITE_DASHBOARD_PASSWORD as string) || '';
@@ -60,6 +64,40 @@ export type DeviceLastSeen = {
   start_ts: string;     // most recent observation time
   received_at: string;  // most recent server-receive time
 };
+
+// Place visits for a date window. Reads `v_place_visit_today` —
+// derived rows pre-joined with the `places` table. Visits with no
+// matched place return `place: null`.
+export function fetchPlaceVisits(
+  fromIso: string,
+  toIso: string,
+): Promise<PlaceVisit[]> {
+  const url =
+    `/v_place_visit_today` +
+    `?start_ts=gte.${encodeURIComponent(fromIso)}` +
+    `&start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&order=start_ts.asc`;
+  return pgrst<Array<Omit<PlaceVisit, 'kind'>>>(url).then((rows) =>
+    rows.map((r) => ({ ...r, kind: 'place_visit' as const })),
+  );
+}
+
+// Travel legs for a date window. Reads `v_travel_leg_today` —
+// derived rows with `path` lifted out of `data` to match the
+// dashboard's TravelLeg type (path is a sibling of data).
+export function fetchTravelLegs(
+  fromIso: string,
+  toIso: string,
+): Promise<TravelLeg[]> {
+  const url =
+    `/v_travel_leg_today` +
+    `?start_ts=gte.${encodeURIComponent(fromIso)}` +
+    `&start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&order=start_ts.asc`;
+  return pgrst<Array<Omit<TravelLeg, 'kind'>>>(url).then((rows) =>
+    rows.map((r) => ({ ...r, kind: 'travel_leg' as const })),
+  );
+}
 
 // Latest event per device — pulled from the most-recent 200 rows
 // regardless of the picked viz window. Used by the Raw page header

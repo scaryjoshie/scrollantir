@@ -12,7 +12,7 @@ import type {
   TopicChunk,
   TravelLeg,
 } from './types';
-import { legById, topicChunksByVisit, visitById } from './fixtures';
+import { useTodayLookups } from './lookups';
 
 const ACTIVITY_LABEL: Record<string, string> = {
   walking: 'Walking',
@@ -131,7 +131,8 @@ export default function DetailPane({ entry }: { entry: TimelineEntry | null }) {
 // ---------------------------------------------------------------------
 
 function VisitDetail({ visit }: { visit: PlaceVisit }) {
-  const chunks = topicChunksByVisit
+  const { topicChunks } = useTodayLookups();
+  const chunks = topicChunks
     .filter((c) => c.parent_id === visit.id)
     .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
 
@@ -182,6 +183,7 @@ function VisitDetail({ visit }: { visit: PlaceVisit }) {
 }
 
 function LegDetail({ leg }: { leg: TravelLeg }) {
+  const { visitById } = useTodayLookups();
   const from = visitById[leg.data.from_visit_id];
   const to = visitById[leg.data.to_visit_id];
   return (
@@ -203,6 +205,7 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
 }
 
 function ChunkDetail({ chunk }: { chunk: TopicChunk }) {
+  const { visitById, legById } = useTodayLookups();
   const parentVisit = visitById[chunk.parent_id];
   const parentLeg = parentVisit ? null : legById[chunk.parent_id];
   // Chip describes the surrounding context: place name for visit-children,

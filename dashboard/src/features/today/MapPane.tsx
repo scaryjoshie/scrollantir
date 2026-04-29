@@ -22,7 +22,7 @@ import type {
   TravelActivity,
   TravelLeg,
 } from './types';
-import { legById, visitById } from './fixtures';
+import { useTodayLookups, type TodayLookups } from './lookups';
 import {
   setupLegPathLayers,
   setLegPath,
@@ -130,9 +130,9 @@ function visitTarget(v: PlaceVisit, pitch: number): CameraTarget {
   };
 }
 
-function legTarget(leg: TravelLeg): CameraTarget {
-  const fromV = visitById[leg.data.from_visit_id];
-  const toV = visitById[leg.data.to_visit_id];
+function legTarget(leg: TravelLeg, lookups: TodayLookups): CameraTarget {
+  const fromV = lookups.visitById[leg.data.from_visit_id];
+  const toV = lookups.visitById[leg.data.to_visit_id];
   return {
     kind: 'path',
     path: leg.path,
@@ -142,18 +142,21 @@ function legTarget(leg: TravelLeg): CameraTarget {
   };
 }
 
-function targetForSelection(entry: TimelineEntry | null): CameraTarget | null {
+function targetForSelection(
+  entry: TimelineEntry | null,
+  lookups: TodayLookups,
+): CameraTarget | null {
   if (!entry) return null;
   if (entry.kind === 'place_visit') return visitTarget(entry, 55);
-  if (entry.kind === 'travel_leg') return legTarget(entry);
+  if (entry.kind === 'travel_leg') return legTarget(entry, lookups);
   if (entry.kind === 'topic_chunk') {
     // Chunk parents to a visit OR a leg. Match the parent's camera
     // treatment so e.g. "Spotify (during bike)" draws the leg path,
     // not a point at the start coord.
-    const v = visitById[entry.parent_id];
+    const v = lookups.visitById[entry.parent_id];
     if (v) return visitTarget(v, 60);
-    const leg = legById[entry.parent_id];
-    if (leg) return legTarget(leg);
+    const leg = lookups.legById[entry.parent_id];
+    if (leg) return legTarget(leg, lookups);
     return null;
   }
   // moment
@@ -180,6 +183,7 @@ export default function MapPane({
 }: {
   selected: TimelineEntry | null;
 }) {
+  const lookups = useTodayLookups();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -306,7 +310,7 @@ export default function MapPane({
         buildingFsRef.current = null;
       }
 
-      const target = targetForSelection(selected);
+      const target = targetForSelection(selected, lookups);
       if (!target) return;
 
       if (target.kind === 'point') {
@@ -422,7 +426,7 @@ export default function MapPane({
 
     if (styleReadyRef.current) apply();
     else m.once('style.load', apply);
-  }, [selected]);
+  }, [selected, lookups]);
 
   if (!TOKEN) {
     return (
