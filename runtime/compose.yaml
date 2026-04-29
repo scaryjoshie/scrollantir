@@ -130,6 +130,16 @@ services:
   agent:
     build: ./app
     restart: unless-stopped
+    environment:
+      # Connects as agent_role (SELECT on public + EXECUTE on
+      # agent_api.* per 90_grants.sql). AGENT_PW is the role password
+      # set during postgres init from .env.
+      DATABASE_URL: postgres://agent_role:${AGENT_PW}@postgres:5432/${POSTGRES_DB:-scrollantir}
+      # Server-side Mapbox token for OSM Tilequery in the place_visit
+      # deriver. Same `pk.*` value as the dashboard's VITE_MAPBOX_TOKEN.
+      # If unset, OSM lookups silently no-op and visits emit with
+      # place_id = NULL — the deriver still runs.
+      MAPBOX_API_TOKEN: ${MAPBOX_API_TOKEN:-}
     command:
       - python
       - -m
