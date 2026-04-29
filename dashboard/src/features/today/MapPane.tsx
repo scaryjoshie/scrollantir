@@ -35,7 +35,11 @@ const STYLE = 'mapbox://styles/mapbox/standard';
 
 const VISIT_PIN = '#C79BD8';        // dashboard's location accent
 const START_PIN = '#9DA0A6';        // muted gray — leg origin
-const BUILDING_HIGHLIGHT = 'hsl(285, 40%, 65%)'; // matches VISIT_PIN
+// Vivid red so the selected building's 3D extrusion reads obviously
+// against the basemap. Mapbox Standard's `colorBuildingSelect` tints
+// (rather than replaces) the building's color, so we want a saturated
+// hue with enough contrast against the default building gray.
+const BUILDING_HIGHLIGHT = '#E53935';
 
 // Mapbox Standard's 3D buildings only render at ~z14+. Clamp leg
 // fitBounds so wide-area legs still land inside the building zoom.
@@ -109,6 +113,12 @@ type CameraTarget =
       pitch: number;
       // visit/chunk: highlight the building at this coord. moments don't.
       highlightBuilding: boolean;
+      // For visits: the place's POI centroid (which sits inside the
+      // building extrusion). queryRenderedFeatures uses this — not the
+      // marker's lng/lat — so the highlight finds the right building
+      // even when the user's GPS centroid is at the entrance, outside
+      // the polygon. Falls back to the marker coords when null.
+      buildingProbe?: { lat: number; lng: number };
     }
   | {
       kind: 'path';
@@ -121,12 +131,21 @@ type CameraTarget =
     };
 
 function visitTarget(v: PlaceVisit, pitch: number): CameraTarget {
+  // Marker drops at the user's actual stay-centroid (where the GPS
+  // readings clustered — usually the entrance). buildingProbe uses
+  // the OSM POI centroid (inside the polygon) so the 3D highlight
+  // finds the right building extrusion.
+  const probe =
+    v.place?.centroid_lat != null && v.place?.centroid_lng != null
+      ? { lat: v.place.centroid_lat, lng: v.place.centroid_lng }
+      : undefined;
   return {
     kind: 'point',
     lng: v.data.lng,
     lat: v.data.lat,
     pitch,
     highlightBuilding: true,
+    buildingProbe: probe,
   };
 }
 
@@ -335,9 +354,17 @@ export default function MapPane({
 
         // Building highlight: wait until movement settles + buildings
         // are rendered, then query and tag the feature with select=true.
+        // Probe the OSM POI centroid (sits INSIDE the polygon) when
+        // available — falling back to the marker's coords (which often
+        // land at the entrance, just outside the polygon) means the
+        // queryRenderedFeatures hit the building extrusion reliably.
         if (target.highlightBuilding) {
+          const probe = target.buildingProbe ?? {
+            lat: target.lat,
+            lng: target.lng,
+          };
           m.once('idle', () => {
-            const point = m.project([target.lng, target.lat]);
+            const point = m.project([probe.lng, probe.lat]);
             const features = m.queryRenderedFeatures(point);
             const bldg = features.find(
               (f) => f.sourceLayer === 'building' && f.id != null,

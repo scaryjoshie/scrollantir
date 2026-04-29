@@ -37,7 +37,13 @@ SELECT
       -- Coalesce to 'mixed' so a hand-seeded place without a
       -- category still satisfies the dashboard's PlaceCategory
       -- (non-null) contract.
-      'category', COALESCE(p.category, 'mixed')
+      'category', COALESCE(p.category, 'mixed'),
+      -- The OSM POI's centroid — sits INSIDE the building extrusion,
+      -- unlike the visit's stay-centroid which lands at the entrance.
+      -- The dashboard uses this to query the right building for the
+      -- 3D highlight.
+      'centroid_lat', p.centroid_lat,
+      'centroid_lng', p.centroid_lng
     )
   END AS place
 FROM public.derived_events de

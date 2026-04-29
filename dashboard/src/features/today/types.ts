@@ -34,6 +34,11 @@ export type PlaceVisit = {
     id: string;
     name: string;
     category: PlaceCategory;
+    // OSM POI centroid — sits inside the building extrusion, unlike
+    // visit `data.lat/lng` which usually lands at the entrance. The
+    // map uses these to highlight the right 3D building.
+    centroid_lat?: number;
+    centroid_lng?: number;
   } | null;
 };
 
