@@ -147,6 +147,15 @@ def _is_building_poi(f: dict[str, Any]) -> bool:
     return layer == "poi_label" and p.get("class") == "building"
 
 
+def _is_landuse(f: dict[str, Any]) -> bool:
+    """Landuse polygons (campus boundary, parks) are too coarse for
+    visit attribution — they cover whole blocks. A named landuse
+    like 'Northwestern University' should NEVER beat a building POI
+    inside it. Excluded from the named-feature picker tiers."""
+    p = f.get("properties") or {}
+    return p.get("tilequery", {}).get("layer", "") == "landuse"
+
+
 def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the best feature for visit attribution from a Tilequery
     response (features pre-sorted ascending by distance).
@@ -178,6 +187,13 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
             closest = f
         name = _name_from_feature(f)
         if not name:
+            continue
+        # Landuse is too coarse for visit attribution — a named
+        # 'Northwestern University' polygon shouldn't outrank a
+        # building POI inside it. Skip from the named tiers (still
+        # available via the closest-fallback if there's literally
+        # nothing else).
+        if _is_landuse(f):
             continue
         if _is_building_poi(f):
             building_pois.append(f)

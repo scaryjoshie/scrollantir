@@ -70,12 +70,15 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
     # Brief-exit merge parameters
     brief_exit_max_gap_min: float = 10.0
 
-    # OSM matching parameters. Tightened from 50m once the phone's
-    # GPS-attestation gate (session-2026-04-29-gps-noise.md) made
-    # stored readings consistently ≤20m accurate. Real campus matches
-    # we've seen land at 17–25m; building POIs at >35m were the
-    # lowest-confidence band anyway.
-    osm_match_radius_m: int = 35
+    # OSM matching parameters. Mapbox places building-name POIs at
+    # the building's centroid (not its entrance), so the distance
+    # from a stay-centroid (typically near a door) to the POI is
+    # bounded by building geometry, not GPS quality. 50m comfortably
+    # accommodates that for typical campus buildings; the planned ⚠
+    # confidence indicator surfaces the low-trust band rather than a
+    # hard cutoff dropping legitimate matches. Tried 35m, lost
+    # Kellogg Global Hub (POI was 36.5m from centroid) — reverted.
+    osm_match_radius_m: int = 50
 
     # Long-gap merge: after OSM matching, consecutive visits resolved
     # to the SAME place_id with a gap <= this many hours collapse into
