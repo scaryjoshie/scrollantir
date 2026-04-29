@@ -21,9 +21,14 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-import psycopg
+# psycopg is needed at runtime for the UniqueViolation catch, but only
+# when upsert_place actually fires. Lazy import keeps tests that
+# monkey-patch upsert_place from needing psycopg installed.
+if TYPE_CHECKING:
+    import psycopg  # noqa: F401
 
 from .osm import OSMFeature
 
@@ -69,7 +74,7 @@ _UPSERT_SQL = """
 
 
 def upsert_place(
-    conn: psycopg.Connection,
+    conn: "psycopg.Connection",
     feature: OSMFeature,
 ) -> UUID:
     """Get-or-create the `public.places` row for an OSM feature.
@@ -81,6 +86,8 @@ def upsert_place(
     Raises only if both the clean-name insert AND the name-suffixed
     retry hit the `places.name` UNIQUE constraint (very unlikely).
     """
+    import psycopg  # lazy so tests can collect without it installed
+
     base_name = feature.name or _fallback_name(feature)
     metadata_json = json.dumps({"mapbox": feature.raw_properties})
     common = {

@@ -24,14 +24,15 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
-import psycopg
+if TYPE_CHECKING:
+    import psycopg
 
 log = logging.getLogger("scrollantir.db")
 
 
-def connect_agent() -> psycopg.Connection:
+def connect_agent() -> "psycopg.Connection":
     """Open a fresh psycopg connection authenticated as `agent_role`.
 
     Returns a connection in the default (autocommit=False) mode —
@@ -39,6 +40,8 @@ def connect_agent() -> psycopg.Connection:
     `replace_derived_window`-then-commit. Caller owns the lifecycle
     (use `close_after()` or a `with` block).
     """
+    import psycopg  # lazy
+
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if dsn:
         log.debug("connecting via DATABASE_URL")
@@ -50,7 +53,7 @@ def connect_agent() -> psycopg.Connection:
 
 
 @contextmanager
-def close_after(conn: psycopg.Connection) -> Iterator[psycopg.Connection]:
+def close_after(conn: "psycopg.Connection") -> Iterator["psycopg.Connection"]:
     """Context manager that closes a connection on exit (committed or
     rolled back as the caller already managed). Useful in CLI mains."""
     try:

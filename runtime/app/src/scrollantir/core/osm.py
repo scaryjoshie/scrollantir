@@ -28,9 +28,13 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+# httpx is the network client — used only when an actual lookup fires.
+# Imported lazily so tests that monkey-patch `lookup_nearest_feature`
+# don't need httpx installed on the host.
+if TYPE_CHECKING:
+    import httpx as _httpx_types  # noqa: F401
 
 log = logging.getLogger("scrollantir.osm")
 
@@ -97,6 +101,8 @@ def lookup_nearest_feature(
 
 @lru_cache(maxsize=CACHE_SIZE)
 def _lookup_cached(rounded: tuple[float, float, int]) -> OSMFeature | None:
+    import httpx  # lazy so tests don't need it installed
+
     lat, lng, radius_m = rounded
     try:
         response = httpx.get(
