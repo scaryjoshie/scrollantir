@@ -90,6 +90,16 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
     # because it can't accidentally fold adjacent buildings together.
     same_place_max_gap_hours: float = 12.0
 
+    # `is_open` ("currently here") is set on the LATEST visit when its
+    # end_ts is within this many minutes of the deriver window end.
+    # End_ts is the last in-cluster GPS reading; the deriver runs every
+    # 5 min, so a freshly-active stay has end_ts within ~5 min of `end`.
+    # 30 min is generous enough to keep a visit "open" through brief
+    # indoor periods (no GPS for ≤30 min) while still flipping to
+    # closed once the user's been gone long enough that this visit is
+    # almost certainly historical. Any non-latest row is always closed.
+    open_visit_max_age_min: float = 30.0
+
     def compute(
         self,
         conn: "psycopg.Connection",
@@ -198,6 +208,10 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
                 "lat": stay.centroid_lat,
                 "lng": stay.centroid_lng,
                 "brief_exit_count": brief_count,
+                # Set definitively below after long-gap merge — only the
+                # latest emitted row can be open, so we tag everything
+                # closed first and flip the last row if eligible.
+                "is_open": False,
             }
 
             provenance: dict[str, Any] = {
@@ -224,6 +238,21 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
             rows, max_gap_hours=self.same_place_max_gap_hours
         )
         metrics["rows_after_long_gap_merge"] = len(rows)
+
+        # `is_open` — only the latest row, only if its end_ts is recent
+        # enough relative to the window end (≈ "now" under the rolling
+        # 24h scheduler). Earlier rows are definitionally closed (the
+        # user has done other things since). On a non-current day's
+        # window the latest end_ts will be hours behind window-end and
+        # this stays false.
+        if rows:
+            last = rows[-1]
+            age_min = (end - last.end_ts).total_seconds() / 60.0
+            if 0.0 <= age_min <= self.open_visit_max_age_min:
+                last.data["is_open"] = True
+        metrics["latest_visit_is_open"] = bool(
+            rows and rows[-1].data.get("is_open")
+        )
 
         return rows, metrics
 

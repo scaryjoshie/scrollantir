@@ -27,7 +27,12 @@ SELECT
     'place_id',         de.data->>'place_id',
     'lat',              (de.data->>'lat')::float8,
     'lng',              (de.data->>'lng')::float8,
-    'brief_exit_count', COALESCE((de.data->>'brief_exit_count')::int, 0)
+    'brief_exit_count', COALESCE((de.data->>'brief_exit_count')::int, 0),
+    -- `is_open` flags the latest visit when the user is still likely
+    -- there (end_ts ≤ open_visit_max_age_min behind the deriver run's
+    -- window end). COALESCE keeps pre-migration rows defaulting to
+    -- closed instead of NULL.
+    'is_open',          COALESCE((de.data->>'is_open')::boolean, false)
   ) AS data,
   CASE
     WHEN p.id IS NULL THEN NULL

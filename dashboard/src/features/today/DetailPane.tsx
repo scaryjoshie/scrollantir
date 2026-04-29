@@ -3,6 +3,7 @@
 // bottom. Per-topic colors come from category-keyed palettes so the
 // donut visually conveys both topic identity and category.
 
+import { useEffect, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import { cn } from '@/lib/cn';
 import type {
@@ -58,6 +59,17 @@ function fmtTime(iso: string): string {
 
 function fmtDuration(startIso: string, endIso: string): string {
   return humanize(parseISO(endIso).getTime() - parseISO(startIso).getTime());
+}
+
+// Live `now` tick — the detail pane's open-visit subtitle counts up
+// in 30s steps without needing a full data refetch.
+function useNowTick(intervalMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 function humanize(ms: number): string {
@@ -132,6 +144,7 @@ export default function DetailPane({ entry }: { entry: TimelineEntry | null }) {
 
 function VisitDetail({ visit }: { visit: PlaceVisit }) {
   const { topicChunks } = useTodayLookups();
+  const now = useNowTick();
   const chunks = topicChunks
     .filter((c) => c.parent_id === visit.id)
     .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
@@ -149,15 +162,25 @@ function VisitDetail({ visit }: { visit: PlaceVisit }) {
   for (const t of topics) totals[t.category] += t.ms;
   const totalMs = totals.work + totals.play + totals.neutral;
 
+  // Open visits show "Since 3:25 PM · 2h 15m · ongoing" with the
+  // duration counted live to `now`. Closed visits show the canonical
+  // start–end range.
+  const subtitle = visit.data.is_open
+    ? `Since ${fmtTime(visit.start_ts)} · ${humanize(
+        now - parseISO(visit.start_ts).getTime(),
+      )} · ongoing`
+    : `${fmtTime(visit.start_ts)} – ${fmtTime(visit.end_ts)} · ${fmtDuration(
+        visit.start_ts,
+        visit.end_ts,
+      )}`;
+
   return (
     <div className="px-6 py-5">
       <Header
         title={visit.place?.name ?? 'Unknown place'}
-        subtitle={`${fmtTime(visit.start_ts)} – ${fmtTime(visit.end_ts)} · ${fmtDuration(
-          visit.start_ts,
-          visit.end_ts,
-        )}`}
+        subtitle={subtitle}
         chip={visit.place?.category}
+        live={visit.data.is_open}
       />
 
       {topics.length > 0 && totalMs > 0 ? (
@@ -249,12 +272,14 @@ function Header({
   chip,
   glyph,
   accent,
+  live,
 }: {
   title: string;
   subtitle: string;
   chip?: string;
   glyph?: string;
   accent?: string;
+  live?: boolean;
 }) {
   return (
     <div className="flex items-start gap-3">
@@ -272,6 +297,16 @@ function Header({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h3 className="text-base font-semibold text-ink truncate">{title}</h3>
+          {live && (
+            <span
+              className="inline-flex items-center gap-1.5 shrink-0
+                         text-xs font-medium text-success
+                         bg-success-soft rounded-full px-2 py-0.5"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              Live
+            </span>
+          )}
           {chip && (
             <span className="text-xs text-ink-muted bg-paper-hover border border-line rounded-full px-2 py-0.5 shrink-0">
               {chip}

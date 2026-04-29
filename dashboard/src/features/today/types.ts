@@ -29,6 +29,11 @@ export type PlaceVisit = {
     lat: number;
     lng: number;
     brief_exit_count: number;
+    // `true` for the latest visit when its end_ts is within ~30min of
+    // the deriver run's window end — the user is likely still here.
+    // The timeline renders open visits with a live "Since X" subtitle
+    // and a pulsing dot instead of a closed time range.
+    is_open: boolean;
   };
   place: {
     id: string;

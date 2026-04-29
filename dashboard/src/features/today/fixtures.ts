@@ -78,6 +78,7 @@ const visit_home_morning: PlaceVisit = {
     lat: SARGENT[1],
     lng: SARGENT[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.sargent,
 };
@@ -93,6 +94,7 @@ const visit_tech: PlaceVisit = {
     lat: TECH[1],
     lng: TECH[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.tech,
 };
@@ -108,6 +110,7 @@ const visit_norris_breakfast: PlaceVisit = {
     lat: NORRIS[1],
     lng: NORRIS[0],
     brief_exit_count: 1,
+    is_open: false,
   },
   place: PLACES.norris,
 };
@@ -123,6 +126,7 @@ const visit_mudd: PlaceVisit = {
     lat: MUDD[1],
     lng: MUDD[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.mudd,
 };
@@ -138,6 +142,7 @@ const visit_norris_lunch: PlaceVisit = {
     lat: NORRIS[1],
     lng: NORRIS[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.norris,
 };
@@ -153,6 +158,7 @@ const visit_library: PlaceVisit = {
     lat: LIBRARY[1],
     lng: LIBRARY[0],
     brief_exit_count: 2,
+    is_open: false,
   },
   place: PLACES.library,
 };
@@ -168,6 +174,7 @@ const visit_lakefill: PlaceVisit = {
     lat: LAKEFILL[1],
     lng: LAKEFILL[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.lakefill,
 };
@@ -183,6 +190,7 @@ const visit_home_evening: PlaceVisit = {
     lat: SARGENT[1],
     lng: SARGENT[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.sargent,
 };
@@ -198,6 +206,7 @@ const visit_norris_eve: PlaceVisit = {
     lat: NORRIS[1],
     lng: NORRIS[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.norris,
 };
@@ -213,6 +222,7 @@ const visit_home_late: PlaceVisit = {
     lat: SARGENT[1],
     lng: SARGENT[0],
     brief_exit_count: 0,
+    is_open: false,
   },
   place: PLACES.sargent,
 };

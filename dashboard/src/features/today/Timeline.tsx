@@ -5,6 +5,7 @@
 // One click → setSelected(id). The host page handles the rest (map
 // camera, detail panel).
 
+import { useEffect, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import { cn } from '@/lib/cn';
 import type { TimelineEntry, TopicCategory } from './types';
@@ -50,6 +51,19 @@ function fmtTime(iso: string): string {
 function fmtDuration(startIso: string, endIso: string): string {
   const ms = parseISO(endIso).getTime() - parseISO(startIso).getTime();
   return humanize(ms);
+}
+
+// Live duration from `startIso` to `now` — used for in-progress visits
+// where the visible duration should tick up as the user keeps sitting
+// there. The `now` tick (default 30s) re-renders only the rows that
+// read it, so the cost is one timer per page.
+function useNowTick(intervalMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 function humanize(ms: number): string {
@@ -131,6 +145,11 @@ function Row({
     );
   }
 
+  // `now` ticks every 30s so an in-progress visit's live duration
+  // updates without a full refetch. Cheap: one timer per timeline.
+  const now = useNowTick();
+  const isOpenVisit = entry.kind === 'place_visit' && entry.data.is_open;
+
   // Outer row: glyph | (title + duration on top row, time range below)
   let glyph: string;
   let title: string;
@@ -144,8 +163,16 @@ function Row({
   } else if (entry.kind === 'place_visit') {
     glyph = CATEGORY_GLYPH[entry.place?.category ?? 'mixed'] ?? '📍';
     title = entry.place?.name ?? 'Unknown place';
-    timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
-    duration = fmtDuration(entry.start_ts, entry.end_ts);
+    if (entry.data.is_open) {
+      // Live render: "Since 3:25 PM" + duration counted to `now`.
+      // end_ts is the last GPS reading (≤30 min stale by design),
+      // not "now"; using it for duration would understate.
+      timeRange = `Since ${fmtTime(entry.start_ts)}`;
+      duration = humanize(now - parseISO(entry.start_ts).getTime());
+    } else {
+      timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
+      duration = fmtDuration(entry.start_ts, entry.end_ts);
+    }
   } else {
     // travel_leg
     glyph = ACTIVITY_GLYPH[entry.data.dominant_activity] ?? '🚶';
@@ -170,12 +197,24 @@ function Row({
       >
         <span
           className={cn(
-            'shrink-0 w-8 h-8 rounded-full grid place-items-center text-base',
+            'relative shrink-0 w-8 h-8 rounded-full grid place-items-center text-base',
             'bg-paper border border-line',
             isSelected && 'border-accent',
           )}
         >
           {glyph}
+          {/* Live dot for an in-progress visit. Sits on the glyph's
+              top-right corner; pulses to read as "ongoing" rather
+              than "ended". */}
+          {isOpenVisit && (
+            <span
+              className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full
+                         bg-success ring-2 ring-paper-panel
+                         animate-pulse"
+              aria-label="Currently here"
+              title="Currently here"
+            />
+          )}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
@@ -188,7 +227,12 @@ function Row({
               {title}
             </span>
             {duration && (
-              <span className="ml-auto shrink-0 text-xs text-ink-subtle tabular-nums">
+              <span
+                className={cn(
+                  'ml-auto shrink-0 text-xs tabular-nums',
+                  isOpenVisit ? 'text-success font-medium' : 'text-ink-subtle',
+                )}
+              >
                 {duration}
               </span>
             )}

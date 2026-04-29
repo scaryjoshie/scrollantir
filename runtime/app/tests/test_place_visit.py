@@ -214,6 +214,106 @@ def test_brief_exit_merges_two_stays_into_one(monkeypatch) -> None:
 # Deterministic id stability
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# `is_open` — currently-here indicator on the latest visit
+# ---------------------------------------------------------------------------
+
+def test_is_open_true_when_latest_end_is_recent(monkeypatch) -> None:
+    """The latest visit's end_ts is within open_visit_max_age_min of
+    the deriver window end → is_open=true. Earlier visits stay
+    is_open=false even when there's only one visit, the latest IS the
+    only one."""
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.lookup_nearest_feature",
+        lambda lat, lng, radius_m=50: _osm_feature("Norris", "food", *NORRIS),
+    )
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.upsert_place",
+        lambda conn, f: uuid4(),
+    )
+
+    # Visit ends at 14:20; window ends at 14:25 (5 min after) → open.
+    start = UTC(2026, 4, 29, 14, 0)
+    readings = constant_dwell(NORRIS, start=start, duration_minutes=20)
+    deriver = _StubFetcher(readings)
+    rows, metrics = deriver.compute(
+        None, start, UTC(2026, 4, 29, 14, 25)
+    )
+    assert len(rows) == 1
+    assert rows[0].data["is_open"] is True
+    assert metrics["latest_visit_is_open"] is True
+
+
+def test_is_open_false_when_latest_end_is_stale(monkeypatch) -> None:
+    """Latest visit end_ts >> open_visit_max_age_min before window
+    end → is_open=false. The user's been gone long enough that the
+    visit is historical, not ongoing."""
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.lookup_nearest_feature",
+        lambda lat, lng, radius_m=50: _osm_feature("Norris", "food", *NORRIS),
+    )
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.upsert_place",
+        lambda conn, f: uuid4(),
+    )
+
+    # Visit ends at 14:20; window ends at 16:00 (1h40m later) → closed.
+    start = UTC(2026, 4, 29, 14, 0)
+    readings = constant_dwell(NORRIS, start=start, duration_minutes=20)
+    deriver = _StubFetcher(readings)
+    rows, metrics = deriver.compute(
+        None, start, UTC(2026, 4, 29, 16, 0)
+    )
+    assert len(rows) == 1
+    assert rows[0].data["is_open"] is False
+    assert metrics["latest_visit_is_open"] is False
+
+
+def test_is_open_only_marks_latest_row(monkeypatch) -> None:
+    """When there are multiple visits in the run, only the LAST one
+    can be is_open=true. Earlier visits are definitionally closed
+    (the user has done other things since)."""
+    norris_uuid = uuid4()
+    tech_uuid = uuid4()
+
+    def fake_lookup(lat: float, lng: float, radius_m: int = 50) -> OSMFeature | None:
+        if abs(lat - NORRIS[0]) < 0.0005:
+            return _osm_feature("Norris", "food", *NORRIS)
+        if abs(lat - TECH[0]) < 0.0005:
+            return _osm_feature("Tech", "class", *TECH)
+        return None
+
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.lookup_nearest_feature",
+        fake_lookup,
+    )
+    monkeypatch.setattr(
+        "scrollantir.core.derivers.place_visit.upsert_place",
+        lambda conn, feature: norris_uuid if feature.name == "Norris" else tech_uuid,
+    )
+
+    start = UTC(2026, 4, 29, 10, 0)
+    norris_run = constant_dwell(NORRIS, start=start, duration_minutes=15)
+    transit = stream(
+        start=norris_run[-1].ts,
+        samples=[
+            (offset_meters(NORRIS, north_m=200.0), 10.0, 60.0),
+            (offset_meters(NORRIS, north_m=400.0), 10.0, 60.0),
+            (offset_meters(TECH, north_m=-100.0), 10.0, 60.0),
+        ],
+    )
+    tech_run = constant_dwell(TECH, start=transit[-1].ts, duration_minutes=15)
+    deriver = _StubFetcher(norris_run + transit + tech_run)
+
+    # Window end ≈ tech_run end (Norris ends well before, Tech ends
+    # right at window-end → only Tech is recent enough to qualify).
+    rows, _ = deriver.compute(None, start, tech_run[-1].ts + timedelta(minutes=2))
+
+    assert len(rows) == 2
+    assert rows[0].data["is_open"] is False  # Norris — earlier
+    assert rows[1].data["is_open"] is True   # Tech — latest, recent
+
+
 def test_deterministic_visit_id_stable() -> None:
     """The visit id is a uuid5 of (timestamp_seconds, lat:.5f, lng:.5f).
     Reruns with sub-microsecond / sub-1m drift produce the same id."""
