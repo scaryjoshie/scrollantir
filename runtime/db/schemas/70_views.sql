@@ -34,7 +34,10 @@ SELECT
     ELSE jsonb_build_object(
       'id',       p.id,
       'name',     p.name,
-      'category', p.category
+      -- Coalesce to 'mixed' so a hand-seeded place without a
+      -- category still satisfies the dashboard's PlaceCategory
+      -- (non-null) contract.
+      'category', COALESCE(p.category, 'mixed')
     )
   END AS place
 FROM public.derived_events de

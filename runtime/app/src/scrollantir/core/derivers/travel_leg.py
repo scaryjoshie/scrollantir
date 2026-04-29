@@ -119,6 +119,13 @@ class TravelLegV1Deriver(DeterministicDeriver):
             activity = self._dominant_activity(conn, leg_start, leg_end)
             if activity is None:
                 metrics["activity_unknown_legs"] += 1
+                # Dashboard's TravelActivity is non-null and the map's
+                # mode-keyed layer filter would render a null-mode leg
+                # invisible. Default to walking — the most common
+                # campus mode and a safer fallback than dropping the
+                # row entirely. activity_unknown_legs metric records
+                # how often we hit this so we can revisit.
+                activity = "walking"
             distance_m = _path_distance_m(path)
 
             data: dict[str, Any] = {

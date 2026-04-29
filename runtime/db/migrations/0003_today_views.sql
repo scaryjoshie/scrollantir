@@ -21,7 +21,7 @@ SELECT
     ELSE jsonb_build_object(
       'id',       p.id,
       'name',     p.name,
-      'category', p.category
+      'category', COALESCE(p.category, 'mixed')
     )
   END AS place
 FROM public.derived_events de
