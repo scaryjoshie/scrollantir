@@ -37,6 +37,10 @@ const VISIT_PIN = '#C79BD8';        // dashboard's location accent
 const START_PIN = '#9DA0A6';        // muted gray — leg origin
 const BUILDING_HIGHLIGHT = 'hsl(285, 40%, 65%)'; // matches VISIT_PIN
 
+// Mapbox Standard's 3D buildings only render at ~z14+. Clamp leg
+// fitBounds so wide-area legs still land inside the building zoom.
+const MIN_LEG_ZOOM = 15.5;
+
 type LightPreset = 'dawn' | 'day' | 'dusk' | 'night';
 
 function presetForTime(iso: string): LightPreset {
@@ -53,6 +57,42 @@ function presetForTime(iso: string): LightPreset {
   if (hour < 19) return 'dawn';     // golden hour (warm low sun, reused)
   if (hour < 21) return 'dusk';     // sunset twilight
   return 'night';                    // late evening dark
+}
+
+// Pick a camera bearing so the path's principal axis (PCA) lies
+// horizontally on screen. This keeps long N-S paths from getting cropped
+// in our wide map pane and adapts to irregular/multi-segment shapes
+// instead of just using start→end.
+function bearingForPath(path: Array<[number, number]>): number {
+  if (path.length < 2) return 0;
+  const meanLat = path.reduce((s, p) => s + p[1], 0) / path.length;
+  const cosLat = Math.cos((meanLat * Math.PI) / 180);
+  let mx = 0;
+  let my = 0;
+  for (const [lng, lat] of path) {
+    mx += lng * cosLat;
+    my += lat;
+  }
+  mx /= path.length;
+  my /= path.length;
+  let cxx = 0;
+  let cyy = 0;
+  let cxy = 0;
+  for (const [lng, lat] of path) {
+    const x = lng * cosLat - mx;
+    const y = lat - my;
+    cxx += x * x;
+    cyy += y * y;
+    cxy += x * y;
+  }
+  // Math-convention angle of the dominant eigenvector (+x east, +y north).
+  const alpha = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+  // Mapbox bearing is the compass direction the camera faces; setting it
+  // to -alpha aligns the principal axis with the screen's x-axis.
+  let beta = -(alpha * 180) / Math.PI;
+  if (beta > 180) beta -= 360;
+  if (beta < -180) beta += 360;
+  return beta;
 }
 
 function timeForEntry(entry: TimelineEntry | null): string | null {
@@ -350,13 +390,32 @@ export default function MapPane({
             if (lng > maxLng) maxLng = lng;
             if (lat > maxLat) maxLat = lat;
           }
-          m.fitBounds(
-            [
-              [minLng, minLat],
-              [maxLng, maxLat],
-            ],
-            { padding: 80, pitch: 30, bearing: -20, duration: 1200 },
-          );
+          const bounds: [[number, number], [number, number]] = [
+            [minLng, minLat],
+            [maxLng, maxLat],
+          ];
+          const bearing = bearingForPath(target.path);
+          const cam = m.cameraForBounds(bounds, {
+            padding: 80,
+            pitch: 30,
+            bearing,
+          });
+          if (cam && typeof cam.zoom === 'number' && cam.zoom < MIN_LEG_ZOOM) {
+            m.easeTo({
+              ...cam,
+              zoom: MIN_LEG_ZOOM,
+              pitch: 30,
+              bearing,
+              duration: 1200,
+            });
+          } else {
+            m.fitBounds(bounds, {
+              padding: 80,
+              pitch: 30,
+              bearing,
+              duration: 1200,
+            });
+          }
         }
       }
     };
