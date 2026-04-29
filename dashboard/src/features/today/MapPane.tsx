@@ -195,11 +195,31 @@ export default function MapPane({
       } catch {
         /* older style; ignore */
       }
-      // Travel-leg path layers (one per mode, slotted into 'middle' so
-      // 3D buildings occlude them like ground paint). Setup is a
-      // single call into the legPathLayers module — see MODE_STYLES
-      // there for per-mode color/width/dash configuration.
+      // Travel-leg path layers (one per mode + front/ghost variant; see
+      // legPathLayers.ts MODE_STYLES). The ghost variant lives in slot
+      // 'top' so paths stay visible inside/behind buildings.
       setupLegPathLayers(m);
+
+      // Push the 3D-building minzoom out so they don't pop out as soon
+      // as the user zooms a notch beyond a leg's fitBounds. Mapbox
+      // Standard encapsulates its layers, but we can iterate the
+      // resolved style and lower minzoom on whatever fill-extrusion
+      // layer paints the buildings. Best-effort: if the style is from
+      // a version we can't introspect, just skip silently.
+      try {
+        const styleLayers = m.getStyle()?.layers ?? [];
+        for (const layer of styleLayers) {
+          if (
+            layer.type === 'fill-extrusion' &&
+            /building/i.test(layer.id)
+          ) {
+            m.setLayerZoomRange(layer.id, 13, 24);
+          }
+        }
+      } catch {
+        /* style introspection unsupported; ignore */
+      }
+
       styleReadyRef.current = true;
       startDashAnimation();
     });

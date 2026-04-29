@@ -1,23 +1,38 @@
-// Travel-leg path rendering: one Mapbox GeoJSON source, one line layer
-// per `dominant_activity`. Each mode owns its own color/width/pattern
-// in MODE_STYLES — adding a new mode (e.g. e-scooter) is a config edit
-// here, never a touch to MapPane.
+// Travel-leg path rendering: one Mapbox GeoJSON source, two line layers
+// per `dominant_activity` (front + ghost). Each mode owns its own
+// color/width/pattern in MODE_STYLES — adding a new mode (e.g.
+// e-scooter) is a config edit here, never a touch to MapPane.
 //
-// All layers go in the Standard style's `middle` slot so the path
-// renders above roads but below 3D buildings and labels — a building
-// between camera and a far end of the path correctly occludes the line.
+// Dual-pass rendering for through-building visibility:
+//   - 'front' variant — slot 'middle', full opacity. Renders above
+//     roads but below 3D buildings, so a building between camera and
+//     path correctly occludes it. Gives the "on the ground" feel.
+//   - 'ghost' variant — slot 'top', low opacity. Renders above
+//     buildings, so the path remains visible (faintly) inside or
+//     behind them. Gives the "x-ray" view of the trace.
+//   In open ground both render and the ghost is a near-imperceptible
+//   overlay; behind a building, only the ghost is visible.
 //
 // Animation: modes with an animated dash pattern share a single RAF
 // loop driven by the wall-clock timestamp. `tickLegPathAnimation` is
-// called once per frame from the host; it updates each animated layer's
-// dasharray with the current phase.
+// called once per frame from the host; it updates *both* variants of
+// the active mode in the same call so they stay phase-locked.
 
 import type { Map as MapboxMap } from 'mapbox-gl';
 import type { TravelActivity } from './types';
 
 const SOURCE_ID = 'leg-path';
-const SLOT = 'middle' as const;
 const LAYER_ID_PREFIX = 'leg-path-line-';
+
+type LayerVariant = 'front' | 'ghost';
+const VARIANTS: readonly LayerVariant[] = ['front', 'ghost'] as const;
+const VARIANT_CONFIG: Record<
+  LayerVariant,
+  { slot: 'middle' | 'top'; opacity: number }
+> = {
+  front: { slot: 'middle', opacity: 0.92 },
+  ghost: { slot: 'top', opacity: 0.4 },
+};
 
 // Coarse per-mode color palette, picked from the dashboard's logo
 // gradient (#6B8EF2 blue, #C79BD8 purple, #7DB98A green) so legs read
@@ -107,8 +122,8 @@ function dasharrayForPhase(p: DashPattern, phase: number): number[] {
   return [0, wrapped - dash, dash, period - wrapped];
 }
 
-function layerIdFor(mode: TravelActivity): string {
-  return `${LAYER_ID_PREFIX}${mode}`;
+function layerIdFor(mode: TravelActivity, variant: LayerVariant): string {
+  return `${LAYER_ID_PREFIX}${mode}-${variant}`;
 }
 
 // One-time setup. Idempotent: bails if the source already exists, so
@@ -124,26 +139,30 @@ export function setupLegPathLayers(map: MapboxMap): void {
 
   for (const [modeKey, style] of Object.entries(MODE_STYLES)) {
     const mode = modeKey as TravelActivity;
-    const paint: Record<string, unknown> = {
-      'line-color': style.color,
-      'line-width': style.width,
-      'line-opacity': 0.92,
-      // Emissive keeps the stroke legible across all four light
-      // presets — without this, paths get muddy at dusk/night.
-      'line-emissive-strength': 1,
-    };
-    if (style.pattern.kind === 'dash') {
-      paint['line-dasharray'] = dasharrayForPhase(style.pattern, 0);
+    for (const variant of VARIANTS) {
+      const cfg = VARIANT_CONFIG[variant];
+      const paint: Record<string, unknown> = {
+        'line-color': style.color,
+        'line-width': style.width,
+        'line-opacity': cfg.opacity,
+        // Emissive keeps the stroke legible across all four light
+        // presets, and gives the ghost variant a subtle through-
+        // building "glow" rather than a dead-flat dim line.
+        'line-emissive-strength': 1,
+      };
+      if (style.pattern.kind === 'dash') {
+        paint['line-dasharray'] = dasharrayForPhase(style.pattern, 0);
+      }
+      map.addLayer({
+        id: layerIdFor(mode, variant),
+        type: 'line',
+        slot: cfg.slot,
+        source: SOURCE_ID,
+        filter: ['==', ['get', 'mode'], mode],
+        layout: { 'line-cap': style.capStyle, 'line-join': 'round' },
+        paint,
+      });
     }
-    map.addLayer({
-      id: layerIdFor(mode),
-      type: 'line',
-      slot: SLOT,
-      source: SOURCE_ID,
-      filter: ['==', ['get', 'mode'], mode],
-      layout: { 'line-cap': style.capStyle, 'line-join': 'round' },
-      paint,
-    });
   }
 }
 
@@ -204,22 +223,23 @@ export function tickLegPathAnimation(
   const step = Math.floor(cyclePhase / DASH_QUANTUM);
   if (step === lastStep) return lastStep;
 
-  const layerId = layerIdFor(activeMode);
-  if (!map.getLayer(layerId)) return lastStep;
-
   // Map cycle position 0..1 onto this mode's full dash+gap period —
   // keeps relative motion comparable across modes despite different
   // pattern dimensions.
   const period = style.pattern.dash + style.pattern.gap;
   const phase = step * DASH_QUANTUM * period;
-  try {
-    map.setPaintProperty(
-      layerId,
-      'line-dasharray',
-      dasharrayForPhase(style.pattern, phase),
-    );
-  } catch {
-    /* layer not ready yet; next tick will retry */
+  const dasharray = dasharrayForPhase(style.pattern, phase);
+  // Update both variants in lock-step so the ghost overlay stays
+  // phase-aligned with the front; otherwise you'd see two offset
+  // dashed lines through any building.
+  for (const variant of VARIANTS) {
+    const layerId = layerIdFor(activeMode, variant);
+    if (!map.getLayer(layerId)) continue;
+    try {
+      map.setPaintProperty(layerId, 'line-dasharray', dasharray);
+    } catch {
+      /* layer not ready yet; next tick will retry */
+    }
   }
 
   return step;
