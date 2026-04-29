@@ -99,6 +99,7 @@ class TravelLegV1Deriver(DeterministicDeriver):
             "legs_emitted": 0,
             "legs_skipped_no_gap": 0,
             "legs_skipped_out_of_window": 0,
+            "legs_skipped_still": 0,
             "activity_unknown_legs": 0,
         }
 
@@ -117,6 +118,15 @@ class TravelLegV1Deriver(DeterministicDeriver):
 
             path, source_event_ids = self._fetch_path(conn, leg_start, leg_end)
             activity = self._dominant_activity(conn, leg_start, leg_end)
+            # 'still' isn't a transit mode — it's the artifact of a
+            # gap where the user wasn't moving (probably home/asleep)
+            # but no SPD-qualifying stay was detected (GPS off in a
+            # basement, phone asleep, etc.). Don't emit a phantom leg
+            # for it; the dashboard renders an honest gap between
+            # visits instead.
+            if activity == "still":
+                metrics["legs_skipped_still"] += 1
+                continue
             if activity is None:
                 metrics["activity_unknown_legs"] += 1
                 # Dashboard's TravelActivity is non-null and the map's
