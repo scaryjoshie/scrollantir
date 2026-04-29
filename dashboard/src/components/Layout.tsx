@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Activity, FileText, Settings as SettingsIcon } from 'lucide-react';
+import { Activity, FileText, Settings as SettingsIcon, Sun } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 const NAV = [
   { to: '/', label: 'Raw', icon: Activity, end: true },
+  { to: '/today', label: 'Today', icon: Sun },
   { to: '/reports', label: 'Reports', icon: FileText },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;

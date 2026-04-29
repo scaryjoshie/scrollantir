@@ -1,4 +1,5 @@
 @import 'vis-timeline/styles/vis-timeline-graph2d.min.css';
+@import 'mapbox-gl/dist/mapbox-gl.css';
 
 @tailwind base;
 @tailwind components;

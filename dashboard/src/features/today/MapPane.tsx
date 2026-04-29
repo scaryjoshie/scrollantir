@@ -1,0 +1,364 @@
+// Mapbox GL JS pane.
+//
+//   place_visit  → marker + ~50° pitch + building highlight at coords
+//   travel_leg   → polyline along path + start/end pins, fitBounds
+//   topic_chunk  → fly to parent visit's coords + same building highlight
+//   moment       → fly to anchor coords if present
+//
+// Lighting preset is driven by the selected entry's local time-of-day
+// (dawn / day / dusk / night), not the dashboard theme — the map
+// represents *when* the event happened, not the user's current viewing
+// context.
+//
+// Building highlight uses Mapbox Standard's `colorBuildingSelect`
+// config + feature-state `select: true` on the building feature found
+// at the visit's coords.
+
+import { useEffect, useRef } from 'react';
+import mapboxgl from 'mapbox-gl';
+import type {
+  TimelineEntry,
+  PlaceVisit,
+  TravelActivity,
+  TravelLeg,
+} from './types';
+import { legById, visitById } from './fixtures';
+import {
+  setupLegPathLayers,
+  setLegPath,
+  tickLegPathAnimation,
+} from './legPathLayers';
+
+const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
+const DEFAULT_CENTER: [number, number] = [-87.6004, 41.7912];
+const STYLE = 'mapbox://styles/mapbox/standard';
+
+const VISIT_PIN = '#C79BD8';        // dashboard's location accent
+const START_PIN = '#9DA0A6';        // muted gray — leg origin
+const BUILDING_HIGHLIGHT = 'hsl(285, 40%, 65%)'; // matches VISIT_PIN
+
+type LightPreset = 'dawn' | 'day' | 'dusk' | 'night';
+
+function presetForTime(iso: string): LightPreset {
+  const hour = new Date(iso).getHours();
+  // Mapbox Standard only has 4 lighting presets. By reusing `dawn` for
+  // both sunrise AND golden hour, and `dusk` for both pre-dawn twilight
+  // AND sunset twilight, we get a 7-step progression across the day:
+  //   night → dusk → dawn → day → dawn → dusk → night
+  // which feels much smoother than 3 transitions.
+  if (hour < 5) return 'night';     // late-night / pre-dawn dark
+  if (hour < 6) return 'dusk';      // pre-dawn twilight
+  if (hour < 8) return 'dawn';      // sunrise
+  if (hour < 17) return 'day';      // full daylight
+  if (hour < 19) return 'dawn';     // golden hour (warm low sun, reused)
+  if (hour < 21) return 'dusk';     // sunset twilight
+  return 'night';                    // late evening dark
+}
+
+function timeForEntry(entry: TimelineEntry | null): string | null {
+  if (!entry) return null;
+  if (entry.kind === 'moment') return entry.ts;
+  return entry.start_ts;
+}
+
+type CameraTarget =
+  | {
+      kind: 'point';
+      lng: number;
+      lat: number;
+      pitch: number;
+      // visit/chunk: highlight the building at this coord. moments don't.
+      highlightBuilding: boolean;
+    }
+  | {
+      kind: 'path';
+      path: Array<[number, number]>;
+      from: [number, number] | null;
+      to: [number, number] | null;
+      // dominant_activity drives per-mode stroke style — see
+      // legPathLayers.ts MODE_STYLES.
+      mode: TravelActivity;
+    };
+
+function visitTarget(v: PlaceVisit, pitch: number): CameraTarget {
+  return {
+    kind: 'point',
+    lng: v.data.lng,
+    lat: v.data.lat,
+    pitch,
+    highlightBuilding: true,
+  };
+}
+
+function legTarget(leg: TravelLeg): CameraTarget {
+  const fromV = visitById[leg.data.from_visit_id];
+  const toV = visitById[leg.data.to_visit_id];
+  return {
+    kind: 'path',
+    path: leg.path,
+    from: fromV ? [fromV.data.lng, fromV.data.lat] : null,
+    to: toV ? [toV.data.lng, toV.data.lat] : null,
+    mode: leg.data.dominant_activity,
+  };
+}
+
+function targetForSelection(entry: TimelineEntry | null): CameraTarget | null {
+  if (!entry) return null;
+  if (entry.kind === 'place_visit') return visitTarget(entry, 55);
+  if (entry.kind === 'travel_leg') return legTarget(entry);
+  if (entry.kind === 'topic_chunk') {
+    // Chunk parents to a visit OR a leg. Match the parent's camera
+    // treatment so e.g. "Spotify (during bike)" draws the leg path,
+    // not a point at the start coord.
+    const v = visitById[entry.parent_id];
+    if (v) return visitTarget(v, 60);
+    const leg = legById[entry.parent_id];
+    if (leg) return legTarget(leg);
+    return null;
+  }
+  // moment
+  if (entry.lat != null && entry.lng != null) {
+    return {
+      kind: 'point',
+      lng: entry.lng,
+      lat: entry.lat,
+      pitch: 50,
+      highlightBuilding: false,
+    };
+  }
+  return null;
+}
+
+type BuildingFs = {
+  source: string;
+  sourceLayer: string;
+  id: string | number;
+};
+
+export default function MapPane({
+  selected,
+}: {
+  selected: TimelineEntry | null;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<mapboxgl.Map | null>(null);
+  const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const styleReadyRef = useRef(false);
+  const buildingFsRef = useRef<BuildingFs | null>(null);
+  const dashRafRef = useRef<number | null>(null);
+  const dashStepRef = useRef(-1);
+
+  // Bring up the map once on mount.
+  useEffect(() => {
+    if (!TOKEN || !containerRef.current) return;
+    mapboxgl.accessToken = TOKEN;
+
+    // Single RAF loop drives all dash-animated leg-path layers (walking,
+    // running, etc.). The module computes the per-mode dasharray from
+    // the timestamp and skips work when the quantized step is unchanged.
+    const startDashAnimation = () => {
+      if (dashRafRef.current != null) return;
+      const tick = (ts: number) => {
+        const map = mapRef.current;
+        if (!map) {
+          dashRafRef.current = null;
+          return;
+        }
+        dashStepRef.current = tickLegPathAnimation(map, ts, dashStepRef.current);
+        dashRafRef.current = requestAnimationFrame(tick);
+      };
+      dashRafRef.current = requestAnimationFrame(tick);
+    };
+
+    const m = new mapboxgl.Map({
+      container: containerRef.current,
+      style: STYLE,
+      center: DEFAULT_CENTER,
+      zoom: 15.5,
+      pitch: 50,
+      bearing: -20,
+      antialias: true,
+    });
+
+    m.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
+
+    m.on('style.load', () => {
+      // Default preset until the first selection arrives.
+      try {
+        m.setConfigProperty('basemap', 'lightPreset', 'day');
+      } catch {
+        /* older style; ignore */
+      }
+      // Building highlight color used when feature state .select = true.
+      try {
+        m.setConfigProperty('basemap', 'colorBuildingSelect', BUILDING_HIGHLIGHT);
+      } catch {
+        /* older style; ignore */
+      }
+      // Travel-leg path layers (one per mode, slotted into 'middle' so
+      // 3D buildings occlude them like ground paint). Setup is a
+      // single call into the legPathLayers module — see MODE_STYLES
+      // there for per-mode color/width/dash configuration.
+      setupLegPathLayers(m);
+      styleReadyRef.current = true;
+      startDashAnimation();
+    });
+
+    mapRef.current = m;
+    return () => {
+      styleReadyRef.current = false;
+      if (dashRafRef.current != null) {
+        cancelAnimationFrame(dashRafRef.current);
+        dashRafRef.current = null;
+      }
+      m.remove();
+      mapRef.current = null;
+      markersRef.current = [];
+      buildingFsRef.current = null;
+    };
+  }, []);
+
+  // React to the host's selection.
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m) return;
+
+    const apply = () => {
+      // 1. Lighting preset from the entry's time-of-day.
+      const t = timeForEntry(selected);
+      if (t) {
+        try {
+          m.setConfigProperty('basemap', 'lightPreset', presetForTime(t));
+        } catch {
+          /* ignore */
+        }
+      }
+
+      // 2. Clear prior markers + building highlight before applying new.
+      markersRef.current.forEach((mk) => mk.remove());
+      markersRef.current = [];
+      if (buildingFsRef.current) {
+        try {
+          m.removeFeatureState(buildingFsRef.current);
+        } catch {
+          /* ignore */
+        }
+        buildingFsRef.current = null;
+      }
+
+      const target = targetForSelection(selected);
+      if (!target) return;
+
+      if (target.kind === 'point') {
+        // Clear any prior leg polyline.
+        setLegPath(m, null, null);
+
+        // Pin at the point.
+        markersRef.current.push(
+          new mapboxgl.Marker({ color: VISIT_PIN })
+            .setLngLat([target.lng, target.lat])
+            .addTo(m),
+        );
+
+        m.flyTo({
+          center: [target.lng, target.lat],
+          zoom: 16.5,
+          pitch: target.pitch,
+          bearing: -20,
+          duration: 1200,
+          essential: true,
+        });
+
+        // Building highlight: wait until movement settles + buildings
+        // are rendered, then query and tag the feature with select=true.
+        if (target.highlightBuilding) {
+          m.once('idle', () => {
+            const point = m.project([target.lng, target.lat]);
+            const features = m.queryRenderedFeatures(point);
+            const bldg = features.find(
+              (f) => f.sourceLayer === 'building' && f.id != null,
+            );
+            if (bldg && bldg.id != null && bldg.source) {
+              const fs: BuildingFs = {
+                source: bldg.source,
+                sourceLayer: bldg.sourceLayer ?? 'building',
+                id: bldg.id,
+              };
+              try {
+                m.setFeatureState(fs, { select: true });
+                buildingFsRef.current = fs;
+              } catch {
+                /* feature state unsupported; silently skip */
+              }
+            }
+          });
+        }
+      } else {
+        // Path: draw polyline, drop start + end pins, fit bounds.
+        // legPathLayers routes the feature to the right per-mode
+        // layer via the layer's filter on `properties.mode`.
+        setLegPath(m, target.path, target.mode);
+
+        if (target.from) {
+          const el = document.createElement('div');
+          el.style.cssText = [
+            'width:12px',
+            'height:12px',
+            'border-radius:50%',
+            `background:${START_PIN}`,
+            'border:2px solid #fff',
+            'box-shadow:0 0 0 1px rgba(0,0,0,0.35)',
+          ].join(';');
+          markersRef.current.push(
+            new mapboxgl.Marker({ element: el }).setLngLat(target.from).addTo(m),
+          );
+        }
+        if (target.to) {
+          markersRef.current.push(
+            new mapboxgl.Marker({ color: VISIT_PIN }).setLngLat(target.to).addTo(m),
+          );
+        }
+
+        if (target.path.length >= 2) {
+          let minLng = Infinity;
+          let minLat = Infinity;
+          let maxLng = -Infinity;
+          let maxLat = -Infinity;
+          for (const [lng, lat] of target.path) {
+            if (lng < minLng) minLng = lng;
+            if (lat < minLat) minLat = lat;
+            if (lng > maxLng) maxLng = lng;
+            if (lat > maxLat) maxLat = lat;
+          }
+          m.fitBounds(
+            [
+              [minLng, minLat],
+              [maxLng, maxLat],
+            ],
+            { padding: 80, pitch: 30, bearing: -20, duration: 1200 },
+          );
+        }
+      }
+    };
+
+    if (styleReadyRef.current) apply();
+    else m.once('style.load', apply);
+  }, [selected]);
+
+  if (!TOKEN) {
+    return (
+      <div className="h-full w-full grid place-items-center bg-paper-panel">
+        <div className="text-center text-sm text-ink-muted px-6 max-w-sm">
+          <div className="font-medium text-ink">Mapbox token missing</div>
+          <div className="mt-1 text-xs leading-relaxed">
+            Set <code className="bg-paper-hover px-1 py-0.5 rounded">VITE_MAPBOX_TOKEN</code>{' '}
+            in <code className="bg-paper-hover px-1 py-0.5 rounded">dashboard/.env.local</code>{' '}
+            and restart the dev server.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <div ref={containerRef} className="absolute inset-0" />;
+}
