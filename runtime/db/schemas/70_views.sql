@@ -83,6 +83,33 @@ FROM public.derived_events de
 WHERE de.source = 'travel_leg/v1';
 
 
+-- =========================================================================
+-- v_sleep_today — sleep/v1 rows. Dashboard uses last-night's row to
+-- set the day's wake-time boundary instead of the static 04:00 cutoff.
+-- Each row's [start_ts, end_ts] IS the sleep span (start = onset,
+-- end = wake).
+-- =========================================================================
+
+CREATE OR REPLACE VIEW public.v_sleep_today AS
+SELECT
+  de.id,
+  de.source,
+  de.start_ts,
+  de.end_ts,
+  jsonb_build_object(
+    'confidence',      (de.data->>'confidence')::float8,
+    'wake_local_date', de.data->>'wake_local_date'
+  ) AS data,
+  jsonb_build_object(
+    'disrupted_count', COALESCE((de.provenance->>'disrupted_count')::int, 0),
+    'duration_hours',  (de.provenance->>'duration_hours')::float8,
+    'wake_local_time', de.provenance->>'wake_local_time'
+  ) AS provenance
+FROM public.derived_events de
+WHERE de.source = 'sleep/v1';
+
+
 -- Grants: user_role reads via PostgREST.
 GRANT SELECT ON public.v_place_visit_today TO user_role;
 GRANT SELECT ON public.v_travel_leg_today  TO user_role;
+GRANT SELECT ON public.v_sleep_today       TO user_role;

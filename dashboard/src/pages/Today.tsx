@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 import { useQuery } from '@tanstack/react-query';
 import PageHeader from '@/components/PageHeader';
 import DatePicker, { startOfLocalDay } from '@/components/DatePicker';
@@ -7,50 +7,111 @@ import EmptyState from '@/components/EmptyState';
 import Timeline from '@/features/today/Timeline';
 import MapPane from '@/features/today/MapPane';
 import DetailPane from '@/features/today/DetailPane';
-import type { PlaceVisit, TimelineEntry, TravelLeg } from '@/features/today/types';
+import type {
+  Moment,
+  PlaceVisit,
+  TimelineEntry,
+  TravelLeg,
+} from '@/features/today/types';
 import {
   TodayLookupsProvider,
   useBuildLookups,
 } from '@/features/today/lookups';
-import { fetchPlaceVisits, fetchTravelLegs } from '@/lib/api';
+import {
+  fetchPlaceVisits,
+  fetchSleepByWakeDates,
+  fetchTravelLegs,
+} from '@/lib/api';
 
-// Day boundary 04:00 → 04:00 next morning. Late-night activity past
-// midnight but before bed belongs to the previous calendar date's
-// view. Matches the deriver's window-keying convention.
-const DAY_BOUNDARY_HOUR = 4;
+// Fallback day boundary when no sleep row exists for the displayed
+// day. Used pre-derive (fresh DB) and on days the deriver couldn't
+// confidently detect sleep. Sleep takes priority when present.
+const FALLBACK_DAY_BOUNDARY_HOUR = 4;
 
-function dayWindow(day: Date): { fromIso: string; toIso: string } {
-  const from = new Date(day);
-  from.setHours(DAY_BOUNDARY_HOUR, 0, 0, 0);
+function fallbackDayStart(day: Date): Date {
+  const d = new Date(day);
+  d.setHours(FALLBACK_DAY_BOUNDARY_HOUR, 0, 0, 0);
+  return d;
+}
+
+function defaultWindow(day: Date): { fromIso: string; toIso: string } {
+  const from = fallbackDayStart(day);
   const to = new Date(from);
   to.setDate(to.getDate() + 1);
   return { fromIso: from.toISOString(), toIso: to.toISOString() };
 }
 
+function nextDayKey(dayKey: string): string {
+  const d = parseISO(dayKey);
+  d.setDate(d.getDate() + 1);
+  return format(d, 'yyyy-MM-dd');
+}
+
 export default function TodayPage() {
   const [day, setDay] = useState<Date>(() => startOfLocalDay(new Date()));
-  const { fromIso, toIso } = dayWindow(day);
   const dayKey = format(day, 'yyyy-MM-dd');
+  const tomorrowKey = nextDayKey(dayKey);
 
+  // Sleep drives the day boundary. We need today's wake (= day_start)
+  // and tomorrow's wake (= day_end). The single query returns both
+  // when both exist; either may be absent (fresh DB, low confidence,
+  // user still asleep) → fall back to FALLBACK_DAY_BOUNDARY_HOUR.
+  const sleepQ = useQuery({
+    queryKey: ['sleep', dayKey, tomorrowKey],
+    queryFn: () => fetchSleepByWakeDates([dayKey, tomorrowKey]),
+  });
+
+  const wakeBounds = useMemo(() => {
+    const rows = sleepQ.data ?? [];
+    const todayWake = rows.find((r) => r.data.wake_local_date === dayKey);
+    const tomorrowWake = rows.find((r) => r.data.wake_local_date === tomorrowKey);
+    const fallback = defaultWindow(day);
+    return {
+      fromIso: todayWake?.end_ts ?? fallback.fromIso,
+      toIso: tomorrowWake?.end_ts ?? fallback.toIso,
+      todayWake: todayWake ?? null,
+    };
+  }, [sleepQ.data, day, dayKey, tomorrowKey]);
+  const { fromIso, toIso, todayWake } = wakeBounds;
+
+  // Visits + legs queries depend on the resolved day window — keyed
+  // on the actual ISO bounds so a sleep row arriving later (and
+  // shifting the boundary) refetches correctly.
   const visitsQ = useQuery({
-    queryKey: ['place_visits', dayKey],
+    queryKey: ['place_visits', fromIso, toIso],
     queryFn: () => fetchPlaceVisits(fromIso, toIso),
+    enabled: !sleepQ.isLoading,
   });
   const legsQ = useQuery({
-    queryKey: ['travel_legs', dayKey],
+    queryKey: ['travel_legs', fromIso, toIso],
     queryFn: () => fetchTravelLegs(fromIso, toIso),
+    enabled: !sleepQ.isLoading,
   });
+
+  const wakeMoment: Moment | null = useMemo(() => {
+    if (!todayWake) return null;
+    const wakeIso = todayWake.end_ts;
+    const localTime = todayWake.provenance.wake_local_time?.slice(0, 5) ?? '';
+    return {
+      kind: 'moment',
+      id: `wake-${dayKey}`,
+      ts: wakeIso,
+      label: localTime ? `Woke up at ${localTime}` : 'Woke up',
+      glyph: '☀️',
+      source_hint: 'sleep/v1',
+    };
+  }, [todayWake, dayKey]);
 
   const entries: TimelineEntry[] = useMemo(() => {
     const visits = visitsQ.data ?? [];
     const legs = legsQ.data ?? [];
-    // Visits + legs both have start_ts (Moment uses `ts` and isn't
-    // fetched in v0). Sort by start_ts then re-widen to TimelineEntry
-    // for the consumer panes.
-    const merged: Array<PlaceVisit | TravelLeg> = [...visits, ...legs];
-    merged.sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
-    return merged;
-  }, [visitsQ.data, legsQ.data]);
+    const spans: Array<PlaceVisit | TravelLeg> = [...visits, ...legs];
+    spans.sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
+    // Wake Moment leads the day-narrative when sleep was confidently
+    // detected. Without it (fallback boundary), the timeline starts
+    // with whichever span is first — same as before.
+    return wakeMoment ? [wakeMoment, ...spans] : spans;
+  }, [visitsQ.data, legsQ.data, wakeMoment]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 
@@ -75,8 +136,8 @@ export default function TodayPage() {
   );
 
   const subtitle = format(day, 'EEEE');
-  const isLoading = visitsQ.isLoading || legsQ.isLoading;
-  const error = visitsQ.error || legsQ.error;
+  const isLoading = sleepQ.isLoading || visitsQ.isLoading || legsQ.isLoading;
+  const error = sleepQ.error || visitsQ.error || legsQ.error;
 
   return (
     <TodayLookupsProvider value={lookups}>
@@ -99,7 +160,7 @@ export default function TodayPage() {
           ) : entries.length === 0 ? (
             <EmptyState
               title="No data for this day"
-              body={`Day boundary runs ${DAY_BOUNDARY_HOUR}:00 → ${DAY_BOUNDARY_HOUR}:00.
+              body={`Day starts at wake (or ${FALLBACK_DAY_BOUNDARY_HOUR}:00 if sleep wasn't detected).
 Pick a different day, or wait for the deriver to run.`}
             />
           ) : (

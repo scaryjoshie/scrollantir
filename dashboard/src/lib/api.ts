@@ -8,6 +8,7 @@
 import type { DashboardEvent, Report } from './types';
 import type {
   PlaceVisit,
+  Sleep,
   TravelLeg,
 } from '@/features/today/types';
 
@@ -81,6 +82,23 @@ export function fetchPlaceVisits(
     `&order=start_ts.asc`;
   return pgrst<Array<Omit<PlaceVisit, 'kind'>>>(url).then((rows) =>
     rows.map((r) => ({ ...r, kind: 'place_visit' as const })),
+  );
+}
+
+// Sleep rows whose `wake_local_date` matches one of the supplied
+// YYYY-MM-DD strings. /today queries this for the displayed day's
+// wake (= day_start) and the next day's wake (= day_end). Returns
+// rows or an empty array when no sleep was confidently detected.
+export function fetchSleepByWakeDates(dates: string[]): Promise<Sleep[]> {
+  if (dates.length === 0) return Promise.resolve([]);
+  const list = dates.join(',');
+  // PostgREST jsonb path filter: data->>wake_local_date=in.(d1,d2)
+  const url =
+    `/v_sleep_today` +
+    `?data->>wake_local_date=in.(${encodeURIComponent(list)})` +
+    `&order=end_ts.asc`;
+  return pgrst<Array<Omit<Sleep, 'kind'>>>(url).then((rows) =>
+    rows.map((r) => ({ ...r, kind: 'sleep' as const })),
   );
 }
 

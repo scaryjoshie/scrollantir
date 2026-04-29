@@ -23,6 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 # Importing the deriver modules side-effect-registers them in
 # core.derivers.REGISTRY. Add new derivers here as they ship.
 import scrollantir.core.derivers.place_visit  # noqa: F401
+import scrollantir.core.derivers.sleep  # noqa: F401
 import scrollantir.core.derivers.travel_leg  # noqa: F401
 
 from scrollantir.core.db import close_after, connect_agent
@@ -44,25 +45,32 @@ DERIVER_INTERVAL_MINUTES = 5
 # get folded in. Single-user data volume makes this cheap.
 ROLLING_WINDOW_HOURS = 24
 
+# Sleep needs more lookback than place_visit — the deriver looks for
+# silent runs ending in "morning hours" of the user's local day, so
+# at any tick we need to see last night's evening + this morning's
+# wake. 36h covers any wake-time within a typical sleep schedule even
+# when the tick fires late in the day.
+SLEEP_WINDOW_HOURS = 36
+
 # Order matters: travel_leg reads place_visit rows from derived_events.
 DERIVER_CHAIN: tuple[str, ...] = (
     "place_visit/v1",
     "travel_leg/v1",
+    "sleep/v1",
 )
 
 
 def run_recent_derivers() -> None:
-    """Re-derive the deriver chain over the rolling last-N-hours
-    window. Each call is idempotent via replace_derived_window.
-    Errors are logged and swallowed so one bad tick doesn't kill
-    the scheduler."""
+    """Re-derive the deriver chain over rolling windows. Each call is
+    idempotent via replace_derived_window. Errors are logged and
+    swallowed so one bad tick doesn't kill the scheduler.
+
+    Each deriver picks its own window length: place_visit + travel_leg
+    use the 24h ROLLING_WINDOW_HOURS; sleep uses SLEEP_WINDOW_HOURS so
+    late-night users still get last night's wake detected even when
+    the tick fires deep into the day.
+    """
     end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=ROLLING_WINDOW_HOURS)
-    log.info(
-        "derivers tick: window=[%s, %s)",
-        start.isoformat(),
-        end.isoformat(),
-    )
     try:
         with close_after(connect_agent()) as conn:
             for source in DERIVER_CHAIN:
@@ -70,6 +78,17 @@ def run_recent_derivers() -> None:
                 if deriver is None:
                     log.error("missing deriver %s in REGISTRY", source)
                     continue
+                hours = (
+                    SLEEP_WINDOW_HOURS if source == "sleep/v1"
+                    else ROLLING_WINDOW_HOURS
+                )
+                start = end - timedelta(hours=hours)
+                log.info(
+                    "derivers tick: source=%s window=[%s, %s)",
+                    source,
+                    start.isoformat(),
+                    end.isoformat(),
+                )
                 result = deriver.run(conn, start, end)
                 log.info(
                     "deriver=%s rows=%d metrics=%s",

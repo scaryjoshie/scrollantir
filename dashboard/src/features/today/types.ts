@@ -74,6 +74,27 @@ export type TravelLeg = {
   path: Array<[number, number]>; // [lng, lat] tuples (Mapbox order)
 };
 
+// public.derived_events row for source='sleep/v1'. Each row's
+// [start_ts, end_ts] IS the sleep span — start_ts = sleep onset,
+// end_ts = wake. Used by /today to set the day-window boundary
+// to the user's actual wake time (replacing a static 04:00 cutoff).
+export type Sleep = {
+  kind: 'sleep';
+  id: string;
+  source: 'sleep/v1';
+  start_ts: string; // sleep onset (UTC ISO)
+  end_ts: string;   // wake (UTC ISO)
+  data: {
+    confidence: number;
+    wake_local_date: string; // YYYY-MM-DD in user's local TZ
+  };
+  provenance: {
+    disrupted_count: number;
+    duration_hours: number;
+    wake_local_time: string; // HH:MM:SS in user's local TZ
+  };
+};
+
 export type TopicCategory = 'work' | 'play' | 'neutral';
 
 // A chronological chunk of activity within a place_visit *or* travel_leg,
