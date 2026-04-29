@@ -60,8 +60,13 @@ BEGIN
     RAISE EXCEPTION 'invalid p_source: %', p_source USING ERRCODE = '22023';
   END IF;
 
-  IF jsonb_typeof(p_rows) <> 'array' THEN
-    RAISE EXCEPTION 'p_rows must be a JSONB array' USING ERRCODE = '22023';
+  -- jsonb_typeof(NULL) returns NULL, so a bare `<> 'array'` check
+  -- would short-circuit on a NULL caller and silently clear the
+  -- window via the DELETE below. Reject NULL explicitly.
+  IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+    RAISE EXCEPTION 'p_rows must be a JSONB array (got %)',
+      COALESCE(jsonb_typeof(p_rows), 'null')
+      USING ERRCODE = '22023';
   END IF;
 
   -- Cross-row validation. A caller passing rows with mixed sources or

@@ -4,6 +4,10 @@
 -- See runtime/db/schemas/60_agent_api.sql for the canonical body;
 -- this migration is the forward-applied copy for live DBs.
 
+-- Idempotent on fresh DBs (10_schemas.sql already creates this) but
+-- required for live DBs that booted before commit 1b.
+CREATE SCHEMA IF NOT EXISTS agent_api;
+
 CREATE OR REPLACE FUNCTION agent_api.replace_derived_window(
   p_source TEXT,
   p_start  TIMESTAMPTZ,
@@ -28,8 +32,10 @@ BEGIN
     RAISE EXCEPTION 'invalid p_source: %', p_source USING ERRCODE = '22023';
   END IF;
 
-  IF jsonb_typeof(p_rows) <> 'array' THEN
-    RAISE EXCEPTION 'p_rows must be a JSONB array' USING ERRCODE = '22023';
+  IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+    RAISE EXCEPTION 'p_rows must be a JSONB array (got %)',
+      COALESCE(jsonb_typeof(p_rows), 'null')
+      USING ERRCODE = '22023';
   END IF;
 
   SELECT COUNT(*) INTO v_bad_source

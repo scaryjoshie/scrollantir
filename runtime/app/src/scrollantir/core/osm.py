@@ -155,8 +155,17 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _to_osm_feature(f: dict[str, Any]) -> OSMFeature | None:
     props = f.get("properties") or {}
     geometry = f.get("geometry") or {}
-    feature_id = f.get("id")
-    if feature_id is None:
+    feature_id_raw = f.get("id")
+    if feature_id_raw is None:
+        return None
+    # feature_id is sometimes int, sometimes a string of digits, occasionally
+    # a non-numeric string (rare). Coerce to int when possible; otherwise
+    # bail — silently mapping to 0 would collide all malformed features
+    # under the same place_id.
+    try:
+        feature_id = int(feature_id_raw)
+    except (TypeError, ValueError):
+        log.debug("OSM feature id is non-numeric: %r — skipping", feature_id_raw)
         return None
     layer = props.get("tilequery", {}).get("layer") or ""
     distance_m = float(props.get("tilequery", {}).get("distance", 0.0))
@@ -180,7 +189,7 @@ def _to_osm_feature(f: dict[str, Any]) -> OSMFeature | None:
 
     return OSMFeature(
         feature_type=layer,
-        feature_id=int(feature_id) if isinstance(feature_id, (int, str)) else 0,
+        feature_id=feature_id,
         name=_name_from_feature(f) or "",
         category=_category_from_feature(f),
         centroid_lat=centroid_lat,

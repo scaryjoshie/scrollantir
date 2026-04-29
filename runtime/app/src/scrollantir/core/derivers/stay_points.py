@@ -86,6 +86,7 @@ def extract_stay_points(
     dist_threshold_m: float = 40.0,
     time_threshold_min: float = 8.0,
     gap_threshold_hours: float = 4.0,
+    min_points: int = 3,
 ) -> list[StayPoint]:
     """Run SPD over a sequence of GPS readings.
 
@@ -93,14 +94,21 @@ def extract_stay_points(
     whose `accuracy_m > accuracy_max_m` are dropped before the walk;
     readings within `dist_threshold_m` of the current run's anchor
     extend the run; a reading further than that ends the run, which
-    becomes a stay only if `(end_ts - start_ts) >= time_threshold_min`.
+    becomes a stay only if `(end_ts - start_ts) >= time_threshold_min`
+    AND the run has at least `min_points` readings.
+
+    `min_points` is a thin-evidence guard. With gap-bridging, a 4-hour
+    gap bracketed by two clean readings would otherwise produce a
+    confident 4-hour stay from 2 GPS points. Requiring ≥3 points means
+    the bridged-gap case still works (2 brackets + ≥1 inside) but a
+    pure 2-point bridge gets rejected as too thin.
 
     Gap-bridging: a time gap between two readings up to
-    `gap_threshold_hours` hours is allowed to fall *inside* a run
-    without breaking it, as long as the post-gap reading is still
-    within `dist_threshold_m` of the anchor. This is what handles
-    long indoor stays where GPS gives up entirely (e.g., 4 hours in
-    a basement with a clean reading at the door before and after).
+    `gap_threshold_hours` is allowed to fall *inside* a run without
+    breaking it, as long as the post-gap reading is still within
+    `dist_threshold_m` of the anchor. Handles long indoor stays where
+    GPS gives up entirely (e.g., 4 hours in a basement with a clean
+    reading at the door before and after).
     """
     if not readings:
         return []
@@ -138,13 +146,14 @@ def extract_stay_points(
 
         run = filtered[i : j + 1]
         dwell_s = (run[-1].ts - run[0].ts).total_seconds()
-        if dwell_s >= time_threshold_s:
+        if dwell_s >= time_threshold_s and len(run) >= min_points:
             stays.append(_stay_from_run(run, dwell_s))
             i = j + 1
         else:
-            # Run too short to qualify as a stay — advance one step
-            # and retry. (Important: we don't skip to j+1 here, since
-            # the next reading might be the anchor of a real stay.)
+            # Run too short to qualify as a stay (insufficient dwell
+            # OR insufficient evidence) — advance one step and retry.
+            # We don't skip to j+1 here since the next reading might
+            # be the anchor of a real stay.
             i += 1
 
     return stays

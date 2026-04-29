@@ -155,6 +155,39 @@ def test_short_dwell_below_threshold_emits_no_stay() -> None:
     assert stays == []
 
 
+def test_thin_evidence_bridged_gap_rejected() -> None:
+    """Two clean readings 4 hours apart at the same coords would
+    otherwise produce a confident 4-hour stay from 2 GPS points
+    (gap-bridging swallows the silent middle). The min_points guard
+    rejects runs with insufficient evidence regardless of dwell."""
+    start = UTC(2026, 4, 29, 10, 0)
+    readings = stream(
+        start=start,
+        samples=[
+            (NORRIS, 8.0, 0.0),                  # arrive
+            (NORRIS, 8.0, 4 * 3600.0),           # 4h later, same place
+        ],
+    )
+    stays = extract_stay_points(readings)
+    assert stays == [], "2-point 4-hour bridge should fail min_points"
+
+
+def test_three_point_bridged_gap_accepted() -> None:
+    """A bridged gap WITH at least one reading inside the gap is
+    enough evidence — should produce one stay."""
+    start = UTC(2026, 4, 29, 10, 0)
+    readings = stream(
+        start=start,
+        samples=[
+            (NORRIS, 8.0, 0.0),                  # arrive
+            (NORRIS, 12.0, 30 * 60.0),           # 30 min in
+            (NORRIS, 8.0, 3.5 * 3600.0),         # 3.5h later, same place
+        ],
+    )
+    stays = extract_stay_points(readings)
+    assert len(stays) == 1
+
+
 def test_two_separated_stays_emit_two() -> None:
     """A stay at Norris, then walking far away, then a stay at Sargent
     must produce two stays. Sanity check on run termination."""
