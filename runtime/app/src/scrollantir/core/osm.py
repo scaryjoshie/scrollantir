@@ -137,25 +137,40 @@ def _lookup_cached(rounded: tuple[float, float, int]) -> OSMFeature | None:
 
 
 def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Prefer named buildings and POIs over anonymous landuse polygons.
+    """Pick the best feature for visit attribution from a Tilequery
+    response (features pre-sorted ascending by distance).
 
-    Walk features by ascending tilequery distance (already pre-sorted),
-    return the first that maps to a non-'mixed' category. If every
-    feature maps to 'mixed', return the closest one anyway — better a
-    weak attribution than `None`.
+    Priority order, from highest to lowest:
+      1. Named feature with a non-'mixed' category (a `poi_label
+         class=education` like "Norris University Center").
+      2. Any named feature, even if `category=mixed` — this is what
+         lets us pick "Foster-Walker Complex" (poi_label, mixed) over
+         a 0m unnamed `building` polygon underneath it. Most campus
+         buildings on Mapbox Streets v8 have no `name` on their
+         building feature; the name lives on a nearby poi_label.
+      3. Closest feature regardless of name — final fallback so a
+         visit always gets *some* attribution.
+
+    Within a tier, returns the closest match (features come pre-sorted
+    by ascending tilequery distance).
     """
-    fallback: dict[str, Any] | None = None
+    named_typed: dict[str, Any] | None = None
+    named_any: dict[str, Any] | None = None
+    closest: dict[str, Any] | None = None
     for f in features:
         if not isinstance(f, dict):
             continue
-        category = _category_from_feature(f)
+        if closest is None:
+            closest = f
         name = _name_from_feature(f)
-        # Strong preference: named feature with a non-generic category.
-        if category != "mixed" and name:
-            return f
-        if fallback is None:
-            fallback = f
-    return fallback
+        if not name:
+            continue
+        if named_any is None:
+            named_any = f
+        if _category_from_feature(f) != "mixed":
+            named_typed = f
+            break  # tier 1 hit; no need to keep walking
+    return named_typed or named_any or closest
 
 
 def _to_osm_feature(f: dict[str, Any]) -> OSMFeature | None:
