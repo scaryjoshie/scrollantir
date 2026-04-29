@@ -136,26 +136,40 @@ def _lookup_cached(rounded: tuple[float, float, int]) -> OSMFeature | None:
     return _to_osm_feature(best)
 
 
+def _is_building_poi(f: dict[str, Any]) -> bool:
+    """A poi_label with class='building' is Mapbox's *building name*
+    label — distinct from poi_labels for tenants of the building
+    (e.g. 'Fran's Cafe' has class='food_and_drink'). The Standard
+    renderer prefers these for building-level labeling, and so do
+    we: the dorm beats the cafe inside it."""
+    p = f.get("properties") or {}
+    layer = p.get("tilequery", {}).get("layer", "")
+    return layer == "poi_label" and p.get("class") == "building"
+
+
 def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the best feature for visit attribution from a Tilequery
     response (features pre-sorted ascending by distance).
 
-    Priority order, from highest to lowest:
-      1. Named feature with a non-'mixed' category (a `poi_label
-         class=education` like "Norris University Center").
-      2. Any named feature, even if `category=mixed` — this is what
-         lets us pick "Foster-Walker Complex" (poi_label, mixed) over
-         a 0m unnamed `building` polygon underneath it. Most campus
-         buildings on Mapbox Streets v8 have no `name` on their
-         building feature; the name lives on a nearby poi_label.
-      3. Closest feature regardless of name — final fallback so a
-         visit always gets *some* attribution.
+    Priority order, from highest to lowest. Within a tier, the
+    closest match wins (the feature list comes sorted).
 
-    Within a tier, returns the closest match (features come pre-sorted
-    by ascending tilequery distance).
+      1. Named building-label POI (`poi_label`, `class=building`).
+         These are the labels the Mapbox renderer puts ON a building:
+         "Willard Residential College", "Foster-Walker Complex".
+         Outrank tenant POIs even when the tenant is closer — Fran's
+         Cafe at 17m loses to Willard at 23m because the user is
+         at the dorm, not specifically at the cafe.
+      2. Named feature with a non-'mixed' category (a poi_label
+         with class=education / library / food / etc., or a
+         categorized building like Norris with class=university).
+      3. Any named feature, even if category=mixed.
+      4. Closest feature, named or not — last-resort fallback so a
+         visit always lands SOMETHING.
     """
-    named_typed: dict[str, Any] | None = None
-    named_any: dict[str, Any] | None = None
+    building_pois: list[dict[str, Any]] = []
+    typed_named: list[dict[str, Any]] = []
+    any_named: list[dict[str, Any]] = []
     closest: dict[str, Any] | None = None
     for f in features:
         if not isinstance(f, dict):
@@ -165,12 +179,19 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
         name = _name_from_feature(f)
         if not name:
             continue
-        if named_any is None:
-            named_any = f
-        if _category_from_feature(f) != "mixed":
-            named_typed = f
-            break  # tier 1 hit; no need to keep walking
-    return named_typed or named_any or closest
+        if _is_building_poi(f):
+            building_pois.append(f)
+        elif _category_from_feature(f) != "mixed":
+            typed_named.append(f)
+        else:
+            any_named.append(f)
+    if building_pois:
+        return building_pois[0]
+    if typed_named:
+        return typed_named[0]
+    if any_named:
+        return any_named[0]
+    return closest
 
 
 def _to_osm_feature(f: dict[str, Any]) -> OSMFeature | None:
@@ -280,20 +301,49 @@ _LANDUSE_CATEGORY: dict[str, str] = {
     "parking": "mixed",
 }
 
+# Building-label POIs (poi_label with class='building') carry the
+# building type in the `type` field rather than `class`. Map common
+# Mapbox values to scrollantir's PlaceCategory.
+_BUILDING_POI_TYPE_CATEGORY: dict[str, str] = {
+    "dormitory": "residence",
+    "residential": "residence",
+    "apartments": "residence",
+    "house": "residence",
+    "university": "class",
+    "school": "class",
+    "college": "class",
+    "kindergarten": "class",
+    "library": "study",
+    "office": "work",
+    "commercial": "work",
+    "retail": "work",
+    "industrial": "work",
+    "warehouse": "work",
+}
+
 
 def _category_from_feature(f: dict[str, Any]) -> str:
     """Map a Mapbox feature to scrollantir's PlaceCategory.
 
     Categories are: `residence | class | food | study | social | work
     | mixed`. Falls through to `'mixed'` for unknowns.
+
+    Building-label POIs (poi_label with class='building') get
+    type-based mapping — Mapbox puts the building's actual type
+    ('Dormitory', 'University', etc.) in the `type` field for these.
     """
     props = f.get("properties") or {}
     layer = props.get("tilequery", {}).get("layer") or ""
-    cls = props.get("class") or props.get("type") or props.get("category") or ""
+    cls = props.get("class") or ""
 
     if layer == "building":
-        return _BUILDING_CATEGORY.get(cls, "mixed")
+        # Building polygons sometimes have class, sometimes only type.
+        key = cls or props.get("type") or ""
+        return _BUILDING_CATEGORY.get(key.lower(), "mixed")
     if layer == "poi_label":
+        if cls == "building":
+            typ = (props.get("type") or "").lower()
+            return _BUILDING_POI_TYPE_CATEGORY.get(typ, "mixed")
         return _POI_CATEGORY.get(cls, "mixed")
     if layer == "landuse":
         return _LANDUSE_CATEGORY.get(cls, "mixed")
