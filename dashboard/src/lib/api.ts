@@ -65,34 +65,35 @@ export type DeviceLastSeen = {
   received_at: string;  // most recent server-receive time
 };
 
-// Place visits for a date window. Reads `v_place_visit_today` —
-// derived rows pre-joined with the `places` table. Visits with no
-// matched place return `place: null`.
+// Place visits whose span overlaps the [fromIso, toIso) window.
+// Overlap (not start_ts-in-window) is what we want: a visit that
+// started yesterday at 23:35 and continues through today still
+// belongs in today's view. PostgREST: span overlaps iff
+// `start_ts < to` AND `end_ts > from`.
 export function fetchPlaceVisits(
   fromIso: string,
   toIso: string,
 ): Promise<PlaceVisit[]> {
   const url =
     `/v_place_visit_today` +
-    `?start_ts=gte.${encodeURIComponent(fromIso)}` +
-    `&start_ts=lt.${encodeURIComponent(toIso)}` +
+    `?start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&end_ts=gt.${encodeURIComponent(fromIso)}` +
     `&order=start_ts.asc`;
   return pgrst<Array<Omit<PlaceVisit, 'kind'>>>(url).then((rows) =>
     rows.map((r) => ({ ...r, kind: 'place_visit' as const })),
   );
 }
 
-// Travel legs for a date window. Reads `v_travel_leg_today` —
-// derived rows with `path` lifted out of `data` to match the
-// dashboard's TravelLeg type (path is a sibling of data).
+// Travel legs whose span overlaps the window. Same overlap logic as
+// place visits.
 export function fetchTravelLegs(
   fromIso: string,
   toIso: string,
 ): Promise<TravelLeg[]> {
   const url =
     `/v_travel_leg_today` +
-    `?start_ts=gte.${encodeURIComponent(fromIso)}` +
-    `&start_ts=lt.${encodeURIComponent(toIso)}` +
+    `?start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&end_ts=gt.${encodeURIComponent(fromIso)}` +
     `&order=start_ts.asc`;
   return pgrst<Array<Omit<TravelLeg, 'kind'>>>(url).then((rows) =>
     rows.map((r) => ({ ...r, kind: 'travel_leg' as const })),
