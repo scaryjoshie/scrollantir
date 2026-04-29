@@ -30,7 +30,7 @@ shouldn't break a backfill.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -79,7 +79,16 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
         start: datetime,
         end: datetime,
     ) -> tuple[list[DerivedRow], dict[str, Any]]:
-        readings = self._fetch_readings(conn, start, end)
+        # Lookback so SPD sees readings that started a stay BEFORE the
+        # window. Without this, a visit that began earlier and extends
+        # into the window would get its early-readings hidden, and SPD
+        # would emit a phantom new visit anchored at the first
+        # in-window reading — duplicating an existing pre-window row.
+        # 2x gap_threshold is enough headroom to capture any visit
+        # that could plausibly extend into the window.
+        lookback_hours = self.gap_threshold_hours * 2
+        fetch_start = start - timedelta(hours=lookback_hours)
+        readings = self._fetch_readings(conn, fetch_start, end)
         readings_total = len(readings)
 
         stays = extract_stay_points(
@@ -101,12 +110,21 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
             "readings_total": readings_total,
             "stays_detected": len(stays),
             "stays_after_merge": len(merged),
+            "stays_pre_window_skipped": 0,
             "null_place_visits": 0,
             "osm_errors": 0,
             "match_confidences": [],
         }
 
         for stay, brief_count in merged:
+            # Stays whose start_ts is before the deriver window belong
+            # to an earlier run that already wrote them. Skip emitting
+            # — replace_window only deletes rows with start_ts >= start
+            # so the existing row stays intact, and skipping prevents
+            # the agent_api guard from rejecting an out-of-band row.
+            if stay.start_ts < start:
+                metrics["stays_pre_window_skipped"] += 1
+                continue
             place_id = None
             match_confidence = 0.0
             feature: OSMFeature | None = None
