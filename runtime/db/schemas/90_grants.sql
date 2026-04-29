@@ -2,11 +2,16 @@
 -- Tightening (per-table CRUD splits, ingest/agent_api EXECUTE grants)
 -- lands incrementally as the RPCs do.
 
--- agent_role: full read on public; writes go through agent_api.* RPCs.
+-- agent_role: full read on public; derived_events writes go through
+-- agent_api.* RPCs (SECURITY DEFINER). public.places is the one
+-- exception — the place_visit/v1 deriver upserts directly because
+-- the upsert is not part of the derived-events replace-window flow
+-- and wrapping it in an RPC would just be ceremony.
 GRANT USAGE ON SCHEMA public TO agent_role;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT ON TABLES TO agent_role;
+GRANT INSERT, UPDATE ON public.places TO agent_role;
 
 -- agent_api.* — SECURITY DEFINER RPCs the agent calls for every write.
 -- agent_role has EXECUTE; the function bodies own the necessary

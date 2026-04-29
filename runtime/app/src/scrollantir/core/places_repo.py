@@ -138,5 +138,12 @@ def upsert_place(
                 feature.feature_id,
             )
             raise
+        except Exception:
+            # Any non-uniqueness failure (permission, conn drop, etc.)
+            # leaves the transaction aborted on the way out — roll
+            # back so the caller can keep using the connection. Then
+            # re-raise; the deriver catches and counts as osm_errors.
+            conn.rollback()
+            raise
 
     raise RuntimeError("unreachable")
