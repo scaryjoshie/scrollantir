@@ -2,12 +2,19 @@
 -- Tightening (per-table CRUD splits, ingest/agent_api EXECUTE grants)
 -- lands incrementally as the RPCs do.
 
--- agent_role: full read on public; nothing else. Writes go through
--- agent_api.* RPCs (added in commit #5).
+-- agent_role: full read on public; writes go through agent_api.* RPCs.
 GRANT USAGE ON SCHEMA public TO agent_role;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT ON TABLES TO agent_role;
+
+-- agent_api.* — SECURITY DEFINER RPCs the agent calls for every write.
+-- agent_role has EXECUTE; the function bodies own the necessary
+-- privileges on public.derived_events etc. via the function owner.
+GRANT USAGE ON SCHEMA agent_api TO agent_role;
+GRANT EXECUTE ON FUNCTION
+  agent_api.replace_derived_window(TEXT, TIMESTAMPTZ, TIMESTAMPTZ, JSONB)
+TO agent_role;
 
 -- user_role: read on public. Per-table CRUD on source_tags, places,
 -- annotations gets added when the dashboard cuts over.
