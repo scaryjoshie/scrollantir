@@ -176,28 +176,10 @@ export type TrackingGap = {
   adjacent_to_sleep?: boolean;
 };
 
-// public.derived_events row for source='user_active/v1'. Primitive
-// activity-span: the device was being used during [start_ts, end_ts].
-// Renders on the timeline ONLY when no place_visit covers the span —
-// then the user sees an honest "Active on Mac" row instead of a
-// false "Tracking gap" while the deriver simply hasn't promoted the
-// span to a place_visit (e.g. <8min dwell). Tenet 1: don't hide what
-// we have.
-export type UserActiveSpan = {
-  kind: 'user_active';
-  id: string;
-  start_ts: string;
-  end_ts: string;
-  data: {
-    device: 'mac' | 'phone' | 'both';
-  };
-};
-
 export type TimelineEntry =
   | PlaceVisit
   | TravelLeg
   | TopicChunk
   | Moment
   | Sleep
-  | TrackingGap
-  | UserActiveSpan;
+  | TrackingGap;

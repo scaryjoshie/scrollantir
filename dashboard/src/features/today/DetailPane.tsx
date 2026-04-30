@@ -30,7 +30,6 @@ import type {
   TopicChunk,
   TrackingGap,
   TravelLeg,
-  UserActiveSpan,
 } from './types';
 import { useTodayLookups } from './lookups';
 import { fetchProjectChunksForSpan } from '@/lib/api';
@@ -314,8 +313,6 @@ export default function DetailPane({
   if (entry.kind === 'sleep') return <SleepDetail key={entry.id} sleep={entry} />;
   if (entry.kind === 'tracking_gap')
     return <TrackingGapDetail key={entry.id} gap={entry} />;
-  if (entry.kind === 'user_active')
-    return <UserActiveDetail key={entry.id} span={entry} />;
   return <ChunkDetail chunk={entry} />;
 }
 
@@ -484,51 +481,6 @@ function TrackingGapDetail({ gap }: { gap: TrackingGap }) {
       </div>
       <div className="mt-3 text-xs text-ink-subtle">
         Synthesized from absence of events, not a derived span.
-      </div>
-    </div>
-  );
-}
-
-// Primitive activity span surfaced when no place_visit covered it.
-// We know the device was active and which one, but NOT where — keep
-// the detail lean (onset / duration / device) and call out the
-// missing-location story explicitly so the user understands why this
-// row reads differently from a place_visit.
-function UserActiveDetail({ span }: { span: UserActiveSpan }) {
-  const dur = fmtDuration(span.start_ts, span.end_ts);
-  const dev = span.data.device;
-  const deviceLabel =
-    dev === 'phone' ? 'Phone' : dev === 'both' ? 'Mac + phone' : 'Mac';
-  const glyph = dev === 'phone' ? '📱' : dev === 'both' ? '🖥️' : '💻';
-  const title =
-    dev === 'phone'
-      ? 'Active on phone'
-      : dev === 'both'
-        ? 'Active on Mac + phone'
-        : 'Active on Mac';
-  return (
-    <div className="px-6 py-5 h-full overflow-y-auto">
-      <Header
-        title={title}
-        subtitle={`${fmtTime(span.start_ts)} – ${fmtTime(span.end_ts)} · ${dur}`}
-        glyph={glyph}
-      />
-      <div className="mt-4 grid grid-cols-2 gap-y-2 gap-x-6 text-sm">
-        <div className="text-ink-subtle">Onset</div>
-        <div className="text-ink tabular-nums">{fmtTime(span.start_ts)}</div>
-        <div className="text-ink-subtle">Duration</div>
-        <div className="text-ink tabular-nums">{dur}</div>
-        <div className="text-ink-subtle">Device</div>
-        <div className="text-ink">{deviceLabel}</div>
-      </div>
-      <div className="mt-4 text-sm text-ink-muted leading-relaxed">
-        Device activity was recorded but no place visit was derived for
-        this span — likely a brief stop below the dwell threshold or
-        location data still in flight. The when and what are real; the
-        where isn&rsquo;t known here.
-      </div>
-      <div className="mt-3 text-xs text-ink-subtle">
-        From <Mono>user_active/v1</Mono>
       </div>
     </div>
   );

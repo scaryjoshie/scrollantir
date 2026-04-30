@@ -174,7 +174,6 @@ function Row({
   const now = useNowTick();
   const isOpenVisit = entry.kind === 'place_visit' && entry.data.is_open;
   const isTrackingGap = entry.kind === 'tracking_gap';
-  const isUserActive = entry.kind === 'user_active';
 
   // Outer row: glyph | (title + duration on top row, time range below)
   let glyph: string;
@@ -216,23 +215,6 @@ function Row({
       timeRange = `${fmtTime(displayStart)} – ${fmtTime(displayEnd)}${continuationSuffix}`;
       duration = fmtDuration(displayStart, displayEnd);
     }
-  } else if (entry.kind === 'user_active') {
-    // Primitive activity span surfaced when no place_visit covered it.
-    // The user sees an honest "Active on Mac 1:01 AM – 4:15 AM" instead
-    // of "Tracking gap" when raw activity exists but the visit deriver
-    // hasn't promoted the stay (e.g. <8min dwell). No location is
-    // known; the row is intentionally muted to distinguish it from a
-    // place_visit row.
-    const dev = entry.data.device;
-    glyph = dev === 'phone' ? '📱' : dev === 'both' ? '🖥️' : '💻';
-    title =
-      dev === 'phone'
-        ? 'Active on phone'
-        : dev === 'both'
-          ? 'Active on Mac + phone'
-          : 'Active on Mac';
-    timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
-    duration = fmtDuration(entry.start_ts, entry.end_ts);
   } else if (entry.kind === 'tracking_gap') {
     // Synthetic "no events arrived" row. Title softens near sleep
     // ("Possibly back to sleep") because that's the most common
@@ -293,11 +275,8 @@ function Row({
             isSelected && 'border-accent',
             // Subdued opacity for tracking_gap so it reads as data
             // rather than alert. Tenet 1: don't hide the hole, but
-            // don't shout about it either. user_active rows get the
-            // same treatment to mark "we know activity but not place"
-            // as distinct from a fully-located place_visit.
+            // don't shout about it either.
             isTrackingGap && !isSelected && 'opacity-60',
-            isUserActive && !isSelected && 'opacity-75',
           )}
         >
           {glyph}
@@ -323,8 +302,6 @@ function Row({
                   ? 'text-accent'
                   : isTrackingGap
                   ? 'text-ink-subtle italic font-normal'
-                  : isUserActive
-                  ? 'text-ink-muted font-normal'
                   : 'text-ink',
               )}
             >
