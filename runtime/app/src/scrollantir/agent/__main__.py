@@ -1,8 +1,9 @@
 """scrollantir agent — in-process scheduler.
 
 APScheduler ticks the deriver chain every DERIVER_INTERVAL_MINUTES
-over a rolling-24h window. Each tick uses
-`agent_api.replace_derived_window` so it's idempotent — the sliding
+over per-source rolling windows (see WINDOW_HOURS_BY_SOURCE). Each
+tick uses `agent_api.replace_derived_window` /
+`agent_api.replace_derived_overlap` so it's idempotent — the sliding
 window strictly overwrites its own range, leaving older rows
 untouched. Adding new derivers later: import the module here, the
 registry picks them up automatically.

@@ -20,9 +20,10 @@ import type {
 } from './types';
 
 // 2026-04-29 (Wednesday). Offsets CDT (-05:00).
-// The "day" runs 04:00 → 04:00 next morning (so a late-night Discord
-// call past midnight still belongs to Wednesday's view). Late-night
-// chunks past midnight use tNext().
+// The "day" runs 00:00 → 00:00 local. Late-night chunks past midnight
+// use tNext() and belong to the NEXT day's view; cross-midnight spans
+// render on both days clipped to each day's window by the timeline's
+// display logic.
 const D = '2026-04-29';
 const D_NEXT = '2026-04-30';
 const Z = '-05:00';

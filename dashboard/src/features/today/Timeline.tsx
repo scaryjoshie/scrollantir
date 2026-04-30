@@ -84,9 +84,9 @@ export default function Timeline({
   entries: TimelineEntry[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  // The day's start (= wake_ts when sleep was detected, otherwise
-  // the fallback boundary). Spans whose true start_ts is before this
-  // get rendered with their start clipped to dayStartIso, plus a
+  // The displayed day's start (always local 00:00 in current
+  // implementation). Spans whose true start_ts is before this get
+  // rendered with their start clipped to dayStartIso, plus a
   // "(continued)" hint, so the day-narrative reads cleanly.
   dayStartIso: string;
 }) {

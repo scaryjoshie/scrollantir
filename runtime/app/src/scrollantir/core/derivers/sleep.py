@@ -10,17 +10,23 @@ Per-day output:
 
   - Up to ONE row with `kind = 'night'` — the longest qualifying
     silent run that's both ≥ night_floor (180 min) AND ends in
-    [04:00, 14:00) local time. This sets /today's day boundary.
+    [04:00, 14:00) local time. The dashboard renders its wake_ts
+    as a "Woke up at HH:MM" Moment inside the day timeline.
   - Up to N rows (default 2) with `kind = 'nap'` — the longest
     *other* silent runs ≥ nap_floor (90 min). Naps render as
-    Moments inside the day timeline; they don't shift the boundary.
+    Moments inside the day timeline.
+
+The day boundary itself is fixed local 00:00 → 24:00 regardless of
+sleep (commit e0965f7): a missing or malformed `night` row no longer
+shifts the displayed day. Sleep rows are decorative for the day
+boundary — they place a wake Moment at the correct local time within
+an unchanging 0-24 frame, but the frame itself never moves.
 
 Why two floors: per-user spec, anything < 90 min isn't sleep at
 all; common-sense audit pushed back that 90 min is more nap-than-
-sleep, so 'night' (the day-boundary row) requires ≥ 180 min. A
-half-hearted 100-min "night" doesn't get to define when the day
-started — it shows up as a nap and the dashboard falls back to
-04:00.
+sleep, so 'night' requires ≥ 180 min. A half-hearted 100-min
+"night" doesn't get to be the day's primary sleep Moment — it shows
+up as a nap instead.
 
 Why morning-hours filter only on 'night': lets afternoon naps
 qualify as naps without misclassifying a long evening movie as
