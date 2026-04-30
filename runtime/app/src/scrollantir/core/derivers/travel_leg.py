@@ -59,6 +59,35 @@ _ACTIVITY_WIRE_TO_KIND: dict[str, str] = {
     # 'unknown' explicitly absent — falls through to None.
 }
 
+# Per-mode physical speed ceilings (m/s), used by the path
+# spike-detector. An interior reading whose implied speed from
+# both its previous neighbor AND its next neighbor exceeds the
+# ceiling is dropped — that's the urban-multipath signature (the
+# GPS bouncing between line-of-sight and reflected-satellite
+# solutions, ~100-300m apart, both reporting "good" accuracy
+# 15-35m, with the path immediately reversing back). Phone-side
+# accuracy filters can't catch this because each fix individually
+# looks fine; the tell is the impossible velocity *paired with
+# an immediate return*.
+#
+# Ceilings are generous (≈2x typical max for the mode) so we
+# don't clip honest sprints / cycling downhill / highway driving.
+# Single fast-but-honest moves only fail one of the two legs and
+# survive.
+_SPEED_CEILING_M_S: dict[str, float] = {
+    "walking": 3.0,      # brisk walk ~1.7, jog ~3.0
+    "running": 5.5,      # 5.5 m/s ≈ 6:00/mile pace
+    "on_bicycle": 11.0,  # 11 m/s ≈ 25 mph
+    "in_vehicle": 40.0,  # 40 m/s ≈ 90 mph
+}
+_DEFAULT_SPEED_CEILING_M_S = 3.0  # walking, used when activity unknown
+
+# Sub-second duplicate gate. Two phone fixes within this many
+# seconds of each other carry no new information (it's the
+# Fused/GPS provider firing twice for the same satellite epoch);
+# the second one only adds visual jitter.
+_DUP_DT_S = 0.5
+
 
 @dataclass(frozen=True)
 class _VisitRef:
@@ -126,7 +155,6 @@ class TravelLegV1Deriver(DeterministicDeriver):
                 metrics["legs_skipped_out_of_window"] += 1
                 continue
 
-            path, source_event_ids = self._fetch_path(conn, leg_start, leg_end)
             activity = self._dominant_activity(conn, leg_start, leg_end)
             # 'still' isn't a transit mode — it's the artifact of a
             # gap where the user wasn't moving (probably home/asleep)
@@ -146,6 +174,13 @@ class TravelLegV1Deriver(DeterministicDeriver):
                 # row entirely. activity_unknown_legs metric records
                 # how often we hit this so we can revisit.
                 activity = "walking"
+
+            raw_path, raw_ids, raw_ts = self._fetch_path(conn, leg_start, leg_end)
+            path, source_event_ids, smooth_metrics = _smooth_path(
+                raw_path, raw_ids, raw_ts, activity
+            )
+            for k, v in smooth_metrics.items():
+                metrics[k] = metrics.get(k, 0) + v
             distance_m = _path_distance_m(path)
 
             data: dict[str, Any] = {
@@ -216,7 +251,7 @@ class TravelLegV1Deriver(DeterministicDeriver):
         conn: "psycopg.Connection",
         leg_start: datetime,
         leg_end: datetime,
-    ) -> tuple[list[list[float]], list[str]]:
+    ) -> tuple[list[list[float]], list[str], list[datetime]]:
         """GPS readings in `[leg_start, leg_end]`, accuracy-filtered.
 
         End is INCLUSIVE so the visit's first GPS reading (the one
@@ -226,16 +261,19 @@ class TravelLegV1Deriver(DeterministicDeriver):
         ~70m short of the destination because the close-in
         boundary reading was assigned exclusively to the visit.
 
-        Returns `(path, source_event_ids)` where `path` is an
-        ordered list of `[lng, lat]` tuples (Mapbox order, matches
-        `dashboard/.../types.ts:64`).
+        Returns `(path, source_event_ids, timestamps)` where `path`
+        is an ordered list of `[lng, lat]` tuples (Mapbox order,
+        matches `dashboard/.../types.ts:64`). `timestamps` is the
+        per-reading start_ts, exposed so the caller can run a
+        velocity-based smoother.
         """
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id,
                        (data->>'lng')::float8,
-                       (data->>'lat')::float8
+                       (data->>'lat')::float8,
+                       start_ts
                   FROM public.events
                  WHERE source = 'phone.location.reading'
                    AND start_ts >= %s
@@ -249,7 +287,8 @@ class TravelLegV1Deriver(DeterministicDeriver):
             rows = cur.fetchall()
         path = [[float(r[1]), float(r[2])] for r in rows]
         ids = [str(r[0]) for r in rows]
-        return path, ids
+        timestamps = [r[3] for r in rows]
+        return path, ids, timestamps
 
     def _dominant_activity(
         self,
@@ -296,6 +335,103 @@ def _path_distance_m(path: list[list[float]]) -> float:
     for (lng1, lat1), (lng2, lat2) in zip(path, path[1:]):
         total += haversine_m(lat1, lng1, lat2, lng2)
     return total
+
+
+def _smooth_path(
+    path: list[list[float]],
+    ids: list[str],
+    timestamps: list[datetime],
+    activity: str,
+) -> tuple[list[list[float]], list[str], dict[str, int]]:
+    """Drop near-duplicate fixes and physically-impossible jumps.
+
+    Per the path-jaggedness audit 2026-04-30, ~20% of points on
+    walking legs are urban-multipath outliers — the GPS solution
+    bouncing between the line-of-sight position and a
+    reflected-satellite position 100-300m away, both reporting
+    "good" accuracy 15-35m. Phone-side accuracy filters can't
+    catch this; the tell is the impossible velocity. We gate by
+    activity-specific speed ceilings (see `_SPEED_CEILING_M_S`).
+
+    Two passes:
+      1. Drop sub-second duplicates (consecutive fixes within
+         `_DUP_DT_S` seconds) — the second carries no new info.
+      2. Spike-drop. For each interior point B between
+         neighbors A and C, drop B iff implied speed
+         A→B AND B→C BOTH exceed the activity ceiling. This is
+         the multipath-outlier signature: a point the path
+         immediately reverses out of. A single fast-but-honest
+         move (sprint, downhill bike) only fails one of the two
+         legs and is preserved. Endpoints are always kept.
+
+    Returns `(path, ids, metrics)`. Metrics are merged into the
+    deriver's per-window metrics. Algorithm is deterministic:
+    same input → same output, so OVERLAP_REPLACE replays produce
+    identical rows.
+    """
+    metrics = {
+        "smoother_dropped_dup": 0,
+        "smoother_dropped_speed": 0,
+    }
+    if not path:
+        return path, ids, metrics
+
+    ceiling = _SPEED_CEILING_M_S.get(activity, _DEFAULT_SPEED_CEILING_M_S)
+
+    # Pass 1: drop sub-second duplicates.
+    dedup_path: list[list[float]] = []
+    dedup_ids: list[str] = []
+    dedup_ts: list[datetime] = []
+    for pt, eid, ts in zip(path, ids, timestamps):
+        if dedup_ts and (ts - dedup_ts[-1]).total_seconds() < _DUP_DT_S:
+            metrics["smoother_dropped_dup"] += 1
+            continue
+        dedup_path.append(pt)
+        dedup_ids.append(eid)
+        dedup_ts.append(ts)
+
+    # Pass 2: spike-drop. A point B is a multipath spike iff
+    # both A→B and B→C imply impossible velocity for the
+    # activity. Iterate until fixed-point so chains of adjacent
+    # spikes (e.g. four oscillating fixes) collapse correctly.
+    # Bounded by N iterations to guarantee termination.
+    if len(dedup_path) < 3:
+        return dedup_path, dedup_ids, metrics
+
+    cur_path = dedup_path
+    cur_ids = dedup_ids
+    cur_ts = dedup_ts
+    for _ in range(len(dedup_path)):
+        keep = [True] * len(cur_path)
+        for i in range(1, len(cur_path) - 1):
+            a_pt, a_ts = cur_path[i - 1], cur_ts[i - 1]
+            b_pt, b_ts = cur_path[i], cur_ts[i]
+            c_pt, c_ts = cur_path[i + 1], cur_ts[i + 1]
+            dt_ab = (b_ts - a_ts).total_seconds()
+            dt_bc = (c_ts - b_ts).total_seconds()
+            if dt_ab <= 0 or dt_bc <= 0:
+                continue
+            d_ab = haversine_m(a_pt[1], a_pt[0], b_pt[1], b_pt[0])
+            d_bc = haversine_m(b_pt[1], b_pt[0], c_pt[1], c_pt[0])
+            if d_ab / dt_ab > ceiling and d_bc / dt_bc > ceiling:
+                keep[i] = False
+        if all(keep):
+            break
+        new_path: list[list[float]] = []
+        new_ids: list[str] = []
+        new_ts: list[datetime] = []
+        for k, p, eid, ts in zip(keep, cur_path, cur_ids, cur_ts):
+            if k:
+                new_path.append(p)
+                new_ids.append(eid)
+                new_ts.append(ts)
+            else:
+                metrics["smoother_dropped_speed"] += 1
+        cur_path, cur_ids, cur_ts = new_path, new_ids, new_ts
+        if len(cur_path) < 3:
+            break
+
+    return cur_path, cur_ids, metrics
 
 
 def _deterministic_leg_id(from_visit_id: UUID, to_visit_id: UUID) -> UUID:
