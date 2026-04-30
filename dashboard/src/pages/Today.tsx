@@ -10,7 +10,6 @@ import DetailPane from '@/features/today/DetailPane';
 import type {
   Sleep,
   TimelineEntry,
-  TrackingGap,
 } from '@/features/today/types';
 import {
   TodayLookupsProvider,
@@ -34,69 +33,6 @@ function dayWindow(day: Date): { fromIso: string; toIso: string } {
   const to = new Date(from);
   to.setDate(to.getDate() + 1);
   return { fromIso: from.toISOString(), toIso: to.toISOString() };
-}
-
-// Threshold for inserting a synthetic 'tracking_gap' entry. Tuned to
-// 30 min by intuition; the 4/29 dark window was 11.5h, which is
-// orders of magnitude above this floor. 30 min is short enough to
-// catch a Doze-induced hole over an afternoon, long enough to skip
-// trivial inter-entry whitespace from rounding.
-//
-// Smaller threshold (~15 min) would surface more borderline cases but
-// also more visual noise. Tenet 4: revisit once we have real Doze-vs-
-// real-stillness data to compare distributions.
-const TRACKING_GAP_THRESHOLD_MS = 30 * 60 * 1000;
-
-// Walk the sorted-but-no-gaps entry list and synthesize 'tracking_gap'
-// entries for each consecutive pair separated by more than the
-// threshold. Skips:
-//   - chunks (inline under their parent; gaps between chunks are not
-//     tracking failures, just normal inter-chunk whitespace)
-//   - the day's edges (before first entry / after last) — those aren't
-//     "tracking gaps", they're "before today started" / "future"
-//
-// The returned entries are inserted inline so the chronological sort
-// reads naturally without re-sorting.
-function synthesizeTrackingGaps(entries: TimelineEntry[]): TimelineEntry[] {
-  const out: TimelineEntry[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const cur = entries[i];
-    out.push(cur);
-    const next = entries[i + 1];
-    if (!next) break;
-    if (cur.kind === 'topic_chunk' || next.kind === 'topic_chunk') continue;
-    const curEnd = entryEnd(cur);
-    const nextStart = entryStart(next);
-    if (!curEnd || !nextStart) continue;
-    const gapMs = Date.parse(nextStart) - Date.parse(curEnd);
-    if (gapMs < TRACKING_GAP_THRESHOLD_MS) continue;
-    const gap: TrackingGap = {
-      kind: 'tracking_gap',
-      id: `gap-${curEnd}-${nextStart}`,
-      start_ts: curEnd,
-      end_ts: nextStart,
-      adjacent_to_sleep: cur.kind === 'sleep' || next.kind === 'sleep',
-    };
-    out.push(gap);
-  }
-  return out;
-}
-
-// Effective end_ts for gap detection. Moments are point-in-time; their
-// end == start. Sleep ends at end_ts (wake). Spans end at end_ts.
-function entryEnd(e: TimelineEntry): string | null {
-  if (e.kind === 'moment') return e.ts;
-  if (e.kind === 'topic_chunk') return null; // skipped by caller
-  if (e.kind === 'tracking_gap') return e.end_ts;
-  return e.end_ts;
-}
-
-// Effective start_ts for gap detection. Mirrors entryEnd.
-function entryStart(e: TimelineEntry): string | null {
-  if (e.kind === 'moment') return e.ts;
-  if (e.kind === 'topic_chunk') return null;
-  if (e.kind === 'tracking_gap') return e.start_ts;
-  return e.start_ts;
 }
 
 export default function TodayPage() {
@@ -163,7 +99,6 @@ export default function TodayPage() {
     const effectiveStart = (e: TimelineEntry): string => {
       if (e.kind === 'moment') return e.ts;
       if (e.kind === 'sleep') return e.end_ts;
-      if (e.kind === 'tracking_gap') return e.start_ts;
       return e.start_ts < fromIso ? fromIso : e.start_ts;
     };
     all.sort((a, b) => {
@@ -175,13 +110,7 @@ export default function TodayPage() {
       if (b.kind !== 'place_visit' && a.kind === 'place_visit') return 1;
       return 0;
     });
-    // Synthesize 'tracking_gap' entries for stretches of silence
-    // between consecutive entries. Done AFTER sort so the gaps are
-    // inserted in chronological position. Chunks aren't fetched at
-    // the day level (DetailPane fetches per-parent), so the input
-    // here is naturally chunk-free — the topic_chunk skip in the
-    // helper is defensive in case the data flow changes.
-    return synthesizeTrackingGaps(all);
+    return all;
   }, [visitsQ.data, legsQ.data, todayNight, todayNaps, fromIso]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);

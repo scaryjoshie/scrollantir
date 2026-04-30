@@ -28,7 +28,6 @@ import type {
   TimelineEntry,
   TopicCategory,
   TopicChunk,
-  TrackingGap,
   TravelLeg,
 } from './types';
 import { useTodayLookups } from './lookups';
@@ -311,8 +310,6 @@ export default function DetailPane({
   if (entry.kind === 'travel_leg')
     return <LegDetail key={entry.id} leg={entry} />;
   if (entry.kind === 'sleep') return <SleepDetail key={entry.id} sleep={entry} />;
-  if (entry.kind === 'tracking_gap')
-    return <TrackingGapDetail key={entry.id} gap={entry} />;
   return <ChunkDetail chunk={entry} />;
 }
 
@@ -448,39 +445,6 @@ function SleepDetail({ sleep }: { sleep: import('./types').Sleep }) {
       </div>
       <div className="mt-3 text-xs text-ink-subtle">
         From <Mono>sleep/v1</Mono>
-      </div>
-    </div>
-  );
-}
-
-// Synthetic gap row. The cause is unknown by construction (Doze
-// mode, laptop off, off-grid, or a real silent stretch). Copy names
-// every plausible cause rather than guessing — Tenet 1 (don't hide
-// data: explicit gap row IS the honest representation).
-function TrackingGapDetail({ gap }: { gap: TrackingGap }) {
-  const dur = fmtDuration(gap.start_ts, gap.end_ts);
-  const title = gap.adjacent_to_sleep ? 'Possibly back to sleep' : 'Tracking gap';
-  return (
-    <div className="px-6 py-5 h-full overflow-y-auto">
-      <Header
-        title={title}
-        subtitle={`${fmtTime(gap.start_ts)} – ${fmtTime(gap.end_ts)} · ${dur}`}
-        glyph="🌫️"
-      />
-      <div className="mt-4 text-sm text-ink-muted leading-relaxed">
-        No events arrived during this period. The phone may have been in
-        Doze mode, the laptop was off, or the user was off-grid. Real
-        activity may have happened — we just don&rsquo;t have data.
-        {gap.adjacent_to_sleep && (
-          <>
-            {' '}
-            Because this gap is adjacent to a sleep span, the user may
-            also have simply gone back to bed.
-          </>
-        )}
-      </div>
-      <div className="mt-3 text-xs text-ink-subtle">
-        Synthesized from absence of events, not a derived span.
       </div>
     </div>
   );
