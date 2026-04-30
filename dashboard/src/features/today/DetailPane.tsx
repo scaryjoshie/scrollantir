@@ -21,6 +21,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { format, parseISO } from 'date-fns';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 import type {
   PlaceVisit,
@@ -30,6 +31,7 @@ import type {
   TravelLeg,
 } from './types';
 import { useTodayLookups } from './lookups';
+import { fetchProjectChunksForParent } from '@/lib/api';
 
 const ACTIVITY_LABEL: Record<string, string> = {
   walking: 'Walking',
@@ -166,10 +168,18 @@ function aggregate(
   for (const c of chunks) {
     const ms = effectiveMs(c);
     if (ms <= 0) continue;
-    const key =
-      groupBy === 'category' ? c.category :
-      groupBy === 'project'  ? c.project  :
-                               c.title;
+    let key: string;
+    if (groupBy === 'category') key = c.category;
+    else if (groupBy === 'project') {
+      // Null project under tree-model means "no project" (non-work
+      // chunk). Skip — the drill panel for project-grouping should
+      // only ever show real projects. Auto-skip handles the case
+      // where a category has no real projects.
+      if (c.project == null) continue;
+      key = c.project;
+    } else {
+      key = c.title;
+    }
     const existing = buckets.get(key);
     if (existing) existing.ms += ms;
     else buckets.set(key, { ms, category: c.category });
@@ -331,14 +341,21 @@ function VisitDetail({
   visit: PlaceVisit;
   dayStartIso?: string;
 }) {
-  const { topicChunks } = useTodayLookups();
   const now = useNowTick();
+  // Lazy-fetch chunks for THIS visit on click. ~5–30 rows vs the 312/day
+  // we used to ship eagerly. React Query caches per visit.id so
+  // re-selecting is instant; the first click pays one ~120ms RTT.
+  const chunksQ = useQuery({
+    queryKey: ['chunks-by-parent', visit.id],
+    queryFn: () => fetchProjectChunksForParent(visit.id),
+    staleTime: 5 * 60 * 1000,
+  });
   const chunks = useMemo(
     () =>
-      topicChunks
-        .filter((c) => c.parent_id === visit.id)
-        .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1)),
-    [topicChunks, visit.id],
+      (chunksQ.data ?? []).slice().sort((a, b) =>
+        a.start_ts < b.start_ts ? -1 : 1,
+      ),
+    [chunksQ.data],
   );
 
   const startedBeforeToday =
@@ -371,15 +388,23 @@ function VisitDetail({
 }
 
 function LegDetail({ leg }: { leg: TravelLeg }) {
-  const { visitById, topicChunks } = useTodayLookups();
+  const { visitById } = useTodayLookups();
   const from = visitById[leg.data.from_visit_id];
   const to = visitById[leg.data.to_visit_id];
+  // Lazy-fetch chunks for THIS leg on click — same caching policy as
+  // VisitDetail. Walking-while-on-phone produces small chunk lists,
+  // typically just music + map + occasional message app.
+  const chunksQ = useQuery({
+    queryKey: ['chunks-by-parent', leg.id],
+    queryFn: () => fetchProjectChunksForParent(leg.id),
+    staleTime: 5 * 60 * 1000,
+  });
   const chunks = useMemo(
     () =>
-      topicChunks
-        .filter((c) => c.parent_id === leg.id)
-        .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1)),
-    [topicChunks, leg.id],
+      (chunksQ.data ?? []).slice().sort((a, b) =>
+        a.start_ts < b.start_ts ? -1 : 1,
+      ),
+    [chunksQ.data],
   );
   return (
     <div className="px-6 py-5 h-full overflow-y-auto">

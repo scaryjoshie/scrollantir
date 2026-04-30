@@ -120,10 +120,11 @@ export type TopicChunk = {
   // and `title` separately so it can re-group at each level.
   topic: string;
   category: TopicCategory;
-  // The classifier's project assignment (slug). `'personal'` is the
-  // wildcard catch-all; classifier defaults there when nothing else
-  // fits, so older un-classified rows also surface there.
-  project: string;
+  // The classifier's project assignment (slug). NULL means "no project"
+  // (typically a non-work chunk under the tree-model invariant
+  // `project != null IFF category = 'work'`). The drill panel skips
+  // L1 (project pie) for categories with no real projects.
+  project: string | null;
   // Exact window/tab title — the L2 drill key.
   title: string;
   // Which device the foreground was on. The donut applies Mac-

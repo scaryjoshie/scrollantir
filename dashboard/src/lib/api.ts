@@ -138,6 +138,29 @@ type ProjectChunkRow = {
   };
 };
 
+function mapChunkRow(r: ProjectChunkRow): TopicChunk {
+  return {
+    kind: 'topic_chunk' as const,
+    id: r.id,
+    parent_id: r.parent_id ?? '',
+    start_ts: r.start_ts,
+    end_ts: r.end_ts,
+    topic: r.topic,
+    category: r.data.category,
+    device: r.data.device,
+    // Pre-Phase-B rows had `'personal'` as a project slug. Post-Phase-B
+    // those are NULL. Either way, treat null/empty/'personal' as "no
+    // project" — the dashboard's drill auto-skip simplifies to checking
+    // `c.project != null`.
+    project: r.data.project_slug || null,
+    title: r.data.title || r.data.app || r.topic,
+  };
+}
+
+// Day-window fetcher — kept for any caller that needs all chunks
+// at once (e.g. a future /summary aggregate path that streams). The
+// /today page does NOT use this anymore: it fetches chunks per-visit
+// on selection via fetchProjectChunksForParent below.
 export function fetchProjectChunks(
   fromIso: string,
   toIso: string,
@@ -147,24 +170,21 @@ export function fetchProjectChunks(
     `?start_ts=lt.${encodeURIComponent(toIso)}` +
     `&end_ts=gt.${encodeURIComponent(fromIso)}` +
     `&order=start_ts.asc`;
-  return pgrst<ProjectChunkRow[]>(url).then((rows) =>
-    rows.map((r) => ({
-      kind: 'topic_chunk' as const,
-      id: r.id,
-      parent_id: r.parent_id ?? '',
-      start_ts: r.start_ts,
-      end_ts: r.end_ts,
-      topic: r.topic,
-      category: r.data.category,
-      device: r.data.device,
-      // Default unclassified rows to the 'personal' wildcard — matches the
-      // classifier's null→personal coercion so the dashboard never has to
-      // render an "uncategorized" bucket. `title` falls back through app
-      // → topic so even pre-classifier rows get a stable L2 label.
-      project: r.data.project_slug || 'personal',
-      title: r.data.title || r.data.app || r.topic,
-    })),
-  );
+  return pgrst<ProjectChunkRow[]>(url).then((rows) => rows.map(mapChunkRow));
+}
+
+// Per-parent fetcher — called when the user selects a visit/leg. ~5–30
+// rows depending on session length vs the 312/day for the whole window.
+// React Query caches per-parent so re-clicks are instant; first click
+// pays one ~120ms RTT.
+export function fetchProjectChunksForParent(
+  parentId: string,
+): Promise<TopicChunk[]> {
+  const url =
+    `/v_project_chunk_today` +
+    `?parent_id=eq.${encodeURIComponent(parentId)}` +
+    `&order=start_ts.asc`;
+  return pgrst<ProjectChunkRow[]>(url).then((rows) => rows.map(mapChunkRow));
 }
 
 // Latest event per device — pulled from the most-recent 200 rows

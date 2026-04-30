@@ -19,7 +19,6 @@ import {
 } from '@/features/today/lookups';
 import {
   fetchPlaceVisits,
-  fetchProjectChunks,
   fetchSleepByWakeDates,
   fetchTravelLegs,
 } from '@/lib/api';
@@ -73,10 +72,10 @@ export default function TodayPage() {
     queryKey: ['travel_legs', fromIso, toIso],
     queryFn: () => fetchTravelLegs(fromIso, toIso),
   });
-  const chunksQ = useQuery({
-    queryKey: ['project_chunks', fromIso, toIso],
-    queryFn: () => fetchProjectChunks(fromIso, toIso),
-  });
+  // project_chunks are NOT fetched at the day level. DetailPane fetches
+  // per-parent on selection (~5–30 rows vs 312/day). React Query
+  // caches per parent_id so re-selection is instant. Drops ~10KB
+  // of compressed wire on every /today load.
 
   // Find the visit that CONTAINS a given timestamp — used to anchor
   // wake/nap Moments at the place the user was sleeping. Without
@@ -175,7 +174,7 @@ export default function TodayPage() {
     return all;
   }, [visitsQ.data, legsQ.data, wakeMoment, napMoments, fromIso]);
 
-  const lookups = useBuildLookups(visitsQ.data, legsQ.data, chunksQ.data ?? []);
+  const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -199,8 +198,8 @@ export default function TodayPage() {
 
   const subtitle = format(day, 'EEEE');
   const isLoading =
-    sleepQ.isLoading || visitsQ.isLoading || legsQ.isLoading || chunksQ.isLoading;
-  const error = sleepQ.error || visitsQ.error || legsQ.error || chunksQ.error;
+    sleepQ.isLoading || visitsQ.isLoading || legsQ.isLoading;
+  const error = sleepQ.error || visitsQ.error || legsQ.error;
 
   return (
     <TodayLookupsProvider value={lookups}>
