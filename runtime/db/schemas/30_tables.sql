@@ -304,16 +304,25 @@ CREATE TRIGGER projects_set_updated_at
 
 -- =========================================================================
 -- public.window_titles
--- Classification cache, keyed on the EXACT window title string.
--- The first time a title is seen, project_chunk/v1 enqueues it for
+-- Classification cache, keyed on the SHA-256 of the full classifier
+-- context tuple (title + device + app + zen_container + url_host).
+-- The first time a context is seen, project_chunk/v1 enqueues it for
 -- LLM classification; subsequent hits read straight from this table.
 -- A user override sets `overridden_at` and pins the row regardless
 -- of future re-classification attempts. project_slug is nullable —
--- a title may not belong to any project (random browsing, etc.).
+-- a context may not belong to any project (random browsing, etc.).
+--
+-- `title` is retained as a denormalized debugging convenience;
+-- `context` carries the full tuple the hash was computed over.
 -- =========================================================================
 
 CREATE TABLE public.window_titles (
-  title           TEXT PRIMARY KEY,
+  context_key     TEXT PRIMARY KEY,
+  context         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- Human-readable display string; nullable since the PK is
+  -- context_key, but the deriver populates it for every row so
+  -- ad-hoc queries can see what's in the cache.
+  title           TEXT,
   project_slug    TEXT REFERENCES public.projects(slug),
   -- TopicCategory: 'work' | 'play' | 'neutral'. The "is this
   -- productive?" axis, orthogonal to project membership. A YouTube
@@ -333,11 +342,12 @@ CREATE TABLE public.window_titles (
 
 CREATE INDEX window_titles_project ON public.window_titles (project_slug)
   WHERE project_slug IS NOT NULL;
+CREATE INDEX window_titles_title ON public.window_titles (title);
 
 
 -- =========================================================================
 -- public.classification_queue
--- Pending titles waiting for LLM classification. The classifier job
+-- Pending contexts waiting for LLM classification. The classifier job
 -- pulls rows here every minute, calls Cerebras (with Groq fallback),
 -- writes to window_titles on success, and either deletes or
 -- increments retries on failure. Durable so a Cerebras outage
@@ -345,7 +355,10 @@ CREATE INDEX window_titles_project ON public.window_titles (project_slug)
 -- =========================================================================
 
 CREATE TABLE public.classification_queue (
-  title         TEXT PRIMARY KEY,
+  context_key   TEXT PRIMARY KEY,
+  context       JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- Denormalized debugging field; nullable. Mirrors window_titles.title.
+  title         TEXT,
   enqueued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   retries       INT NOT NULL DEFAULT 0,
   last_error    TEXT,

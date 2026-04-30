@@ -17,19 +17,26 @@
 -- Two titles with different contexts (e.g. "Notes" on a Work container
 -- vs Personal) classify independently.
 --
--- Existing window_titles + classification_queue are TRUNCATE'd as part
--- of the rollout (Phase B already truncated them; this migration
--- reshapes the schema; next reclassification populates fresh under the
--- new keying).
+-- Existing window_titles + classification_queue rows are TRUNCATE'd
+-- as part of the rollout. The Phase D context_key is computed from a
+-- different tuple than Phase B's title-only key, so existing rows
+-- can't be back-filled into a valid context_key (we'd hash just the
+-- title and produce keys that don't match what the new deriver
+-- emits). Per the user's explicit Phase D authorization, the
+-- reclassification re-populates these tables under the new keying.
 
 BEGIN;
 
--- 1. window_titles: add context columns + swap PK to context_key.
+-- 1. window_titles: TRUNCATE so the PK swap can land. Cache loss is
+-- expected and self-healing — every chunk's context will hit the
+-- queue on the next deriver tick.
+TRUNCATE public.window_titles, public.classification_queue;
+
 ALTER TABLE public.window_titles
   ADD COLUMN context_key TEXT,
   ADD COLUMN context     JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- Empty table currently (Phase B truncate). Drop old PK, add new.
+-- Drop old PK, add new on context_key.
 ALTER TABLE public.window_titles
   DROP CONSTRAINT window_titles_pkey,
   ADD PRIMARY KEY (context_key);
