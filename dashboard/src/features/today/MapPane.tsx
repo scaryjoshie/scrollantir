@@ -28,7 +28,6 @@ import {
   setLegPath,
   tickLegPathAnimation,
 } from './legPathLayers';
-import type { GpsReading } from '@/lib/api';
 
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 const DEFAULT_CENTER: [number, number] = [-87.6004, 41.7912];
@@ -106,37 +105,6 @@ function timeForEntry(entry: TimelineEntry | null): string | null {
   return entry.start_ts;
 }
 
-// Same accuracy cap as the travel_leg deriver (runtime/.../travel_leg.py
-// path_accuracy_max_m = 75). Keeping the dashboard's raw-path fallback
-// in lockstep with the deriver so a user_active span and an eventual
-// travel_leg row don't disagree on which fixes are "good enough" to draw.
-const RAW_PATH_ACCURACY_MAX_M = 75;
-// Below this point count the raw-path fallback is just visual noise —
-// two pings 8m apart isn't a "trace". The user_active row stays selected
-// but the map keeps its previous focus (Tenet 1: don't fake a path).
-const RAW_PATH_MIN_POINTS = 2;
-
-// Pull GPS readings whose timestamp falls in [startIso, endIso], filter
-// to those with accuracy ≤ cap, return Mapbox [lng, lat] tuples in
-// chronological order. Used to render a fallback polyline for spans the
-// travel_leg deriver hasn't yet emitted (e.g. a walk in progress).
-function rawPathForSpan(
-  readings: GpsReading[],
-  startIso: string,
-  endIso: string,
-): Array<[number, number]> {
-  const startMs = Date.parse(startIso);
-  const endMs = Date.parse(endIso);
-  const out: Array<[number, number]> = [];
-  for (const r of readings) {
-    const t = Date.parse(r.ts);
-    if (t < startMs || t > endMs) continue;
-    if (r.accuracy_m != null && r.accuracy_m > RAW_PATH_ACCURACY_MAX_M) continue;
-    out.push([r.lng, r.lat]);
-  }
-  return out;
-}
-
 type CameraTarget =
   | {
       kind: 'point';
@@ -196,7 +164,6 @@ function legTarget(leg: TravelLeg, lookups: TodayLookups): CameraTarget {
 function targetForSelection(
   entry: TimelineEntry | null,
   lookups: TodayLookups,
-  readings: GpsReading[],
 ): CameraTarget | null {
   if (!entry) return null;
   if (entry.kind === 'place_visit') return visitTarget(entry, 55);
@@ -224,34 +191,15 @@ function targetForSelection(
     return null;
   }
   if (entry.kind === 'tracking_gap') {
-    // Synthetic gap is a stretch of silence between two real entries.
-    // Usually there's no GPS in the gap (that's why it's a gap), but
-    // when raw readings DO exist for it (e.g. background fixes that
-    // weren't enough to derive a visit), fall through to the
-    // raw-path renderer — the user gets to see where the device was
-    // pinging even though no higher-level row covered it.
-    const path = rawPathForSpan(readings, entry.start_ts, entry.end_ts);
-    if (path.length >= RAW_PATH_MIN_POINTS) {
-      return { kind: 'path', path, from: null, to: null, mode: 'walking' };
-    }
+    // Synthetic gap has no spatial anchor — there were no events,
+    // so we don't know where the user was. Return null so the map
+    // stays put on whatever was previously selected (or default).
     return null;
   }
   if (entry.kind === 'user_active') {
-    // user_active is a primitive activity span — the device was being
-    // used during [start_ts, end_ts]. Render any raw GPS readings in
-    // that span as a polyline so a walk-in-progress (no destination
-    // visit yet → no travel_leg yet) is still visible on the map.
-    // 'walking' is the default rendering mode; user_active rows don't
-    // carry an activity classification, and walking is the most
-    // common cause of an uncovered active-span on this user's data.
-    // When there are no usable fixes (the device was active but not
-    // moving / GPS off), fall through to null so the map keeps its
-    // previous focus rather than zooming to whatever default sits at
-    // (0,0).
-    const path = rawPathForSpan(readings, entry.start_ts, entry.end_ts);
-    if (path.length >= RAW_PATH_MIN_POINTS) {
-      return { kind: 'path', path, from: null, to: null, mode: 'walking' };
-    }
+    // user_active is a primitive activity span — we know the device
+    // was being used, but NOT where. Same null-anchor treatment as
+    // tracking_gap: leave the map on the previous selection.
     return null;
   }
   // moment
@@ -280,13 +228,8 @@ type BuildingFs = {
 
 export default function MapPane({
   selected,
-  readings,
 }: {
   selected: TimelineEntry | null;
-  // Day-window raw GPS readings, fetched once by Today.tsx. Used for
-  // the user_active / tracking_gap fallback path renderer; ignored
-  // for visit / leg / chunk / sleep / moment selections.
-  readings: GpsReading[];
 }) {
   const lookups = useTodayLookups();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -424,7 +367,7 @@ export default function MapPane({
         buildingFsRef.current = null;
       }
 
-      const target = targetForSelection(selected, lookups, readings);
+      const target = targetForSelection(selected, lookups);
       if (!target) return;
 
       if (target.kind === 'point') {
@@ -553,7 +496,7 @@ export default function MapPane({
     return () => {
       cancelled = true;
     };
-  }, [selected, lookups, readings]);
+  }, [selected, lookups]);
 
   if (!TOKEN) {
     return (

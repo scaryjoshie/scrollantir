@@ -125,54 +125,6 @@ export function fetchUserActive(
   );
 }
 
-// Raw GPS readings (phone.location.reading events) whose start_ts
-// falls inside [fromIso, toIso). Used by /today as a fallback path
-// renderer for spans the travel_leg deriver hasn't covered yet — the
-// "user just walked" case where the trip is mid-flight (no destination
-// visit yet) and travel_leg/v1 has nothing to emit, but we have plenty
-// of GPS to show. Tenet 1 (don't hide what we have).
-//
-// Returns [lng, lat, ts, accuracy_m] tuples in chronological order. The
-// shape matches MapPane's polyline expectations (Mapbox lng/lat order).
-// `accuracy_m` is exposed so the caller can drop fixes worse than some
-// cap before drawing — the SAME cap travel_leg.py:125 uses (75m).
-export type GpsReading = {
-  lng: number;
-  lat: number;
-  ts: string;
-  accuracy_m: number | null;
-};
-
-export async function fetchGpsReadings(
-  fromIso: string,
-  toIso: string,
-): Promise<GpsReading[]> {
-  // PostgREST jsonb-field selection: data->>lng yields TEXT; we parse
-  // client-side. `accuracy_m` is optional (older fixtures lack it) so
-  // fall through to null and let the caller decide.
-  const url =
-    `/events` +
-    `?source=eq.phone.location.reading` +
-    `&start_ts=gte.${encodeURIComponent(fromIso)}` +
-    `&start_ts=lt.${encodeURIComponent(toIso)}` +
-    `&order=start_ts.asc` +
-    `&select=start_ts,data` +
-    `&limit=20000`;
-  type Row = { start_ts: string; data: Record<string, unknown> };
-  const rows = await pgrst<Row[]>(url);
-  const out: GpsReading[] = [];
-  for (const r of rows) {
-    const lng = Number(r.data?.['lng']);
-    const lat = Number(r.data?.['lat']);
-    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
-    const accRaw = r.data?.['accuracy_m'];
-    const accuracy_m =
-      accRaw == null ? null : Number.isFinite(Number(accRaw)) ? Number(accRaw) : null;
-    out.push({ lng, lat, ts: r.start_ts, accuracy_m });
-  }
-  return out;
-}
-
 // Travel legs whose span overlaps the window. Same overlap logic as
 // place visits.
 export function fetchTravelLegs(
