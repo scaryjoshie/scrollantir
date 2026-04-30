@@ -113,16 +113,15 @@ Sources: a4f5bba (rename), a423b67 (display names), afdfd0f #3 (slim view), a555
 - Mac side blocked on mac-extension foreground watcher existing (gap noted; v1 falls back to category glyph).
 - Best-effort, NOT on critical path; runs async post-Phase C.
 
-### Phase G — Chunk coalesce (deriver-level cleanup)
-**Investigation findings** (2026-04-30): 2062 chunks since 4/29, **78% under 30s**, **median 5.1s**. Sample shows empty-title chunks (0–9s) alternating with real "Scrollantir" chunks — focus flicker (Spotlight, dock, menu bar) splitting one continuous activity into many slivers.
+### Phase G — RETIRED (was: chunk coalesce)
+**Originally framed** as a deriver fix to merge "micro-chunks." Investigation showed 78% of chunks are < 30s, median 5.1s — but per user feedback, this reflects their actual heavy alt-tabbing pattern, NOT a deriver bug. Truthful high-frequency data. Coalescing would lossy-compress real signal.
 
-Fixes (both at `project_chunk/v1` deriver):
-1. **Drop empty-title chunks** entirely — no classification signal, just noise.
-2. **Coalesce consecutive same-(app, title, project, category) chunks** with inter-chunk gap < 60s. The deriver should emit "scrollantir VS Code 9:30–10:15" not 47 micro-chunks.
+Pieces of original Phase G that were REAL problems and got addressed elsewhere:
+- ✅ Empty-title chunks (System Settings rendering blank) — NULLIF fix in `window_session.py` deriver, bundled with Phase B (commit ebf2e46).
+- ✅ Wire payload of all-day chunks — gzip (90% off) + lazy-fetch per visit (further drop).
+- The donut display is already aggregated by `(project, title)`, so the user never sees 47 raw 5-second slices — just "scrollantir 47m" in the legend. Underlying chunk count is fine.
 
-Effort: medium. Changes to `project_chunk.py` deriver. Should follow Phase B because the (slug, category) reconciliation matters for what counts as "same key" for coalescing.
-
-Side bug visible from same query: chunks tagged `(scrollantir, neutral)` despite tree-model invariant — Phase B fixes structurally.
+If row-count grows pathologically (e.g. mac.system.window starts firing every 100ms), revisit. For now, no deriver-level coalesce needed.
 
 ---
 
