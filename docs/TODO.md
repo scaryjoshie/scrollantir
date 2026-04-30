@@ -31,35 +31,56 @@ Last updated: 2026-04-30 (mid-session).
 
 - **Device-pie drill** (paused mid-flight). User asked: clicking the device pie should drill into top apps for that device, with single drill panel below. **Pausing** until the cross-device `app_slug` data layer lands (Phase B+) so we drill on the same canonical app identity as everywhere else.
 
+## ✅ This-session shipped (since TODO created)
+
+| Commit | Item |
+|---|---|
+| 8687106 | Initial TODO file |
+| 2c6998f | Caddy zstd + gzip — 102KB → 10KB on chunks payload (-90%) |
+| e234e4f | Lazy-fetch project_chunks per visit on click + TopicChunk.project nullable |
+
 ---
 
 ## 🟡 Designed — awaiting implementation
 
 These have think-tank plans returned. Listed in priority order.
 
-### Phase A — 5-min latency win (biggest perceived improvement)
-- **Caddy gzip verify** — 156KB cross-Atlantic chunks payload → ~20KB after compression. Network is the bottleneck (Hetzner→Chicago RTT 120ms + TLS 270ms), not Postgres (queries are 0.4–12ms hot). Source: latency profile (afdfd0f).
+### Phase A — 5-min latency win (✅ shipped, commit 2c6998f)
+- **Caddy zstd + gzip enabled.** Verified: 102KB chunks payload → 10KB wire (-90%). br module isn't in the standard Caddy build; zstd + gzip negotiate fine via Accept-Encoding.
+- **Real follow-up: lazy-fetch per visit on click** (Task #16). User's deeper point: we shouldn't ship all day's chunks at once. Plan: drop chunks from initial fetch; on visit selection, fetch `?parent_id=eq.<uuid>`. React Query caches per-visit. Prefetch on hover.
+- **Synthesis-audit (a555d2e)**: cross-checked 4 plans below — composes cleanly with 7 inconsistencies resolved + 8 gaps surfaced. Hard deps: B → C → E. C.5/D/F.async parallelizable post-C. See audit file for details.
 
-### Phase B — Big-bang: tree model + display names + view slim
-**Hard sequencing**: agent must be stopped during data migration. User has approved data wipe pre-2026-04-29 + cache reset.
-1. Stop agent.
-2. Drop pre-2026-04-29 events + derived rows.
-3. `TRUNCATE window_titles` + `classification_queue` (everything reclassifies).
-4. **Migration 0014** — drop `personal` project + add `CHECK (project_slug IS NULL OR category = 'work')` constraint.
-5. **Migration 0015** — harden `v_project_chunk_today`: coerce `category='work'` when slug present; drop redundant per-row `project` JSON object (latency win).
-6. Classifier prompt rewrite — tree-model invariant. Validator rejects (slug, non-work) pairs.
-7. `window_session.py` — `COALESCE(data->>'title', data->>'app_label', data->>'app', '')` (one-line fix; phone names become "Messages" instead of `com.google.android.apps.messaging`).
-8. Dashboard — `TopicChunk.project` nullable; drop stale `'personal'/'misc'` string guards (becomes general system instead of hardcoded edge cases).
-9. Restart agent → re-derives → re-classifies all titles under new prompt.
+### Phase B — Big-bang: tree model + display names + view slim (🟢 drafted, awaiting downtime window)
+
+**Status update 2026-04-30**:
+- ✅ `0014_drop_personal_project.sql` drafted as file
+- ✅ `0015_project_chunk_view_harden.sql` drafted as file (coerces category=work + drops redundant per-row project object — 40% wire savings on top of gzip)
+- ✅ `classifier.py` prompt rewrite + validator update committed (e234e4f and prior)
+- ✅ `window_session.py` `COALESCE(title, app_label, app)` committed
+- ✅ Dashboard `TopicChunk.project` nullable + auto-skip generalized — shipped (e234e4f)
+- ⏳ Awaiting user-confirmed downtime window to apply migrations + rsync code + restart agent
+
+**Execution playbook (~10 min downtime when user OK's)**:
+1. `cd /opt/scrollantir/repo/runtime && sudo docker compose stop agent`
+2. SSH-pipe `0014_drop_personal_project.sql` into postgres exec (the `BEGIN/COMMIT` block is atomic).
+3. SSH-pipe `0015_project_chunk_view_harden.sql` into postgres exec.
+4. `psql -c "TRUNCATE window_titles, classification_queue"` — fresh classifier cache under new prompt.
+5. (Optional, since pre-29 already wiped) `DELETE FROM events WHERE start_ts < '2026-04-29' AND received_at < '2026-04-29'` and same for derived_events — confirm with user first.
+6. `rsync` runtime/app/src to Hetzner. New `classifier.py` + `window_session.py` go live.
+7. `docker compose up -d --no-deps agent` — starts new agent, re-derives + re-classifies fresh.
+8. Verify: query a sample of new project_chunk rows; expect (slug + work) or (null + play|neutral) only.
+9. Refresh dashboard; verify "scrollantir under Neutral" no longer happens.
+
+**Rollback**: 0014 has `migrate:down` reinserting personal project. 0015 has `migrate:down` restoring 0013's body. Code reverts via `git revert e234e4f`.
 
 This phase fixes:
 - "scrollantir under Neutral" (impossible after CHECK constraint)
 - Hardcoded `'personal'/'misc'` checks (rule simplifies to `c.project != null`)
-- Phone app raw package names (Android already emits `app_label`, deriver was ignoring it)
+- Phone app raw package names ("Messages" instead of `com.google.android.apps.messaging`)
 - Wire payload (slim view drops redundant project object)
 - Stale 'misc' literal NITs from audit
 
-Sources: a4f5bba (rename), a423b67 (display names), afdfd0f #3 (slim view).
+Sources: a4f5bba (rename), a423b67 (display names), afdfd0f #3 (slim view), a555d2e (synthesis).
 
 ### Phase C — Cross-device app identity (`apps` + `app_aliases`)
 - New tables: `apps(slug, name, category_hint, icon, is_browser)` + `app_aliases(surface, value, app_slug)`.
