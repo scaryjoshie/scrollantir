@@ -150,6 +150,22 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 
 ## ⏳ Open — not yet think-tanked
 
+### 🐞 Active bug — place_visit sync (4/30)
+
+User reported phone-walked at ~3:57 AM but dashboard shows last visit ending 1:01 AM. Investigation:
+- Raw events: phone.location.reading from 03:30 → 03:57 AM at coords clearly west of Willard (~870m). User stationary at (42.05189, -87.68114) for ~4 min.
+- Deriver tick at 04:40 CT: `stays_detected: 10`, `stays_after_merge: 9`, `rows_after_long_gap_merge: 7`, `stays_pre_window_skipped: 2`. So 9 stays were valid but only 7 emitted.
+- LONG-GAP-MERGE collapsed 2 stays incorrectly. The 3:54 AM stay (at non-Willard coords) got merged into the 21:13-01:01 Willard visit.
+
+Likely cause: `_merge_same_place_long_gaps` keys on `place_id`, and the 3:54 AM coords might be matching Willard's polygon via OSM picker (Willard is a large residence; nearby coords could match its building feature). When 12h apart but same `place_id`, the 12h-merge fires and loses the new stay.
+
+Fix candidates:
+1. Re-investigate same-place merge: only collapse when there's NO travel_leg evidence in between (the prior synthesis-audit noted this).
+2. Tighten the OSM picker's match radius for residential buildings.
+3. Add a "stay_centroid distance from prior stay" check before merging.
+
+Real bug; not blocking morning review but should be tracked.
+
 ### Data quality cleanup (real findings from earlier in session)
 - **Norris Center duplicate place rows** — two rows <2m apart for the same building. Flagged in the data-quality audit; never resolved. Need a dedupe pass on `places` keyed by (lat, lng, name) within ~5m radius.
 - **Unnamed OSM places** (`building:275854338`, etc.) — INVESTIGATED 2026-04-30, NOT a deletion candidate. They're real Northwestern buildings whose Mapbox features have polygon + type (parking/dormitory/university) but no public name. 3 such rows total, 0 references in derived_events. Created during the 4/29 OSM picker iteration but never retained as visit ancestors. Better fix: dashboard renders them with a category-aware fallback label ("Unnamed dormitory") when encountered, instead of `building:NNN`. Don't delete.
