@@ -19,6 +19,7 @@ import {
   useBuildLookups,
 } from '@/features/today/lookups';
 import {
+  fetchGpsReadings,
   fetchPlaceVisits,
   fetchSleepByWakeDates,
   fetchTravelLegs,
@@ -184,6 +185,16 @@ export default function TodayPage() {
     queryKey: ['user_active', fromIso, toIso],
     queryFn: () => fetchUserActive(fromIso, toIso),
   });
+  // Raw GPS readings for the day window. Fed to MapPane so it can draw
+  // a polyline for user_active / tracking_gap selections — the case
+  // where the user has live GPS data but no travel_leg has emitted yet
+  // (mid-walk, no destination visit). Without this, selecting an
+  // "Active on Mac+phone" row leaves the map blank even though dozens
+  // of phone.location.reading rows landed in postgres.
+  const gpsQ = useQuery({
+    queryKey: ['gps_readings', fromIso, toIso],
+    queryFn: () => fetchGpsReadings(fromIso, toIso),
+  });
   // project_chunks are NOT fetched at the day level. DetailPane fetches
   // per-parent on selection (~5–30 rows vs 312/day). React Query
   // caches per parent_id so re-selection is instant. Drops ~10KB
@@ -315,7 +326,7 @@ Pick a different day, or wait for the deriver to run.`}
 
         <div className="grid grid-rows-[2fr_3fr] min-h-0">
           <div className="relative border-b border-line bg-paper-soft min-h-0">
-            <MapPane selected={selected} />
+            <MapPane selected={selected} readings={gpsQ.data ?? []} />
           </div>
           <div className="bg-paper-panel min-h-0 overflow-y-auto">
             <DetailPane entry={selected} dayStartIso={fromIso} />
