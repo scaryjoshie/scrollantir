@@ -1,9 +1,23 @@
-// Detail pane (bottom-right). Drill-down donut: L0 category → L1 project →
-// L2 title. A small device-split donut sits beside it, always showing
-// mac vs phone for the whole visit (orthogonal axis — doesn't re-filter
-// with drill). Mac-precedence dedupe applied throughout: phone time only
-// counts during minutes when no mac chunk overlaps, so concurrent
-// foreground doesn't double-count.
+// Detail pane (bottom-right). Layout:
+//   ┌──────────────────────────────────────┐
+//   │ [Header]                             │
+//   │                                      │
+//   │  Category pie + legend │ Device pie  │
+//   │                        │ + legend    │
+//   │ ─────── (drill panel appears ─────── │
+//   │  on category click) ─────────────── │
+//   │  Breadcrumb                          │
+//   │  Project pie + legend (or titles)    │
+//   └──────────────────────────────────────┘
+//
+// L0 = category (work / play / neutral). Click → L1.
+// L1 = projects within picked category. Click project → L2.
+// L2 = exact window titles within (category, project) OR (category) when
+//      L1 was auto-skipped.
+//
+// Auto-skip: when a category has ≤1 distinct project, L1 is skipped —
+// clicking 'Play' goes straight to titles instead of forcing the user
+// through a single-slice "misc" project view.
 
 import { useEffect, useMemo, useState } from 'react';
 import { format, parseISO } from 'date-fns';
@@ -31,23 +45,21 @@ const CATEGORY_LABEL: Record<TopicCategory, string> = {
   neutral: 'Neutral',
 };
 
-// Top-level color when slicing by category (L0). Saturated, distinct.
+// Top-level category palette (L0 only).
 const CATEGORY_BAR: Record<TopicCategory, string> = {
   work: '#5CB084',
   play: '#D9755C',
   neutral: '#A39E94',
 };
 
-// Per-category palettes used at L1 (projects) and L2 (titles). Keeps
-// drill-in slices visually anchored to the category they came from.
+// Per-category palettes for L1 (projects) and L2 (titles). Keeps drill-in
+// slices visually anchored to the category they came from.
 const CATEGORY_PALETTES: Record<TopicCategory, string[]> = {
   work: ['#5C8AD9', '#5CB1A0', '#7AB55C', '#5CB8C7', '#9C7AD9', '#4A6FB8'],
   play: ['#E07B5C', '#E07B98', '#D9A35C', '#B85CD9', '#E0A35C', '#C75C7B'],
   neutral: ['#8E8B85', '#A39E94', '#7A7570', '#9C988F'],
 };
 
-// Device-pie colors. Distinct from category colors so the device donut
-// reads as a separate axis at a glance.
 const DEVICE_COLOR: Record<'mac' | 'phone', string> = {
   mac: '#4D6A8A',
   phone: '#D9A35C',
@@ -74,8 +86,6 @@ function fmtDuration(startIso: string, endIso: string): string {
   return humanize(parseISO(endIso).getTime() - parseISO(startIso).getTime());
 }
 
-// Live `now` tick — the open-visit subtitle counts up in 30s steps
-// without needing a full data refetch.
 function useNowTick(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -102,10 +112,6 @@ function chunkMs(c: TopicChunk): number {
 // Aggregation
 // ---------------------------------------------------------------------
 
-// One bucket on a donut. `key` is what gets passed to the click handler
-// (drill target — category slug, project slug, or full title). `category`
-// drives color: at L0 it IS the slice; at L1/L2 the slices are colored
-// from the locked-in category's palette so drill-in stays coherent.
 type Slice = {
   key: string;
   label: string;
@@ -114,12 +120,10 @@ type Slice = {
   category: TopicCategory;
 };
 
-// Mac-precedence helper. Returns:
-//   - `effectiveMs(c)` — chunk duration after subtracting any minutes
-//     that overlap with the merged mac-coverage interval set (phone
-//     chunks only; mac chunks return their raw duration).
-//   - reused for both the project-side donut and the device-side donut
-//     so both sum to the same total.
+// Mac-precedence: phone time only counts during minutes when no mac chunk
+// overlaps. Computed ONCE per visit/leg and reused across drill levels —
+// per-subset computation would let drilling into 'play' silently inflate
+// phone-play time concurrent with mac-work.
 function macPrecedence(chunks: TopicChunk[]): {
   effectiveMs: (c: TopicChunk) => number;
 } {
@@ -151,18 +155,9 @@ function macPrecedence(chunks: TopicChunk[]): {
   return { effectiveMs };
 }
 
-// Group chunks by the L0/L1/L2 axis.
-//
-// `effectiveMs` MUST be the visit-scoped function (built from the FULL
-// chunk list, not the drill-filtered subset). Otherwise drilling into
-// 'play' inflates phone-play time that was actually concurrent with
-// mac-work — the play subset alone has no mac coverage to dampen
-// against, so the math silently lies. Computing once at the visit level
-// keeps drill totals consistent with L0 totals.
 function aggregate(
   chunks: TopicChunk[],
   groupBy: 'category' | 'project' | 'title',
-  // Locked category at L1/L2 — controls slice palette. Ignored at L0.
   lockedCategory: TopicCategory | null,
   effectiveMs: (c: TopicChunk) => number,
 ): { slices: Slice[]; totalMs: number } {
@@ -197,16 +192,10 @@ function aggregate(
   return { slices, totalMs };
 }
 
-// Device-axis aggregate — always uses ALL chunks (no drill filter).
-// Reuses the visit-scoped `effectiveMs` so the donut total matches the
-// main donut at L0.
 function aggregateDevice(
   chunks: TopicChunk[],
   effectiveMs: (c: TopicChunk) => number,
-): {
-  slices: Slice[];
-  totalMs: number;
-} {
+): { slices: Slice[]; totalMs: number } {
   const buckets = new Map<'mac' | 'phone', number>();
   for (const c of chunks) {
     const ms = effectiveMs(c);
@@ -228,6 +217,47 @@ function aggregateDevice(
 }
 
 // ---------------------------------------------------------------------
+// SVG arc helpers — used for individually-clickable slice paths.
+// The previous stroke-dasharray approach rendered each slice as a full
+// circle whose stroke happened to be visible in only an arc range; the
+// LAST drawn circle covered every other circle's hit area so clicks
+// always routed to the smallest (last) slice. Real arc paths fix this.
+// ---------------------------------------------------------------------
+
+function polarToCart(
+  cx: number,
+  cy: number,
+  r: number,
+  angleDeg: number,
+): [number, number] {
+  // angleDeg: 0 = 12 o'clock, increasing clockwise.
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+}
+
+function arcPath(
+  cx: number,
+  cy: number,
+  outerR: number,
+  innerR: number,
+  startAngleDeg: number,
+  endAngleDeg: number,
+): string {
+  const [x1o, y1o] = polarToCart(cx, cy, outerR, startAngleDeg);
+  const [x2o, y2o] = polarToCart(cx, cy, outerR, endAngleDeg);
+  const [x1i, y1i] = polarToCart(cx, cy, innerR, endAngleDeg);
+  const [x2i, y2i] = polarToCart(cx, cy, innerR, startAngleDeg);
+  const largeArc = endAngleDeg - startAngleDeg > 180 ? 1 : 0;
+  return [
+    `M ${x1o} ${y1o}`,
+    `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2o} ${y2o}`,
+    `L ${x1i} ${y1i}`,
+    `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x2i} ${y2i}`,
+    'Z',
+  ].join(' ');
+}
+
+// ---------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------
 
@@ -236,10 +266,6 @@ export default function DetailPane({
   dayStartIso,
 }: {
   entry: TimelineEntry | null;
-  // The displayed day's start (always local 00:00). Visits whose true
-  // start_ts lies before this get their "Since X" subtitle + live
-  // duration clipped so a still-open overnight stay reads as
-  // "Since 12:00 AM (continued) · 7h ongoing" instead of 16h.
   dayStartIso?: string;
 }) {
   if (!entry) {
@@ -262,8 +288,7 @@ export default function DetailPane({
     );
   }
   // key={entry.id} forces remount on selection change so each entry's
-  // drill state starts fresh — picking a new place_visit doesn't carry
-  // over the previous one's "drilled into Work › scrollantir."
+  // drill state starts fresh.
   if (entry.kind === 'place_visit')
     return <VisitDetail key={entry.id} visit={entry} dayStartIso={dayStartIso} />;
   if (entry.kind === 'travel_leg')
@@ -272,7 +297,7 @@ export default function DetailPane({
 }
 
 // ---------------------------------------------------------------------
-// Visit / leg detail — share the drill panel via ChunkDrill
+// Visit / leg — share ChunkDrill
 // ---------------------------------------------------------------------
 
 function VisitDetail({
@@ -295,7 +320,6 @@ function VisitDetail({
   const startedBeforeToday =
     !!dayStartIso && visit.start_ts < dayStartIso;
   const displayStart = startedBeforeToday ? dayStartIso! : visit.start_ts;
-
   const subtitle = visit.data.is_open
     ? startedBeforeToday
       ? `Since ${fmtTime(displayStart)} (continued) · ${humanize(
@@ -377,148 +401,187 @@ function ChunkDetail({ chunk }: { chunk: TopicChunk }) {
           className="inline-block w-2 h-2 rounded-full"
           style={{ background: CATEGORY_BAR[chunk.category] }}
         />
-        {CATEGORY_LABEL[chunk.category]} · {chunk.project}
+        {CATEGORY_LABEL[chunk.category]}
+        {chunk.project && chunk.project !== 'personal' && chunk.project !== 'misc' && (
+          <> · {chunk.project}</>
+        )}
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------
-// ChunkDrill — drill-down donut + breadcrumb + device companion
+// ChunkDrill — top row + drill panel
 // ---------------------------------------------------------------------
 
-type DrillPath = { category?: TopicCategory; project?: string };
+// State shape:
+//   L0   : nothing drilled (top pies are the whole story)
+//   L1   : category picked, projects-within-category in drill panel
+//   L2P  : category + project picked, titles-in-(cat,project)
+//   L2C  : category picked, L1 was auto-skipped, titles-in-category
+type DrillState =
+  | { level: 'L0' }
+  | { level: 'L1'; category: TopicCategory }
+  | { level: 'L2P'; category: TopicCategory; project: string }
+  | { level: 'L2C'; category: TopicCategory };
 
 function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
-  const [path, setPath] = useState<DrillPath>({});
+  const [state, setState] = useState<DrillState>({ level: 'L0' });
 
-  // Filter chunks by current drill — every level narrows the input,
-  // then aggregation re-buckets the survivors at the next axis.
-  const filtered = useMemo(() => {
-    return chunks.filter(
-      (c) =>
-        (!path.category || c.category === path.category) &&
-        (!path.project || c.project === path.project),
-    );
-  }, [chunks, path.category, path.project]);
-
-  const groupBy: 'category' | 'project' | 'title' =
-    !path.category ? 'category' : !path.project ? 'project' : 'title';
-
-  const lockedCategory = path.category ?? null;
-  const drillable = groupBy !== 'title';
-
-  // Mac-precedence baseline computed ONCE against the full visit/leg
-  // chunk set. Both donuts (project drill + device split) consume this
-  // shared `effectiveMs` so totals stay consistent across drill levels.
-  // Computing per-subset would let drilling into 'play' silently
-  // inflate phone-play time that was concurrent with mac-work.
   const { effectiveMs } = useMemo(() => macPrecedence(chunks), [chunks]);
 
-  const main = useMemo(
-    () => aggregate(filtered, groupBy, lockedCategory, effectiveMs),
-    [filtered, groupBy, lockedCategory, effectiveMs],
+  // Top row aggregations — always over the full chunk set.
+  const categoryAgg = useMemo(
+    () => aggregate(chunks, 'category', null, effectiveMs),
+    [chunks, effectiveMs],
   );
-
-  // Device pie always uses the full chunk set (visit/leg total) — it's
-  // an orthogonal axis. Drilling into Work › scrollantir doesn't filter
-  // it; that would conflate "what device dominates this visit" with
-  // "what device dominates this drill subset."
-  const device = useMemo(
+  const deviceAgg = useMemo(
     () => aggregateDevice(chunks, effectiveMs),
     [chunks, effectiveMs],
   );
 
-  function onSliceClick(key: string) {
-    if (!drillable) return;
-    if (groupBy === 'category') setPath({ category: key as TopicCategory });
-    else if (groupBy === 'project') setPath({ ...path, project: key });
+  // Drill-panel content depends on state level.
+  const drill = useMemo(() => {
+    if (state.level === 'L0') return null;
+    let filtered: TopicChunk[];
+    let groupBy: 'project' | 'title';
+    if (state.level === 'L1') {
+      filtered = chunks.filter((c) => c.category === state.category);
+      groupBy = 'project';
+    } else if (state.level === 'L2P') {
+      filtered = chunks.filter(
+        (c) => c.category === state.category && c.project === state.project,
+      );
+      groupBy = 'title';
+    } else {
+      filtered = chunks.filter((c) => c.category === state.category);
+      groupBy = 'title';
+    }
+    return aggregate(filtered, groupBy, state.category, effectiveMs);
+  }, [chunks, state, effectiveMs]);
+
+  // Click handler for category slice. Auto-skips L1 when there's nothing
+  // meaningful to project-bucket (≤1 distinct project_slug in the
+  // category) — clicking 'Play' goes straight to titles instead of
+  // bouncing through a single-slice "misc" project view.
+  function onCategoryClick(key: string) {
+    const cat = key as TopicCategory;
+    const projects = new Set<string>();
+    for (const c of chunks) {
+      if (c.category !== cat) continue;
+      // Project counts only when it's a real, non-catch-all slug. The
+      // 'personal' / 'misc' slug is the wildcard bucket and should NOT
+      // count toward "this category has projects worth drilling into."
+      if (c.project && c.project !== 'personal' && c.project !== 'misc') {
+        projects.add(c.project);
+      }
+    }
+    if (projects.size <= 1) {
+      setState({ level: 'L2C', category: cat });
+    } else {
+      setState({ level: 'L1', category: cat });
+    }
   }
 
-  function popTo(level: 'all' | 'category') {
-    if (level === 'all') setPath({});
-    else setPath({ category: path.category });
+  function onDrillSliceClick(key: string) {
+    if (state.level === 'L1') {
+      setState({ level: 'L2P', category: state.category, project: key });
+    }
+    // L2P / L2C: titles, no further drill.
   }
 
-  if (chunks.length === 0 || main.totalMs === 0) {
+  function popTo(target: 'L0' | 'L1') {
+    if (target === 'L0') setState({ level: 'L0' });
+    else if (state.level === 'L2P') setState({ level: 'L1', category: state.category });
+  }
+
+  if (chunks.length === 0 || categoryAgg.totalMs === 0) {
     return <div className="mt-5 text-sm text-ink-subtle">No activity recorded.</div>;
   }
 
   return (
     <div className="mt-5">
-      <Breadcrumb path={path} onPopTo={popTo} />
-
-      <div className="mt-3 flex items-start gap-6 flex-wrap">
-        <DonutChart
-          slices={main.slices}
-          totalMs={main.totalMs}
-          size={160}
-          centerLabel={drillable ? 'click to drill' : 'titles'}
-          onSliceClick={drillable ? onSliceClick : undefined}
+      {/* Top row: Category + Device, side-by-side, equal weight. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+        <DonutPanel
+          title="By category"
+          slices={categoryAgg.slices}
+          totalMs={categoryAgg.totalMs}
+          size={120}
+          activeKey={state.level !== 'L0' ? state.category : undefined}
+          onSliceClick={onCategoryClick}
+          drillable
         />
-        <DonutChart
-          slices={device.slices}
-          totalMs={device.totalMs}
-          size={96}
-          centerLabel="device"
-          // Device pie is read-only — orthogonal axis, not drillable.
-          onSliceClick={undefined}
-        />
-        <DrillLegend
-          slices={main.slices}
-          totalMs={main.totalMs}
-          drillable={drillable}
-          onRowClick={onSliceClick}
+        <DonutPanel
+          title="By device"
+          slices={deviceAgg.slices}
+          totalMs={deviceAgg.totalMs}
+          size={120}
         />
       </div>
+
+      {/* Drill panel — appears below on category click. */}
+      {state.level !== 'L0' && drill && drill.totalMs > 0 && (
+        <div className="mt-6 pt-5 border-t border-line">
+          <Breadcrumb state={state} onPopTo={popTo} />
+          <div className="mt-3">
+            <DonutPanel
+              title={undefined}
+              slices={drill.slices}
+              totalMs={drill.totalMs}
+              size={140}
+              activeKey={state.level === 'L2P' ? state.project : undefined}
+              onSliceClick={
+                state.level === 'L1' ? onDrillSliceClick : undefined
+              }
+              drillable={state.level === 'L1'}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function Breadcrumb({
-  path,
+  state,
   onPopTo,
 }: {
-  path: DrillPath;
-  onPopTo: (level: 'all' | 'category') => void;
+  state: DrillState;
+  onPopTo: (target: 'L0' | 'L1') => void;
 }) {
-  if (!path.category) {
-    // L0 — show the static label so the affordance for "you can drill"
-    // is obvious without an explicit onboarding hint.
-    return (
-      <div className="text-xs text-ink-subtle uppercase tracking-wider font-semibold">
-        By category
-      </div>
-    );
-  }
+  if (state.level === 'L0') return null;
   return (
     <div className="flex items-center gap-1.5 text-xs">
       <button
         type="button"
-        onClick={() => onPopTo('all')}
+        onClick={() => onPopTo('L0')}
         className="text-ink-muted hover:text-ink underline-offset-2 hover:underline"
       >
         All
       </button>
       <span className="text-ink-subtle">›</span>
-      {path.project ? (
+      {state.level === 'L2P' ? (
         <>
           <button
             type="button"
-            onClick={() => onPopTo('category')}
+            onClick={() => onPopTo('L1')}
             className="text-ink-muted hover:text-ink underline-offset-2 hover:underline"
           >
-            {CATEGORY_LABEL[path.category]}
+            {CATEGORY_LABEL[state.category]}
           </button>
           <span className="text-ink-subtle">›</span>
-          <span className="text-ink font-semibold">{path.project}</span>
+          <span className="text-ink font-semibold">{state.project}</span>
         </>
       ) : (
-        <span className="text-ink font-semibold">{CATEGORY_LABEL[path.category]}</span>
+        // L1 OR L2C — both render category as the leaf segment. L2C
+        // intentionally hides the auto-skipped project so the user
+        // doesn't see a phantom "Play › misc" step.
+        <span className="text-ink font-semibold">{CATEGORY_LABEL[state.category]}</span>
       )}
       <button
         type="button"
-        onClick={() => onPopTo('all')}
+        onClick={() => onPopTo('L0')}
         className="ml-2 text-ink-subtle hover:text-ink"
         aria-label="Clear drill"
       >
@@ -529,131 +592,199 @@ function Breadcrumb({
 }
 
 // ---------------------------------------------------------------------
-// Donut + Legend
+// Donut panel — donut + legend in one cell
+// ---------------------------------------------------------------------
+
+function DonutPanel({
+  title,
+  slices,
+  totalMs,
+  size,
+  activeKey,
+  onSliceClick,
+  drillable = false,
+}: {
+  // Optional uppercase section label above the donut. Omit for the
+  // drill panel where the breadcrumb already labels the section.
+  title?: string;
+  slices: Slice[];
+  totalMs: number;
+  size: number;
+  activeKey?: string;
+  onSliceClick?: (key: string) => void;
+  drillable?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      {title && (
+        <div className="text-xs text-ink-subtle uppercase tracking-wider font-semibold mb-2">
+          {title}
+        </div>
+      )}
+      <div className="flex items-center gap-5 flex-wrap">
+        <DonutChart
+          slices={slices}
+          totalMs={totalMs}
+          size={size}
+          activeKey={activeKey}
+          onSliceClick={onSliceClick}
+        />
+        <Legend
+          slices={slices}
+          totalMs={totalMs}
+          activeKey={activeKey}
+          drillable={drillable && !!onSliceClick}
+          onRowClick={onSliceClick}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Donut — path-based arc slices, individually clickable.
 // ---------------------------------------------------------------------
 
 function DonutChart({
   slices,
   totalMs,
   size,
-  centerLabel,
+  activeKey,
   onSliceClick,
 }: {
   slices: Slice[];
   totalMs: number;
   size: number;
-  centerLabel?: string;
+  activeKey?: string;
   onSliceClick?: (key: string) => void;
 }) {
   const cx = size / 2;
   const cy = size / 2;
-  // Stroke + radius math: keep the stroked donut inside viewBox with a
-  // small visual padding. Stroke scales with size for the small device
-  // pie so it doesn't look spindly next to the main one.
-  const strokeWidth = Math.max(14, size * 0.16);
   const padding = 4;
-  const radius = size / 2 - strokeWidth / 2 - padding;
-  const innerRadius = radius - strokeWidth / 2;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
+  const outerR = size / 2 - padding;
+  // ~38% donut thickness. Visually chunky without crowding the center
+  // text.
+  const innerR = outerR * 0.62;
+
+  // Reserve a small visual gap between adjacent slices. With a single
+  // 100% slice we render a full ring instead — arc paths don't draw
+  // at startAngle === endAngle.
+  const minGapDeg = slices.length > 1 ? 1.5 : 0;
+  const sweepBudget = 360 - minGapDeg * slices.length;
+  let cur = 0;
 
   return (
     <svg
       width={size}
       height={size}
       viewBox={`0 0 ${size} ${size}`}
-      className="shrink-0 overflow-visible"
+      className="shrink-0"
     >
+      {/* track */}
       <circle
         cx={cx}
         cy={cy}
-        r={radius}
-        fill="transparent"
+        r={(outerR + innerR) / 2}
+        fill="none"
         stroke="rgb(var(--c-line))"
-        strokeWidth={strokeWidth}
+        strokeWidth={outerR - innerR}
       />
-      {slices.map((s) => {
-        const fraction = s.ms / totalMs;
-        const dashLength = circumference * fraction;
-        const gap = Math.min(2, dashLength * 0.15);
-        const slice = (
-          <circle
-            key={s.key}
-            cx={cx}
-            cy={cy}
-            r={radius}
-            fill="transparent"
-            stroke={s.color}
-            strokeWidth={strokeWidth}
-            strokeDasharray={`${Math.max(0, dashLength - gap)} ${circumference}`}
-            strokeDashoffset={-offset}
-            transform={`rotate(-90 ${cx} ${cy})`}
-            className={onSliceClick ? 'cursor-pointer' : undefined}
-            onClick={onSliceClick ? () => onSliceClick(s.key) : undefined}
-          >
-            <title>{`${s.label} · ${humanize(s.ms)}`}</title>
-          </circle>
-        );
-        offset += dashLength;
-        return slice;
-      })}
+      {slices.length === 1 ? (
+        <circle
+          cx={cx}
+          cy={cy}
+          r={(outerR + innerR) / 2}
+          fill="none"
+          stroke={slices[0].color}
+          strokeWidth={outerR - innerR}
+          onClick={
+            onSliceClick ? () => onSliceClick(slices[0].key) : undefined
+          }
+          className={onSliceClick ? 'cursor-pointer' : undefined}
+        >
+          <title>{`${slices[0].label} · ${humanize(slices[0].ms)}`}</title>
+        </circle>
+      ) : (
+        slices.map((s) => {
+          const sweep = (s.ms / totalMs) * sweepBudget;
+          const startA = cur;
+          const endA = cur + sweep;
+          cur = endA + minGapDeg;
+          const dimmed = activeKey && activeKey !== s.key;
+          return (
+            <path
+              key={s.key}
+              d={arcPath(cx, cy, outerR, innerR, startA, endA)}
+              fill={s.color}
+              fillOpacity={dimmed ? 0.35 : 1}
+              onClick={
+                onSliceClick ? () => onSliceClick(s.key) : undefined
+              }
+              className={cn(
+                'transition-opacity',
+                onSliceClick && 'cursor-pointer',
+              )}
+            >
+              <title>{`${s.label} · ${humanize(s.ms)}`}</title>
+            </path>
+          );
+        })
+      )}
       <text
         x={cx}
-        y={cy - innerRadius * 0.05}
+        y={cy - innerR * 0.05}
         textAnchor="middle"
         className="fill-ink"
-        style={{ fontSize: innerRadius * 0.34, fontWeight: 600 }}
+        style={{ fontSize: innerR * 0.42, fontWeight: 600 }}
       >
         {humanize(totalMs)}
       </text>
-      {centerLabel && (
-        <text
-          x={cx}
-          y={cy + innerRadius * 0.4}
-          textAnchor="middle"
-          className="fill-ink-subtle"
-          style={{ fontSize: innerRadius * 0.18 }}
-        >
-          {centerLabel}
-        </text>
-      )}
     </svg>
   );
 }
 
-function DrillLegend({
+// ---------------------------------------------------------------------
+// Legend — clickable rows when drillable
+// ---------------------------------------------------------------------
+
+function Legend({
   slices,
   totalMs,
+  activeKey,
   drillable,
   onRowClick,
 }: {
   slices: Slice[];
   totalMs: number;
+  activeKey?: string;
   drillable: boolean;
-  // Rows are click-targets (synonyms for slice-click) so users can pick
-  // narrow slivers without aiming at a hairline.
-  onRowClick: (key: string) => void;
+  onRowClick?: (key: string) => void;
 }) {
-  // Cap visible rows; remaining tail collapsed into "+N more" so a
-  // 50-title L2 doesn't blow out the pane height.
-  const MAX_ROWS = 12;
+  const MAX_ROWS = 8;
   const visible = slices.slice(0, MAX_ROWS);
   const hidden = slices.slice(MAX_ROWS);
   const hiddenMs = hidden.reduce((s, x) => s + x.ms, 0);
 
   return (
-    <ul className="text-sm flex-1 min-w-[14rem] max-h-[280px] overflow-y-auto">
+    <ul
+      className="text-sm flex-1 min-w-0 max-h-[260px] overflow-y-auto"
+      style={{ minWidth: '12rem' }}
+    >
       {visible.map((s) => {
         const pct = Math.round((s.ms / totalMs) * 100);
+        const dimmed = activeKey && activeKey !== s.key;
         return (
           <li
             key={s.key}
             className={cn(
-              'grid items-center gap-x-3 py-1 -mx-2 px-2 rounded',
+              'grid items-center gap-x-3 py-1 -mx-2 px-2 rounded transition-opacity',
               drillable && 'cursor-pointer hover:bg-paper-hover',
+              dimmed && 'opacity-50',
             )}
             style={{ gridTemplateColumns: 'auto 1fr auto auto' }}
-            onClick={drillable ? () => onRowClick(s.key) : undefined}
+            onClick={
+              drillable && onRowClick ? () => onRowClick(s.key) : undefined
+            }
           >
             <span
               className="inline-block w-3 h-3 rounded-sm"
@@ -663,7 +794,7 @@ function DrillLegend({
             <span className="text-ink-subtle tabular-nums text-xs justify-self-end">
               {humanize(s.ms)}
             </span>
-            <span className="text-ink-subtle tabular-nums text-xs justify-self-end w-8 text-right">
+            <span className="text-ink-subtle tabular-nums text-xs justify-self-end w-9 text-right">
               {pct}%
             </span>
           </li>
@@ -673,13 +804,14 @@ function DrillLegend({
         <li
           className="grid items-center gap-x-3 py-1 -mx-2 px-2 text-ink-subtle italic"
           style={{ gridTemplateColumns: 'auto 1fr auto auto' }}
+          title={`Misc bucket: ${hidden.length} small slices clumped`}
         >
           <span />
           <span className="truncate">+{hidden.length} more</span>
           <span className="tabular-nums text-xs justify-self-end">
             {humanize(hiddenMs)}
           </span>
-          <span className="tabular-nums text-xs justify-self-end w-8 text-right">
+          <span className="tabular-nums text-xs justify-self-end w-9 text-right">
             {Math.round((hiddenMs / totalMs) * 100)}%
           </span>
         </li>
@@ -689,7 +821,7 @@ function DrillLegend({
 }
 
 // ---------------------------------------------------------------------
-// Header / Mono — unchanged from prior version
+// Header / Mono — unchanged
 // ---------------------------------------------------------------------
 
 function Header({
