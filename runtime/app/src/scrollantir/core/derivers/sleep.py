@@ -1,50 +1,56 @@
 """`sleep/v1` deriver.
 
-Detects overnight sleep from device-silence patterns. Inputs are
-event timestamps from the phone (foreground app changes, screen
-state, lock/unlock) and the Mac (AFK transitions, window changes).
-A minute the user is "active" is one that has at least one event
-within a small forward window; everything else is "silent".
+Detects sleep periods (and short naps) from gaps in `user_active/v1`
+spans. Reads from `derived_events` rather than raw events — sleep
+inherits the activity-source whitelist + clustering semantics from
+the user_active primitive (which is reusable for summary stats and
+top-apps masking later).
 
-Algorithm (deterministic):
+Per-day output:
 
-    events ─▶ active spans ─▶ silent runs (the gaps)
-                              ─▶ merge across brief interruptions
-                              ─▶ filter to runs ≥ min_sleep_hours
-                              ─▶ keep runs whose END falls in
-                                 "morning hours" (local time)
-                              ─▶ emit one sleep/v1 row per qualifying
-                                 run
+  - Up to ONE row with `kind = 'night'` — the longest qualifying
+    silent run that's both ≥ night_floor (180 min) AND ends in
+    [04:00, 14:00) local time. This sets /today's day boundary.
+  - Up to N rows (default 2) with `kind = 'nap'` — the longest
+    *other* silent runs ≥ nap_floor (90 min). Naps render as
+    Moments inside the day timeline; they don't shift the boundary.
 
-Why "ends in morning hours": separates sleep from naps. A 4h silence
-ending at 19:00 local is a nap; a 4h silence ending at 07:00 is sleep.
+Why two floors: per-user spec, anything < 90 min isn't sleep at
+all; common-sense audit pushed back that 90 min is more nap-than-
+sleep, so 'night' (the day-boundary row) requires ≥ 180 min. A
+half-hearted 100-min "night" doesn't get to define when the day
+started — it shows up as a nap and the dashboard falls back to
+04:00.
 
-Why "merge across brief interruptions": a 4 AM bathroom break (1
-unlock, 30s of activity) shouldn't split an 8h sleep into two 4h
-runs neither of which qualifies.
+Why morning-hours filter only on 'night': lets afternoon naps
+qualify as naps without misclassifying a long evening movie as
+"the day's main sleep". The cap (1 night + 2 naps) prevents the
+day from filling up with marginal silent runs.
 
-Confidence: 1.0 when there's a clear winner, lower when multiple
-runs compete. Below `min_confidence_to_emit` → don't emit (caller
-falls back to the 04:00 day boundary). The LLM-uncertain branch
-described in `docs/data-model.md` is deferred to a v2 — this v1
-ships purely deterministic.
+Brief mid-sleep activity ≤ max_interruption_min (5 min) is
+absorbed via silent-run merging — bathroom break + glance at
+phone shouldn't split an 8h sleep into two 4h runs. The 5-min
+tolerance is intentionally tighter than the user_active fade
+(also 5 min); together they accommodate roughly a 10-min real
+mid-night activity gap before splitting.
 
-Each row's `[start_ts, end_ts]` is the sleep span; `data.confidence`
-+ `provenance.disrupted_count` carry audit info. Deterministic id
-keys on the wake date (one row per "morning of waking up") so
-re-derivation is idempotent.
+Determinism: id keyed on `{wake_local_date, kind, rank}` rather
+than sleep_start timestamp. Boundary jitter (a single new event
+shifting silent_run start by seconds) wouldn't change the id —
+just the data — so `replace_derived_window` UPSERT semantics
+hold. Naps in the same day get rank 0..N by start_ts.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 try:
     from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover — Python < 3.9 not supported by runtime
+except ImportError:  # pragma: no cover — runtime is Python 3.9+
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 from . import register
@@ -59,49 +65,57 @@ SOURCE = "sleep/v1"
 
 
 class SleepV1Deriver(DeterministicDeriver):
-    """Deterministic sleep detection over device-silence."""
+    """Detect sleep + naps from gaps in user_active/v1 spans."""
 
     SOURCE = SOURCE
-    INPUTS = (
-        "phone.system.unlocked",
-        "phone.system.screen",
-        "phone.system.foreground",
-        "mac.system.afk",
-        "mac.system.window",
-    )
+    INPUTS = ("user_active/v1",)
 
-    # Each event marks the user "active" for this many minutes
-    # forward. Phone foreground events fire on app changes, so a
-    # session of one app produces one event; the forward window
-    # stretches that single event into a believable activity span.
-    active_duration_min: float = 5.0
+    # Hard floor for ANY sleep candidate. Below this we don't emit at
+    # all — per user, "not sleep if less than 90 min".
+    nap_floor_min: float = 90.0
 
-    # Brief interruption tolerance — a silent run interrupted by less
-    # than this much activity (think bathroom break + glance at phone)
-    # is treated as one continuous sleep, with `disrupted_count`
-    # incremented per absorbed interruption.
-    max_interruption_min: float = 15.0
+    # Higher floor for `kind='night'` (the row /today uses to set the
+    # day boundary). Common-sense audit was correct that a 90-min
+    # silence is nap-territory; anointing it as "the night's sleep"
+    # would over-shift the day boundary in cases the user wouldn't
+    # call sleep at all.
+    night_floor_min: float = 180.0
 
-    # Minimum silent-run duration to qualify as sleep at all. 4h is
-    # generous enough to catch short nights, tight enough to reject
-    # most naps.
-    min_sleep_hours: float = 4.0
+    # Brief mid-night activity tolerance — silent runs separated by ≤
+    # this much real activity collapse into one with `disrupted_count`
+    # incremented. 5 min is intentionally tight: the user_active
+    # primitive already extends spans 5 min past their last event, so
+    # the effective tolerance for "real activity" between two silent
+    # runs is closer to ~10 min once you account for the trailing fade.
+    max_interruption_min: float = 5.0
 
-    # Wake time must land in this local-time window. Cuts off naps
-    # whose end falls in the afternoon/evening. Hours are 24h, local.
-    morning_hours_start_local: int = 4
-    morning_hours_end_local: int = 14
+    # Local-time window for `kind='night'` qualification. A long sleep
+    # ending in this range is the night; one ending outside is a nap.
+    # 04-14 covers normal early/late risers; if the user pulls an
+    # all-nighter and crashes 4 PM → 9 PM, that 5h silence ends at
+    # 21:00 (outside) and is correctly classified as a nap.
+    morning_wake_start_local: int = 4
+    morning_wake_end_local: int = 14
 
-    # Hardcoded for v1 (single user). DST-aware via zoneinfo, no need
-    # for runtime config until we have multi-user.
+    # At most this many `kind='nap'` rows per local day (longest by
+    # duration). The "primary" night row is independent of this cap.
+    max_naps_per_day: int = 2
+
+    # Hardcoded for v1 (single user). DST-aware via zoneinfo.
     local_tz_name: str = "America/Chicago"
 
-    # Ratio test for confidence scoring when multiple competing runs
-    # exist. If the longest is ≥ 2× the runner-up duration, we're
-    # confident; ≥ 1.5× → medium; otherwise low. Below
-    # `min_confidence_to_emit`, the row is suppressed and the dashboard
-    # falls back to its default (4 AM) day boundary.
-    min_confidence_to_emit: float = 0.6
+    # When fetching user_active rows from `derived_events`, look this
+    # far past `window_start`. Captures user_active rows emitted by
+    # earlier ticks whose `start_ts` is now slightly before window_start
+    # (the rolling window has advanced). Without this, a silence whose
+    # bracketing previous active span starts in the just-prior period
+    # is invisible — sleep would see only the wake span and treat the
+    # silence as leading (dropped). 12h is wide enough to bracket any
+    # plausible activity-span first event AND any silence that started
+    # within the previous tick's window. Sleep onsets BEFORE
+    # `window_start` are still skip-emitted; lookback only restores the
+    # visibility needed to compute the run correctly.
+    fetch_lookback_hours: float = 12.0
 
     def compute(
         self,
@@ -109,175 +123,241 @@ class SleepV1Deriver(DeterministicDeriver):
         start: datetime,
         end: datetime,
     ) -> tuple[list[DerivedRow], dict[str, Any]]:
-        events = self._fetch_event_timestamps(conn, start, end)
-        active = _active_spans(
-            events, timedelta(minutes=self.active_duration_min)
-        )
-        silent = _silent_runs(active, start, end)
-        merged, disruptions_by_run = _merge_brief_interruptions(
+        active_spans = self._fetch_active_spans(conn, start, end)
+        silent = _silent_runs(active_spans)
+        merged, disruptions = _merge_brief_interruptions(
             silent, timedelta(minutes=self.max_interruption_min)
         )
 
-        min_dur = timedelta(hours=self.min_sleep_hours)
-        long_runs = [r for r in merged if r[1] - r[0] >= min_dur]
-
-        # Morning-hours filter on wake-time: a 5h silence ending at
-        # 19:00 is a nap, not sleep. Compare in local TZ.
-        tz = ZoneInfo(self.local_tz_name)
-        candidates = [
-            (s, e) for (s, e) in long_runs
-            if self.morning_hours_start_local
-            <= e.astimezone(tz).hour
-            < self.morning_hours_end_local
-        ]
+        nap_floor = timedelta(minutes=self.nap_floor_min)
+        long_runs = [(s, e) for (s, e) in merged if e - s >= nap_floor]
 
         metrics: dict[str, Any] = {
-            "events_total": len(events),
+            "active_spans_total": len(active_spans),
             "silent_runs_total": len(silent),
             "silent_runs_long": len(long_runs),
-            "candidates_in_morning": len(candidates),
+            "rows_emitted": 0,
+            "nights_emitted": 0,
+            "naps_emitted": 0,
         }
 
-        if not candidates:
+        if not long_runs:
             return [], metrics
 
-        # Score confidence per candidate against runner-up duration.
-        durations = sorted(
-            [(e - s).total_seconds() for s, e in long_runs], reverse=True
-        )
+        tz = ZoneInfo(self.local_tz_name)
+        # Group candidates by `wake_local_date`. Each group classifies
+        # at most one `night` (longest, also satisfying night_floor +
+        # morning-hours) plus up to `max_naps_per_day` naps.
+        by_day: dict[str, list[tuple[datetime, datetime]]] = {}
+        for s, e in long_runs:
+            wake_date = e.astimezone(tz).date().isoformat()
+            by_day.setdefault(wake_date, []).append((s, e))
+
         rows: list[DerivedRow] = []
-        for sleep_start, wake_ts in candidates:
-            this_dur = (wake_ts - sleep_start).total_seconds()
-            confidence = _score_confidence(this_dur, durations)
-            if confidence < self.min_confidence_to_emit:
+        for wake_date, group in by_day.items():
+            # Skip rows whose wake_ts < window_start — an earlier tick
+            # owns them. Without this, the rolling-window deriver would
+            # spuriously re-emit yesterday's sleep every tick.
+            in_window = [
+                (s, e) for (s, e) in group
+                if e >= start  # wake_ts inside / after start
+                and s >= start  # AND silence starts inside window too
+            ]
+            if not in_window:
                 continue
-            disrupted = disruptions_by_run.get((sleep_start, wake_ts), 0)
-            row = self._build_row(
-                sleep_start=sleep_start,
-                wake_ts=wake_ts,
-                confidence=confidence,
-                disrupted_count=disrupted,
-                tz=tz,
-            )
-            rows.append(row)
+
+            in_window.sort(key=lambda r: (r[1] - r[0]), reverse=True)
+            night = self._pick_night(in_window, tz)
+            naps = [r for r in in_window if r != night]
+            naps.sort(key=lambda r: (r[1] - r[0]), reverse=True)
+            naps = naps[: self.max_naps_per_day]
+            naps.sort(key=lambda r: r[0])  # render in chronological order
+
+            if night is not None:
+                rows.append(
+                    self._build_row(
+                        sleep_start=night[0],
+                        wake_ts=night[1],
+                        kind="night",
+                        rank=0,
+                        wake_local_date=wake_date,
+                        disrupted=disruptions.get(night, 0),
+                        all_in_day=in_window,
+                        tz=tz,
+                    )
+                )
+                metrics["nights_emitted"] += 1
+
+            for rank, nap in enumerate(naps):
+                rows.append(
+                    self._build_row(
+                        sleep_start=nap[0],
+                        wake_ts=nap[1],
+                        kind="nap",
+                        rank=rank,
+                        wake_local_date=wake_date,
+                        disrupted=disruptions.get(nap, 0),
+                        all_in_day=in_window,
+                        tz=tz,
+                    )
+                )
+                metrics["naps_emitted"] += 1
 
         metrics["rows_emitted"] = len(rows)
         return rows, metrics
 
-    def _fetch_event_timestamps(
+    def _pick_night(
         self,
-        conn: "psycopg.Connection",
-        start: datetime,
-        end: datetime,
-    ) -> list[datetime]:
-        """Fetch start_ts of every relevant event in [start, end),
-        sorted ascending. Sources merged into one stream — we only
-        care that *something* happened, not which device."""
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT start_ts
-                  FROM public.events
-                 WHERE source = ANY(%s)
-                   AND start_ts >= %s
-                   AND start_ts <  %s
-                 ORDER BY start_ts
-                """,
-                (list(self.INPUTS), start, end),
-            )
-            return [row[0] for row in cur.fetchall()]
+        sorted_runs: list[tuple[datetime, datetime]],
+        tz: ZoneInfo,
+    ) -> tuple[datetime, datetime] | None:
+        """The day's `kind='night'` candidate, or None if no run
+        qualifies. Walks runs in DESC duration order and returns the
+        first one that's ≥ night_floor AND ends in morning-hours
+        local. Otherwise → no night for this day; everything's a nap."""
+        night_floor = timedelta(minutes=self.night_floor_min)
+        for s, e in sorted_runs:
+            if (e - s) < night_floor:
+                continue
+            wake_local_hour = e.astimezone(tz).hour
+            if (
+                self.morning_wake_start_local
+                <= wake_local_hour
+                < self.morning_wake_end_local
+            ):
+                return (s, e)
+        return None
 
     def _build_row(
         self,
         *,
         sleep_start: datetime,
         wake_ts: datetime,
-        confidence: float,
-        disrupted_count: int,
+        kind: str,
+        rank: int,
+        wake_local_date: str,
+        disrupted: int,
+        all_in_day: list[tuple[datetime, datetime]],
         tz: ZoneInfo,
     ) -> DerivedRow:
-        wake_local_date = wake_ts.astimezone(tz).date().isoformat()
-        row_id = uuid5(NAMESPACE_URL, f"sleep/v1:{wake_local_date}")
+        # Stable id: same (date, kind, rank) → same uuid, even if the
+        # underlying boundaries shift by seconds across replays.
+        row_id = uuid5(
+            NAMESPACE_URL,
+            f"sleep/v1:{wake_local_date}:{kind}:{rank}",
+        )
+        # Confidence: this run's duration relative to the next-largest
+        # run in the same day-group. 1.0 if dominant. < 1.0 if a
+        # competitor is comparably long.
+        durations = sorted(
+            [(e - s).total_seconds() for s, e in all_in_day],
+            reverse=True,
+        )
+        my_dur = (wake_ts - sleep_start).total_seconds()
+        if len(durations) <= 1:
+            confidence = 1.0
+        else:
+            others = [d for d in durations if d != my_dur]
+            runner_up = max(others) if others else 0
+            confidence = (
+                1.0 if runner_up <= 0
+                else min(1.0, my_dur / runner_up / 2.0)
+            )
         return DerivedRow(
             id=row_id,
             source=self.SOURCE,
             start_ts=sleep_start,
             end_ts=wake_ts,
             data={
+                "kind": kind,
                 "confidence": round(confidence, 3),
-                # Wake date in user's local time — lets the dashboard
-                # filter "last night's sleep" without re-doing TZ math.
                 "wake_local_date": wake_local_date,
             },
             provenance={
                 "inputs": list(self.INPUTS),
-                # Sleep is computed from a population of events; we
-                # don't carry per-event ids (would balloon under a
-                # 7h+ silence with bracketing activity). Empty list is
-                # acceptable per the schema CHECK (`array_length` not
-                # required to be > 0).
+                # Sleep is computed from active-span rows; the
+                # `source_event_ids` here would be a list of
+                # user_active/v1 row ids that bracket the silence.
+                # To avoid pulling them just for provenance, we
+                # leave this empty and rely on (start_ts, end_ts)
+                # to pivot through user_active rows during debugging.
+                # Schema CHECK accepts empty arrays.
                 "source_event_ids": [],
-                "disrupted_count": disrupted_count,
-                "duration_hours": round(
-                    (wake_ts - sleep_start).total_seconds() / 3600.0, 2
+                "disrupted_count": disrupted,
+                "duration_minutes": round(
+                    (wake_ts - sleep_start).total_seconds() / 60.0, 1
                 ),
                 "wake_local_time": wake_ts.astimezone(tz).strftime(
                     "%H:%M:%S"
                 ),
+                "rank": rank,
             },
         )
 
+    def _fetch_active_spans(
+        self,
+        conn: "psycopg.Connection",
+        start: datetime,
+        end: datetime,
+    ) -> list[tuple[datetime, datetime]]:
+        """Active spans whose start_ts is in `[start - lookback, end)`.
+
+        Lookback is critical: a previous tick's user_active row may have
+        `start_ts` slightly before this tick's `window_start`, and
+        `replace_derived_window` doesn't delete rows outside [start,
+        end), so those older rows persist in derived_events. Without
+        lookback, sleep's first visible span would be window_start +
+        whatever, and any silent run rooted in the just-prior active
+        span would be invisible (treated as leading silence and
+        dropped by the interior-only `_silent_runs`).
+
+        Reads from `public.derived_events` directly (rather than the
+        `v_user_active` view) — derivers consume canonical rows; views
+        are for the dashboard.
+        """
+        fetch_start = start - timedelta(hours=self.fetch_lookback_hours)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT start_ts, end_ts
+                  FROM public.derived_events
+                 WHERE source = 'user_active/v1'
+                   AND start_ts >= %s
+                   AND start_ts <  %s
+                 ORDER BY start_ts
+                """,
+                (fetch_start, end),
+            )
+            return [(row[0], row[1]) for row in cur.fetchall()]
+
 
 # ---------------------------------------------------------------------------
-# Algorithm helpers (pure, no DB)
+# Pure helpers (no DB)
 # ---------------------------------------------------------------------------
-
-
-def _active_spans(
-    events: list[datetime],
-    active_duration: timedelta,
-) -> list[tuple[datetime, datetime]]:
-    """Each event contributes a forward `active_duration` span; merge
-    overlapping spans. Returns sorted, non-overlapping `[(start, end)]`."""
-    if not events:
-        return []
-    spans = sorted([(e, e + active_duration) for e in events])
-    out = [spans[0]]
-    for s, e in spans[1:]:
-        last_s, last_e = out[-1]
-        if s <= last_e:
-            if e > last_e:
-                out[-1] = (last_s, e)
-        else:
-            out.append((s, e))
-    return out
 
 
 def _silent_runs(
     active_spans: list[tuple[datetime, datetime]],
-    window_start: datetime,
-    window_end: datetime,
 ) -> list[tuple[datetime, datetime]]:
-    """Interior silent runs — gaps between CONSECUTIVE active spans,
-    clipped to `[window_start, window_end)`.
+    """Interior silent runs between consecutive active spans.
 
-    Critically, this does NOT include the silence before the first
-    active span or after the last. Those are unobserved time
-    (window opened before the user touched any device, or window
-    closed before the user touched again), not sleep candidates.
-    Including them would let the brief-interruption merger fold
-    the user's normal pre-sleep evening into the sleep span, badly
-    over-counting duration and shifting sleep_start_ts earlier than
-    it should be.
+    Each returned run is `(prev_span.end, next_span.start)`. NO
+    clamping to a window — clamping would corrupt onset reporting.
+    The deriver's skip-pre-window rule (silent_run.start < window_start
+    → don't emit) handles the "this run was already emitted by an
+    earlier tick" case correctly only when the silent_run reflects the
+    *true* onset, not a window-clamped one.
 
-    Each returned `(silent_start, silent_end)` is bracketed by
-    activity on both sides — exactly what we want for sleep
-    detection.
+    Excludes leading silence (before the first active span) and
+    trailing silence (after the last). Those are unobserved time
+    (window opened pre-activity or hasn't closed yet) — including
+    them would let the brief-interruption merger fold the user's
+    normal pre-sleep evening into the sleep span.
     """
     runs: list[tuple[datetime, datetime]] = []
     for i in range(len(active_spans) - 1):
-        s = max(window_start, active_spans[i][1])
-        e = min(window_end, active_spans[i + 1][0])
+        s = active_spans[i][1]
+        e = active_spans[i + 1][0]
         if s < e:
             runs.append((s, e))
     return runs
@@ -290,10 +370,15 @@ def _merge_brief_interruptions(
     list[tuple[datetime, datetime]],
     dict[tuple[datetime, datetime], int],
 ]:
-    """Two consecutive silent runs separated by an activity gap ≤
-    `max_interruption` are merged into one (a brief mid-night wake).
-    Returns the merged runs PLUS a `{run -> disrupted_count}` map so
-    the deriver can record `disrupted_count` in provenance."""
+    """Merge two consecutive silent runs into one if the activity
+    between them lasted ≤ `max_interruption`.
+
+    The 'gap' between two silent runs (the activity span between them)
+    has duration `next.start - prev.end`. If that's small, we treat
+    it as a brief mid-night wake and absorb it.
+
+    Returns: (merged_runs, {merged_run -> disrupted_count}).
+    """
     if not silent_runs:
         return [], {}
     out: list[tuple[datetime, datetime]] = [silent_runs[0]]
@@ -308,37 +393,6 @@ def _merge_brief_interruptions(
             disruptions.append(0)
     by_run = {run: disruptions[i] for i, run in enumerate(out)}
     return out, by_run
-
-
-def _score_confidence(
-    candidate_dur_s: float,
-    all_long_durations_s: list[float],
-) -> float:
-    """Confidence = how dominant this run is over runner-up.
-
-    - Sole qualifying run → 1.0
-    - ≥ 2× runner-up      → 1.0
-    - ≥ 1.5× runner-up    → 0.85
-    - ≥ 1.2× runner-up    → 0.7
-    - else                → 0.5  (likely competing nap or partial sleep)
-    """
-    if len(all_long_durations_s) <= 1:
-        return 1.0
-    others = [d for d in all_long_durations_s if d != candidate_dur_s]
-    if not others:
-        # Multiple runs all of identical duration — suspicious; lower.
-        return 0.6
-    runner_up = max(others)
-    if runner_up <= 0:
-        return 1.0
-    ratio = candidate_dur_s / runner_up
-    if ratio >= 2.0:
-        return 1.0
-    if ratio >= 1.5:
-        return 0.85
-    if ratio >= 1.2:
-        return 0.7
-    return 0.5
 
 
 # Auto-register at import (mirrors place_visit / travel_leg pattern).

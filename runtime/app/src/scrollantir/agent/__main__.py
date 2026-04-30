@@ -25,6 +25,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import scrollantir.core.derivers.place_visit  # noqa: F401
 import scrollantir.core.derivers.sleep  # noqa: F401
 import scrollantir.core.derivers.travel_leg  # noqa: F401
+import scrollantir.core.derivers.user_active  # noqa: F401
 
 from scrollantir.core.db import close_after, connect_agent
 from scrollantir.core.derivers import REGISTRY
@@ -40,35 +41,37 @@ log = logging.getLogger("scrollantir.agent")
 
 # How often the rolling-window deriver tick fires.
 DERIVER_INTERVAL_MINUTES = 5
-# How far back from now() each tick re-derives. Generous so late-
-# arriving GPS or activity-state events from earlier in the day still
-# get folded in. Single-user data volume makes this cheap.
-ROLLING_WINDOW_HOURS = 24
 
-# Sleep needs more lookback than place_visit — the deriver looks for
-# silent runs ending in "morning hours" of the user's local day, so
-# at any tick we need to see last night's evening + this morning's
-# wake. 36h covers any wake-time within a typical sleep schedule even
-# when the tick fires late in the day.
-SLEEP_WINDOW_HOURS = 36
+# Per-source rolling-window length. Sleep + user_active both need 36h
+# so they cover last night plus tonight even when the tick fires late
+# in the day. They also need to MATCH each other so sleep doesn't
+# read a stale tail of user_active rows. Place_visit / travel_leg do
+# fine on 24h.
+WINDOW_HOURS_BY_SOURCE: dict[str, int] = {
+    "place_visit/v1": 24,
+    "travel_leg/v1": 24,
+    "user_active/v1": 36,
+    "sleep/v1": 36,
+}
+DEFAULT_ROLLING_WINDOW_HOURS = 24
 
-# Order matters: travel_leg reads place_visit rows from derived_events.
+# Order matters: travel_leg reads place_visit rows; sleep reads
+# user_active rows. Each deriver runs over its own per-source window.
 DERIVER_CHAIN: tuple[str, ...] = (
     "place_visit/v1",
     "travel_leg/v1",
+    "user_active/v1",
     "sleep/v1",
 )
 
 
 def run_recent_derivers() -> None:
-    """Re-derive the deriver chain over rolling windows. Each call is
-    idempotent via replace_derived_window. Errors are logged and
-    swallowed so one bad tick doesn't kill the scheduler.
+    """Re-derive the deriver chain over per-source rolling windows.
+    Each call is idempotent via replace_derived_window. Errors are
+    logged and swallowed so one bad tick doesn't kill the scheduler.
 
-    Each deriver picks its own window length: place_visit + travel_leg
-    use the 24h ROLLING_WINDOW_HOURS; sleep uses SLEEP_WINDOW_HOURS so
-    late-night users still get last night's wake detected even when
-    the tick fires deep into the day.
+    Window length comes from `WINDOW_HOURS_BY_SOURCE`. Sleep +
+    user_active match (36h) so sleep doesn't read a stale tail.
     """
     end = datetime.now(timezone.utc)
     try:
@@ -78,9 +81,8 @@ def run_recent_derivers() -> None:
                 if deriver is None:
                     log.error("missing deriver %s in REGISTRY", source)
                     continue
-                hours = (
-                    SLEEP_WINDOW_HOURS if source == "sleep/v1"
-                    else ROLLING_WINDOW_HOURS
+                hours = WINDOW_HOURS_BY_SOURCE.get(
+                    source, DEFAULT_ROLLING_WINDOW_HOURS
                 )
                 start = end - timedelta(hours=hours)
                 log.info(
@@ -115,9 +117,9 @@ def main() -> None:
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
     )
     log.info(
-        "scheduler starting — derivers run every %d min over rolling %dh",
+        "scheduler starting — derivers run every %d min, windows=%s",
         DERIVER_INTERVAL_MINUTES,
-        ROLLING_WINDOW_HOURS,
+        WINDOW_HOURS_BY_SOURCE,
     )
     try:
         sched.start()

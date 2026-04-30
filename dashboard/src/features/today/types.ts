@@ -76,22 +76,26 @@ export type TravelLeg = {
 
 // public.derived_events row for source='sleep/v1'. Each row's
 // [start_ts, end_ts] IS the sleep span — start_ts = sleep onset,
-// end_ts = wake. Used by /today to set the day-window boundary
-// to the user's actual wake time (replacing a static 04:00 cutoff).
+// end_ts = wake. /today uses kind='night' rows to set the day-window
+// boundary; kind='nap' rows render as Moments inside the timeline.
+export type SleepKind = 'night' | 'nap';
+
 export type Sleep = {
-  kind: 'sleep';
+  kind: 'sleep';      // discriminator for TimelineEntry; not the sleep type
   id: string;
   source: 'sleep/v1';
   start_ts: string; // sleep onset (UTC ISO)
   end_ts: string;   // wake (UTC ISO)
   data: {
+    kind: SleepKind;        // 'night' for the day's main sleep, else 'nap'
     confidence: number;
     wake_local_date: string; // YYYY-MM-DD in user's local TZ
   };
   provenance: {
     disrupted_count: number;
-    duration_hours: number;
+    duration_minutes: number;
     wake_local_time: string; // HH:MM:SS in user's local TZ
+    rank: number;            // 0 for night, 0..N for naps by start_ts
   };
 };
 

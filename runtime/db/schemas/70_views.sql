@@ -84,8 +84,29 @@ WHERE de.source = 'travel_leg/v1';
 
 
 -- =========================================================================
--- v_sleep_today — sleep/v1 rows. Dashboard uses last-night's row to
--- set the day's wake-time boundary instead of the static 04:00 cutoff.
+-- v_user_active_today — user_active/v1 rows. Primitive activity-span
+-- output consumed by the sleep deriver and (eventually) summary stats.
+-- =========================================================================
+
+CREATE OR REPLACE VIEW public.v_user_active_today AS
+SELECT
+  de.id,
+  de.source,
+  de.start_ts,
+  de.end_ts,
+  jsonb_build_object(
+    'device',      de.data->>'device',
+    'event_count', COALESCE((de.data->>'event_count')::int, 0),
+    'sources',     COALESCE(de.data->'sources', '[]'::jsonb)
+  ) AS data
+FROM public.derived_events de
+WHERE de.source = 'user_active/v1';
+
+
+-- =========================================================================
+-- v_sleep_today — sleep/v1 rows. Dashboard uses kind='night' rows to
+-- set the day's wake-time boundary instead of a static 04:00 cutoff.
+-- kind='nap' rows render as Moments inside the timeline.
 -- Each row's [start_ts, end_ts] IS the sleep span (start = onset,
 -- end = wake).
 -- =========================================================================
@@ -97,13 +118,15 @@ SELECT
   de.start_ts,
   de.end_ts,
   jsonb_build_object(
-    'confidence',      (de.data->>'confidence')::float8,
-    'wake_local_date', de.data->>'wake_local_date'
+    'kind',             de.data->>'kind',                -- 'night' | 'nap'
+    'confidence',       (de.data->>'confidence')::float8,
+    'wake_local_date',  de.data->>'wake_local_date'
   ) AS data,
   jsonb_build_object(
-    'disrupted_count', COALESCE((de.provenance->>'disrupted_count')::int, 0),
-    'duration_hours',  (de.provenance->>'duration_hours')::float8,
-    'wake_local_time', de.provenance->>'wake_local_time'
+    'disrupted_count',  COALESCE((de.provenance->>'disrupted_count')::int, 0),
+    'duration_minutes', (de.provenance->>'duration_minutes')::float8,
+    'wake_local_time',  de.provenance->>'wake_local_time',
+    'rank',             COALESCE((de.provenance->>'rank')::int, 0)
   ) AS provenance
 FROM public.derived_events de
 WHERE de.source = 'sleep/v1';
@@ -113,3 +136,4 @@ WHERE de.source = 'sleep/v1';
 GRANT SELECT ON public.v_place_visit_today TO user_role;
 GRANT SELECT ON public.v_travel_leg_today  TO user_role;
 GRANT SELECT ON public.v_sleep_today       TO user_role;
+GRANT SELECT ON public.v_user_active_today TO user_role;

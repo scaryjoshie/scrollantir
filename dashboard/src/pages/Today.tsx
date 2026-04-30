@@ -63,16 +63,28 @@ export default function TodayPage() {
 
   const wakeBounds = useMemo(() => {
     const rows = sleepQ.data ?? [];
-    const todayWake = rows.find((r) => r.data.wake_local_date === dayKey);
-    const tomorrowWake = rows.find((r) => r.data.wake_local_date === tomorrowKey);
+    // Day boundary uses kind='night' rows ONLY. kind='nap' rows can
+    // also have a wake_local_date matching the displayed day, but
+    // they're not the day's "real" wake — they're afternoon naps
+    // and shouldn't shift /today's start.
+    const todayNight = rows.find(
+      (r) => r.data.wake_local_date === dayKey && r.data.kind === 'night',
+    );
+    const tomorrowNight = rows.find(
+      (r) => r.data.wake_local_date === tomorrowKey && r.data.kind === 'night',
+    );
+    const todayNaps = rows.filter(
+      (r) => r.data.wake_local_date === dayKey && r.data.kind === 'nap',
+    );
     const fallback = defaultWindow(day);
     return {
-      fromIso: todayWake?.end_ts ?? fallback.fromIso,
-      toIso: tomorrowWake?.end_ts ?? fallback.toIso,
-      todayWake: todayWake ?? null,
+      fromIso: todayNight?.end_ts ?? fallback.fromIso,
+      toIso: tomorrowNight?.end_ts ?? fallback.toIso,
+      todayNight: todayNight ?? null,
+      todayNaps,
     };
   }, [sleepQ.data, day, dayKey, tomorrowKey]);
-  const { fromIso, toIso, todayWake } = wakeBounds;
+  const { fromIso, toIso, todayNight, todayNaps } = wakeBounds;
 
   // Visits + legs queries depend on the resolved day window — keyed
   // on the actual ISO bounds so a sleep row arriving later (and
@@ -89,29 +101,53 @@ export default function TodayPage() {
   });
 
   const wakeMoment: Moment | null = useMemo(() => {
-    if (!todayWake) return null;
-    const wakeIso = todayWake.end_ts;
-    const localTime = todayWake.provenance.wake_local_time?.slice(0, 5) ?? '';
+    if (!todayNight) return null;
+    const localTime = todayNight.provenance.wake_local_time?.slice(0, 5) ?? '';
     return {
       kind: 'moment',
       id: `wake-${dayKey}`,
-      ts: wakeIso,
+      ts: todayNight.end_ts,
       label: localTime ? `Woke up at ${localTime}` : 'Woke up',
       glyph: '☀️',
       source_hint: 'sleep/v1',
     };
-  }, [todayWake, dayKey]);
+  }, [todayNight, dayKey]);
+
+  // Naps render as separate Moments inside the day. Each nap's
+  // wake_ts is the Moment's anchor; the user can click to inspect.
+  const napMoments: Moment[] = useMemo(() => {
+    return todayNaps.map((nap) => {
+      const localTime = nap.provenance.wake_local_time?.slice(0, 5) ?? '';
+      const dur = Math.round(nap.provenance.duration_minutes);
+      return {
+        kind: 'moment',
+        id: `nap-${dayKey}-${nap.provenance.rank}`,
+        ts: nap.end_ts,
+        label: localTime ? `Napped ${dur}m, woke at ${localTime}` : 'Nap',
+        glyph: '😴',
+        source_hint: 'sleep/v1',
+      };
+    });
+  }, [todayNaps, dayKey]);
 
   const entries: TimelineEntry[] = useMemo(() => {
     const visits = visitsQ.data ?? [];
     const legs = legsQ.data ?? [];
     const spans: Array<PlaceVisit | TravelLeg> = [...visits, ...legs];
-    spans.sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
-    // Wake Moment leads the day-narrative when sleep was confidently
-    // detected. Without it (fallback boundary), the timeline starts
-    // with whichever span is first — same as before.
-    return wakeMoment ? [wakeMoment, ...spans] : spans;
-  }, [visitsQ.data, legsQ.data, wakeMoment]);
+    const all: TimelineEntry[] = [
+      ...(wakeMoment ? [wakeMoment] : []),
+      ...spans,
+      ...napMoments,
+    ];
+    // Sort by ts (Moments) or start_ts (spans) so naps slot in
+    // chronologically with visits/legs.
+    all.sort((a, b) => {
+      const ta = a.kind === 'moment' ? a.ts : a.start_ts;
+      const tb = b.kind === 'moment' ? b.ts : b.start_ts;
+      return ta < tb ? -1 : 1;
+    });
+    return all;
+  }, [visitsQ.data, legsQ.data, wakeMoment, napMoments]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 
