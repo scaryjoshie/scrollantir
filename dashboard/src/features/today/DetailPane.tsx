@@ -484,16 +484,19 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
     return aggregate(filtered, groupBy, state.category, effectiveMs);
   }, [chunks, state, effectiveMs]);
 
-  // Click handler for category slice. Auto-skips L1 when there's nothing
-  // meaningful to project-bucket (≤1 distinct project_slug in the
-  // category) — clicking 'Play' goes straight to titles instead of
-  // bouncing through a single-slice "misc" project view.
+  // Click handler for category slice. Auto-skips L1 ONLY when the
+  // category has zero real projects to drill into — clicking 'Play'
+  // (typically all 'personal'/null) goes straight to titles instead
+  // of bouncing through a single-slice "misc" project view.
   //
-  // CRITICAL: the project count must use `effectiveMs(c) > 0`, not the
-  // raw chunks list. A phone chunk fully covered by a Mac chunk has
-  // effective_ms = 0 (filtered from aggregation), so its project must
-  // not bump the auto-skip count — otherwise L1 opens with a single
-  // visible slice + an invisible zero-time slice the user can't click.
+  // Even ONE real project earns the L1 step: the user wants to drill
+  // into "scrollantir within Neutral" specifically, not be force-
+  // routed past it. Previously the threshold was `<= 1` which silently
+  // ate that step.
+  //
+  // The project count uses `effectiveMs(c) > 0`, not raw chunks, so a
+  // phone chunk fully covered by Mac (effective_ms=0, filtered from
+  // aggregation) doesn't bump the count and create an invisible slice.
   function onCategoryClick(key: string) {
     const cat = key as TopicCategory;
     const projects = new Set<string>();
@@ -509,7 +512,7 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
         projects.add(c.project);
       }
     }
-    if (projects.size <= 1) {
+    if (projects.size === 0) {
       setState({ level: 'L2C', category: cat });
     } else {
       setState({ level: 'L1', category: cat });
