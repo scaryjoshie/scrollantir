@@ -73,9 +73,19 @@ export default function TodayPage() {
     queryFn: () => fetchTravelLegs(fromIso, toIso),
   });
 
+  // Find the visit that CONTAINS a given timestamp — used to anchor
+  // wake/nap Moments at the place the user was sleeping. Without
+  // this, clicking a Moment leaves the map at its prior location
+  // (or Chicago default) because Moments render with no coords.
+  const findContainingVisit = (ts: string): PlaceVisit | undefined =>
+    (visitsQ.data ?? []).find(
+      (v) => v.start_ts <= ts && ts <= v.end_ts,
+    );
+
   const wakeMoment: Moment | null = useMemo(() => {
     if (!todayNight) return null;
     const localTime = todayNight.provenance.wake_local_time?.slice(0, 5) ?? '';
+    const containing = findContainingVisit(todayNight.end_ts);
     return {
       kind: 'moment',
       id: `wake-${dayKey}`,
@@ -83,8 +93,14 @@ export default function TodayPage() {
       label: localTime ? `Woke up at ${localTime}` : 'Woke up',
       glyph: '☀️',
       source_hint: 'sleep/v1',
+      // Anchor at the place the user woke up — prefer the OSM POI
+      // centroid (inside the building) for the highlight, falling
+      // back to the visit's stay-centroid.
+      lat: containing?.place?.centroid_lat ?? containing?.data.lat,
+      lng: containing?.place?.centroid_lng ?? containing?.data.lng,
     };
-  }, [todayNight, dayKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayNight, dayKey, visitsQ.data]);
 
   // Naps render as separate Moments inside the day. Each nap's
   // wake_ts is the Moment's anchor; the user can click to inspect.
@@ -99,6 +115,10 @@ export default function TodayPage() {
       const m = totalMin % 60;
       const dur =
         h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h ${m}m`;
+      // Anchor at the place the nap happened (place.centroid_lat/lng
+      // when available, falling back to the stay-centroid). Without
+      // this the map keeps the previous selection's coords on click.
+      const containing = findContainingVisit(nap.end_ts);
       return {
         kind: 'moment',
         id: `nap-${dayKey}-${nap.provenance.rank}`,
@@ -106,9 +126,12 @@ export default function TodayPage() {
         label: localTime ? `Napped ${dur}, woke at ${localTime}` : 'Nap',
         glyph: '😴',
         source_hint: 'sleep/v1',
+        lat: containing?.place?.centroid_lat ?? containing?.data.lat,
+        lng: containing?.place?.centroid_lng ?? containing?.data.lng,
       };
     });
-  }, [todayNaps, dayKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayNaps, dayKey, visitsQ.data]);
 
   const entries: TimelineEntry[] = useMemo(() => {
     const visits = visitsQ.data ?? [];

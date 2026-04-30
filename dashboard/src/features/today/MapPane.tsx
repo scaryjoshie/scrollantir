@@ -185,7 +185,12 @@ function targetForSelection(
       lng: entry.lng,
       lat: entry.lat,
       pitch: 50,
-      highlightBuilding: false,
+      // Wake/nap Moments anchor at the building's POI centroid (set
+      // by Today.tsx from the containing visit's place). That coord
+      // sits inside the building polygon — the same probe that
+      // works for place_visit highlights.
+      highlightBuilding: true,
+      buildingProbe: { lat: entry.lat, lng: entry.lng },
     };
   }
   return null;
