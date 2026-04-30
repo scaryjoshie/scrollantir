@@ -179,6 +179,10 @@ From audit (a4c976) 2026-04-30 + verifying queries:
 - **Don't drop yet — needs more data** — sleep `disrupted_count` heuristic + `confidence /2.0` factor (1 sleep row so far; let week accumulate).
 - **Surface unread metrics** — `osm_errors`, `activity_unknown_legs`, `spans_skipped_pre_window` are emitted but nothing reads them. Pipe one to console log so we can audit fallback firings.
 
+### Open from 2026-04-30 morning
+- **Sleep as sub-activity of place_visit.** User suggestion: render sleep nested inline under the parent place_visit (like topic_chunks do today), instead of as a parallel Timeline row. Sleep is always inside a stay (you don't sleep mid-walk), so the hierarchy is honest. Less visual clutter; cleaner narrative. Effort: small dashboard change — Sleep entries get filtered out of top-level entries when their span overlaps a place_visit, then rendered inside the visit's Row as a child like topic_chunks.
+- **Click projects in /summary → top bar chart transforms.** User: "click on projects in the at-a-glance, transforms the bar chart at the top into a view for that thing". Exploratory UI work; substantive design.
+
 ### Other open items
 - **Subcategory auto-detection** — School chunks could auto-tag into class-specific sub-projects (e.g. "STAT 348 lecture" → `school-stat348`). User noted: "this changes pretty frequently, so automating would be optimal."
 - **Android `getClassName()` spike** — could disambiguate within-app screens (Slack channel list vs DM, Messages contact vs convo). Surfaced by the 2026-04-30 empty-title investigation. Currently we use `app_label` ("Slack") only; class name might give richer signal at near-zero ingest cost.
