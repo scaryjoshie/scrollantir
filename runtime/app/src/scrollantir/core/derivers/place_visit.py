@@ -91,15 +91,20 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
     # Kellogg Global Hub (POI was 36.5m from centroid) — reverted.
     osm_match_radius_m: int = 50
 
-    # Long-gap merge: after OSM matching, consecutive visits resolved
-    # to the SAME place_id with a gap <= this many hours collapse into
-    # one visit. Handles the indoor-no-GPS case: the phone's
-    # GPS-attestation gate (per session-2026-04-29-gps-noise.md) drops
-    # indoor WiFi readings, so a long indoor stay produces multiple
-    # short outdoor visits at the same place separated by long no-GPS
-    # gaps. Place-id-based merge is safer than centroid-distance based
-    # because it can't accidentally fold adjacent buildings together.
-    same_place_max_gap_hours: float = 12.0
+    # `same_place_max_gap_hours` knob removed 2026-04-30. The
+    # `_merge_same_place_long_gaps` pass it controlled inferred
+    # "user stayed at the same place across this gap" PURELY from the
+    # bracketing visits' place_id, with no access to the GPS readings
+    # in the gap. It collapsed real walks (e.g. the morning 03:30-03:55
+    # walk, where the user left Willard, walked ~880m, and returned).
+    #
+    # The right answer is to NOT add an inference layer that can't see
+    # the underlying evidence. SPD's stay-point detection already sees
+    # all readings chronologically and emits separate stays when motion
+    # interrupts. Two outdoor windows at home with a long no-GPS gap
+    # between them now render as two visits + a `tracking_gap` row in
+    # the dashboard — a faithful "we observed two windows of activity"
+    # rather than a fabricated "you stayed at home for 14 hours."
 
     # `is_open` ("currently here") is computed at READ time in
     # v_place_visit_today against NOW() — see migration 0010. Keeping
@@ -236,10 +241,6 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
                 )
             )
 
-        rows = _merge_same_place_long_gaps(
-            rows, max_gap_hours=self.same_place_max_gap_hours
-        )
-        metrics["rows_after_long_gap_merge"] = len(rows)
         return rows, metrics
 
     def _fetch_readings(
@@ -297,104 +298,6 @@ def _deterministic_visit_id(
         f"{lat:.5f},{lng:.5f}"
     )
     return uuid5(NAMESPACE_URL, key)
-
-
-def _merge_same_place_long_gaps(
-    rows: list[DerivedRow],
-    *,
-    max_gap_hours: float,
-) -> list[DerivedRow]:
-    """Collapse consecutive visits at the same place_id into one
-    visit when the gap between them is within `max_gap_hours`.
-
-    The user is at home/work/etc. and GPS goes silent (indoor, phone
-    asleep, doze mode) — when GPS resumes, SPD sees that as a "new"
-    visit. Same place_id between bracketing visits is the unambiguous
-    signal that the user never actually left.
-
-    Guarantees:
-      - Only merges when both bracketing visits have a non-null
-        place_id AND it's the same id. NULL place_ids are conservative —
-        we don't know where they were, so we don't claim they stayed.
-      - Keeps the earlier visit's id (deterministic id stability —
-        replays produce the same merged id).
-      - source_event_ids concatenate; brief_exit_count grows by one
-        per merge.
-      - centroid recomputed as point-count weighted average; dwell_s
-        sums the contributing visits' real time at place (NOT the
-        gaps — the gap was unobserved).
-      - match_confidence is the max across merged visits (highest-
-        evidence side wins).
-    """
-    if len(rows) < 2:
-        return rows
-
-    out: list[DerivedRow] = [rows[0]]
-    for nxt in rows[1:]:
-        prev = out[-1]
-        prev_place = prev.data.get("place_id")
-        nxt_place = nxt.data.get("place_id")
-        gap_hours = (nxt.start_ts - prev.end_ts).total_seconds() / 3600.0
-
-        if (
-            prev_place is not None
-            and prev_place == nxt_place
-            and 0.0 <= gap_hours <= max_gap_hours
-        ):
-            out[-1] = _merge_two_visits(prev, nxt)
-        else:
-            out.append(nxt)
-    return out
-
-
-def _merge_two_visits(a: DerivedRow, b: DerivedRow) -> DerivedRow:
-    """Combine two same-place visits into one. Used by the long-gap
-    merger above; assumes the caller has already validated same
-    place_id + reasonable gap."""
-    # Centroid weighted by point counts so the side with more
-    # observed data dominates.
-    pa = int(a.provenance.get("stay_point_count") or 1)
-    pb = int(b.provenance.get("stay_point_count") or 1)
-    total = pa + pb
-    new_lat = (a.data["lat"] * pa + b.data["lat"] * pb) / total
-    new_lng = (a.data["lng"] * pa + b.data["lng"] * pb) / total
-
-    return DerivedRow(
-        id=a.id,  # earlier id; replay-stable
-        source=a.source,
-        start_ts=a.start_ts,
-        end_ts=b.end_ts,
-        data={
-            **a.data,
-            "lat": new_lat,
-            "lng": new_lng,
-            "brief_exit_count": (
-                int(a.data.get("brief_exit_count", 0))
-                + int(b.data.get("brief_exit_count", 0))
-                + 1
-            ),
-        },
-        provenance={
-            **a.provenance,
-            "source_event_ids": (
-                list(a.provenance.get("source_event_ids", []))
-                + list(b.provenance.get("source_event_ids", []))
-            ),
-            "stay_point_count": total,
-            "stay_dwell_s": (
-                float(a.provenance.get("stay_dwell_s") or 0.0)
-                + float(b.provenance.get("stay_dwell_s") or 0.0)
-            ),
-            "match_confidence": max(
-                float(a.provenance.get("match_confidence") or 0.0),
-                float(b.provenance.get("match_confidence") or 0.0),
-            ),
-            "p95_accuracy_m": max(
-                float(a.provenance.get("p95_accuracy_m") or 0.0),
-                float(b.provenance.get("p95_accuracy_m") or 0.0),
-            ),
-        },
-    )
 
 
 # Auto-register the default-tuned instance at module load. The CLI
