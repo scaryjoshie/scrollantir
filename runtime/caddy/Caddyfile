@@ -11,6 +11,12 @@
 # expiry notifications.
 
 {$INGEST_HOSTNAME::80} {
+	# zstd > brotli > gzip — Caddy negotiates by Accept-Encoding.
+	# Cheapest cross-Atlantic latency fix: 156KB JSON → ~20KB.
+	# Real fix is reducing data volume (slim view + chunk coalesce);
+	# this is the floor.
+	encode zstd gzip
+
 	handle /health {
 		reverse_proxy api:8000
 	}
@@ -31,6 +37,8 @@
 # Production: set DASHBOARD_HOSTNAME=dashboard.<your>.nip.io →
 # Caddy auto-ACMEs and basic_auth gates every request.
 {$DASHBOARD_HOSTNAME::9999} {
+	encode zstd gzip
+
 	basic_auth {
 		josh {$DASHBOARD_BCRYPT}
 	}
