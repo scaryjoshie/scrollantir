@@ -65,7 +65,7 @@ explanation. Just the JSON object.
 """
 
 _USER_PROMPT_TEMPLATE = """\
-Active projects:
+Active projects (slug — description):
 {projects_block}
 
 Window title: {title!r}
@@ -73,20 +73,41 @@ Window title: {title!r}
 Classify."""
 
 
+def _format_projects(projects: list[tuple[str, str | None]]) -> str:
+    if not projects:
+        return "  (none)"
+    lines: list[str] = []
+    for slug, desc in projects:
+        if desc:
+            lines.append(f"  - {slug} — {desc}")
+        else:
+            lines.append(f"  - {slug}")
+    return "\n".join(lines)
+
+
 def classify(
     title: str,
-    project_slugs: list[str],
+    projects: list[tuple[str, str | None]] | list[str],
     *,
     timeout_s: float = 5.0,
 ) -> ClassificationResult:
     """Classify one title via Cerebras → Groq fallback chain.
 
-    Raises `ClassifierError` if both providers fail. The caller is
-    responsible for retry policy (typically `classification_queue`'s
-    backoff).
+    `projects` is a list of `(slug, description)` tuples. Bare-string
+    slugs are accepted for backward compatibility (description=None).
+    Description plumbs into the LLM prompt so the model can
+    disambiguate between similarly-shaped slugs.
+
+    Raises `ClassifierError` if both providers fail. Caller handles
+    retry policy via `classification_queue`'s backoff.
     """
+    # Normalize string-only input.
+    normalized: list[tuple[str, str | None]] = [
+        (p, None) if isinstance(p, str) else p for p in projects
+    ]
+    project_slugs = [slug for slug, _ in normalized]
     user_prompt = _USER_PROMPT_TEMPLATE.format(
-        projects_block="\n".join(f"  - {s}" for s in project_slugs) or "  (none)",
+        projects_block=_format_projects(normalized),
         title=title,
     )
     last_error: Exception | None = None

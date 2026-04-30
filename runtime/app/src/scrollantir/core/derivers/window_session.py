@@ -192,13 +192,15 @@ class WindowSessionV1Deriver(DeterministicDeriver):
 
 
 def _session_id(first_ts: datetime, title: str) -> UUID:
-    """Stable id for a window session. Includes the title in the key
-    so two back-to-back different-title sessions starting in the same
-    second don't collide on uuid5."""
-    key = (
-        f"window_session/v1:"
-        f"{first_ts.replace(microsecond=0).isoformat()}:{title}"
-    )
+    """Stable id for a window session.
+
+    Keeps microseconds in the key. Two same-title spans within the
+    same second is a real case (rapid title-flicker between two
+    apps interleaved by a third within < 1s), and rounding to
+    seconds collides their ids. Source events have stable full-
+    precision timestamps so replays still produce identical ids.
+    """
+    key = f"window_session/v1:{first_ts.isoformat()}:{title}"
     return uuid5(NAMESPACE_URL, key)
 
 

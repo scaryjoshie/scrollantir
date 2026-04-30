@@ -75,16 +75,20 @@ def run_classifier_tick() -> None:
         log.exception("classifier tick failed; will retry on next interval")
 
 
-def _fetch_active_projects(conn) -> list[str]:
+def _fetch_active_projects(conn) -> list[tuple[str, str | None]]:
+    """Return (slug, description) for active projects. Description
+    feeds the LLM prompt so the model can disambiguate between
+    similarly-named slugs (e.g. 'cado' vs 'color3') based on what
+    each project actually is."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT slug FROM public.projects
+            SELECT slug, description FROM public.projects
              WHERE archived_at IS NULL
              ORDER BY slug
             """
         )
-        return [row[0] for row in cur.fetchall()]
+        return [(row[0], row[1]) for row in cur.fetchall()]
 
 
 def _claim_due_titles(conn, n: int) -> list[tuple[str, int]]:
