@@ -40,6 +40,23 @@ Threshold constants (`night_floor_min`, `gap_within_span_min`, `same_place_max_g
 
 If a threshold isn't tied to observed data, it's a guess; either query the data or remove the threshold.
 
+## 5a. Deploy recipe — always `--build`
+
+The agent container's `Dockerfile` uses `COPY src/ ./src/` (no bind mount in `runtime/compose.yaml`). `docker compose restart agent` and `docker compose up -d agent` WITHOUT `--build` keep the OLD image — code changes silently no-op.
+
+**Correct deploy recipe** for any runtime/app change:
+```bash
+rsync -avz runtime/app/src/ orch:/tmp/scrollantir-src-new/
+ssh orch '
+  sudo rsync -a --delete /tmp/scrollantir-src-new/ /opt/scrollantir/repo/runtime/app/src/ &&
+  cd /opt/scrollantir/repo/runtime &&
+  sudo docker compose build agent &&
+  sudo docker compose up -d agent
+'
+```
+
+The `build` step is non-negotiable. Verify after with: `ssh orch 'sudo docker exec scrollantir-agent-1 grep <SOMETHING_NEW> /app/src/...'` — confirm the new code is in the running container.
+
 ## 5. Atomic commits, documented rollbacks
 
 Every shipped change is one logical unit, one commit. Migrations have explicit `migrate:down` blocks. Production-touching changes get a pre-written rollback recipe before applying — see `docs/TODO.md` rollback table.
