@@ -18,6 +18,7 @@ import { useQuery } from '@tanstack/react-query';
 import PageHeader from '@/components/PageHeader';
 import EmptyState from '@/components/EmptyState';
 import { DonutPanel, humanizeMs } from '@/components/Donut';
+import { BarChart, type BarItem } from '@/components/BarChart';
 import { startOfLocalDay } from '@/components/DatePicker';
 import { cn } from '@/lib/cn';
 import {
@@ -332,6 +333,8 @@ function CategoryDonut({
 
 // ---------------------------------------------------------------------
 // Project bars — top N projects ranked by total time over the period.
+// Renders as a shared horizontal BarChart so the visual idiom matches
+// the project ranking on /trends.
 // ---------------------------------------------------------------------
 
 function ProjectBars({
@@ -367,45 +370,62 @@ function ProjectBars({
       </div>
     );
   }
+
   // Bar scale uses the largest project as 100% — relative ranking is
-  // easier to read than absolute % of awake. Tooltip / hint shows
-  // absolute share for context.
-  const maxS = byProject[0].total_s;
+  // easier to read than absolute % of awake. Tooltip shows absolute
+  // share for context.
+  const items: BarItem[] = byProject.map((p) => {
+    const pctOfTotal = totalActiveS > 0 ? (p.total_s / totalActiveS) * 100 : 0;
+    return {
+      key: p.slug,
+      label: p.name,
+      value: p.total_s,
+      color: hashColor(PROJECT_PALETTE, p.slug),
+      tooltip: `${humanizeMs(p.total_s * 1000)} · ${pctOfTotal.toFixed(1)}% of active time`,
+    };
+  });
+
   return (
-    <ul className="space-y-2">
-      {byProject.map((p) => {
-        const pctOfMax = maxS > 0 ? (p.total_s / maxS) * 100 : 0;
-        const pctOfTotal = totalActiveS > 0 ? (p.total_s / totalActiveS) * 100 : 0;
-        const color = hashColor(PROJECT_PALETTE, p.slug);
-        return (
-          <li
-            key={p.slug}
-            className="grid items-center gap-x-3"
-            style={{ gridTemplateColumns: 'minmax(80px, 0.4fr) 1fr auto' }}
-          >
-            <span className="text-sm text-ink truncate" title={p.name}>
-              {p.name}
-            </span>
-            <div className="h-3 rounded-full bg-paper-panel border border-line overflow-hidden">
-              <div
-                className="h-full rounded-full transition-[width]"
-                style={{ width: `${pctOfMax}%`, background: color }}
-                title={`${humanizeMs(p.total_s * 1000)} · ${pctOfTotal.toFixed(1)}% of active time`}
-              />
-            </div>
-            <span className="text-xs text-ink-subtle tabular-nums">
-              {humanizeMs(p.total_s * 1000)}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+    <BarChart
+      orientation="horizontal"
+      items={items}
+      valueFormat={(s) => humanizeMs(s * 1000)}
+    />
   );
 }
 
 // ---------------------------------------------------------------------
-// Sleep strip — onset/wake/duration per night in the period.
+// Sleep chart — one vertical bar per night in the period. Y axis is
+// sleep duration in hours; bar color encodes whether the night had
+// any deriver-flagged disruptions. Aligned to /trends's SleepTrend so
+// a night reads identically across the two pages.
+//
+// User feedback (2026-04-30): the previous "horizontal row of cards"
+// rendering buried the comparison. A bar chart makes nights legible
+// at a glance; tracking gaps still render as dashed empty placeholders
+// (Tenet 1) rather than vanishing from the row.
 // ---------------------------------------------------------------------
+
+// Sleep palette — same hex as /trends so disrupted vs. undisrupted
+// reads identically across the two pages.
+const SLEEP_COLOR = {
+  ok: '#7DB98A',         // no disruptions
+  disrupted: '#D9A35C',  // at least one
+} as const;
+
+// 8h reference matches /trends (`SleepTrend.REFERENCE_S`). A familiar
+// point of comparison rather than an observed-data magic number; see
+// Tenet 4 — we can't tie a target to one user without a population
+// study, so the explicit "reference" framing is the honest path.
+const SLEEP_REFERENCE_S = 8 * 3600;
+
+// Format seconds as "7h 23m" / "7h" for sleep value labels.
+function fmtSleep(s: number): string {
+  if (s <= 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
 
 function SleepStrip({
   rows,
@@ -414,9 +434,31 @@ function SleepStrip({
   rows: DailySummary[];
   range: Range;
 }) {
-  // Filter to rows that actually have a sleep span. Days without one
-  // render as "Tracking gap" cells so the user sees the missing
-  // night, not a blank.
+  const items: BarItem[] = useMemo(
+    () =>
+      rows.map((r) => {
+        const disrupted = r.sleep_disrupted_count;
+        const dayLabel = format(parseISO(r.local_date), 'EEE');
+        const dateLabel = format(parseISO(r.local_date), 'M/d');
+        const tooltip =
+          r.sleep_main_s > 0
+            ? `${fmtSleep(r.sleep_main_s)}` +
+              (disrupted > 0
+                ? ` · ${disrupted} disruption${disrupted > 1 ? 's' : ''}`
+                : '')
+            : 'No sleep recorded';
+        return {
+          key: r.local_date,
+          label: dayLabel,
+          sublabel: dateLabel,
+          value: r.sleep_main_s,
+          color: disrupted === 0 ? SLEEP_COLOR.ok : SLEEP_COLOR.disrupted,
+          tooltip,
+        };
+      }),
+    [rows],
+  );
+
   const hasAny = rows.some((r) => r.sleep_main_s > 0);
   if (!hasAny) {
     return (
@@ -425,52 +467,39 @@ function SleepStrip({
       </div>
     );
   }
-  return (
-    <div
-      className={cn(
-        'grid gap-2',
-        range === 'week' ? 'grid-cols-2 md:grid-cols-7' : 'grid-cols-1',
-      )}
-    >
-      {rows.map((r) => (
-        <SleepCell key={r.local_date} row={r} />
-      ))}
-    </div>
-  );
-}
 
-function SleepCell({ row }: { row: DailySummary }) {
-  const dayLabel = format(parseISO(row.local_date), 'EEE M/d');
-  if (row.sleep_main_s === 0) {
-    return (
-      <div className="rounded-md border border-line bg-paper-panel px-3 py-2 text-xs">
-        <div className="text-ink-subtle font-medium">{dayLabel}</div>
-        <div className="text-ink-subtle italic mt-0.5">No data</div>
-      </div>
-    );
-  }
-  const h = Math.floor(row.sleep_main_s / 3600);
-  const m = Math.round((row.sleep_main_s % 3600) / 60);
-  const dur = m === 0 ? `${h}h` : `${h}h ${m}m`;
-  // Sleep "quality" hint: 1 = no disruptions, drops as count rises.
-  // Heuristic per a4f5bba: 1 - (disrupted / 4); floored at 0.25 so a
-  // very disrupted night still renders.
-  const quality = Math.max(0.25, 1 - row.sleep_disrupted_count / 4);
   return (
-    <div className="rounded-md border border-line bg-paper px-3 py-2 text-xs">
-      <div className="text-ink-subtle font-medium">{dayLabel}</div>
-      <div className="text-ink font-semibold tabular-nums mt-0.5">{dur}</div>
-      <div
-        className="mt-1.5 h-1.5 rounded-full bg-paper-panel overflow-hidden"
-        title={`${row.sleep_disrupted_count} disruption${row.sleep_disrupted_count === 1 ? '' : 's'}`}
-      >
-        <div
-          className="h-full rounded-full"
-          style={{
-            width: `${Math.round(quality * 100)}%`,
-            background: row.sleep_disrupted_count === 0 ? '#7DB98A' : '#D9A35C',
-          }}
-        />
+    <div className="space-y-3">
+      <BarChart
+        orientation="vertical"
+        items={items}
+        // Scale to 10h so an under-target night reads as visibly short
+        // and a long night still has headroom. The 8h reference line
+        // makes the target visible without baking it into the scale.
+        maxValue={10 * 3600}
+        referenceValue={SLEEP_REFERENCE_S}
+        height={range === 'today' ? 100 : 80}
+        valueFormat={fmtSleep}
+        emptyLabel="none"
+      />
+      <div className="flex items-center gap-x-4 text-xs text-ink-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block w-3 h-3 rounded-sm"
+            style={{ background: SLEEP_COLOR.ok }}
+          />
+          Undisrupted
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block w-3 h-3 rounded-sm"
+            style={{ background: SLEEP_COLOR.disrupted }}
+          />
+          Disrupted
+        </span>
+        <span className="ml-auto text-[10px] text-ink-subtle">
+          Dashed line at 8h reference
+        </span>
       </div>
     </div>
   );
