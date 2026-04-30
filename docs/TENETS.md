@@ -30,7 +30,9 @@ The 2026-04-30 "78% of chunks under 30s, that's noise" was a violation. User's a
 
 If the code special-cases the strings `'personal'` and `'misc'`, the data model is wrong. Fix the model so the special case becomes structural. Defensive `if foo === 'X'` chains are a tax on every future reader.
 
-The tree-model invariant (`project_slug != null IFF category = 'work'`) is the structural fix; the DB CHECK constraint is the truth, validators + view coercions are belt-and-suspenders during rollout.
+The 2026-04-30 fix for the wildcard `personal` project: drop the project entirely. Non-project chunks have `project_slug = NULL`. No string check needed; null IS the structural signal.
+
+(Earlier draft of this tenet promoted a strict `project_slug != null IFF category = 'work'` invariant. Investigation found 110 live rows already violated it; the user explicitly pushed back on the rigidity. Soft model wins: project and category are independent axes. Each project has a `default_category` hint, but a chunk's category is always the truth — `(scrollantir, neutral)` for project-adjacent admin is honest data, not a tree-model violation. The general-system principle stands; the specific structural fix changed.)
 
 ## 4. Magic numbers must cite their data
 

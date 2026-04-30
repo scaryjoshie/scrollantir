@@ -50,31 +50,48 @@ class ClassifierError(Exception):
 # instruction-tuned and reliably emit JSON for this kind of structured
 # call; we still parse defensively.
 _SYSTEM_PROMPT = """\
-You are classifying a single window/tab title from a personal time-
-tracking app. The user has provided their active projects below; pick
-the BEST match.
+You are classifying a single window/tab title from a personal time-tracking
+app. The user has provided their active projects below; pick the BEST match
+or none.
 
-INVARIANT (TREE MODEL): projects are inherently WORK. Non-work activity
-has no project. Concretely:
-  - If the title is clearly working on one of the listed projects:
-    return that project's slug AND category='work'.
-  - Otherwise: return project_slug=null AND category in ('play','neutral').
+Return TWO INDEPENDENT FIELDS:
 
-Categories:
-  work    — coding, writing, research, study, focused productive work
-            on a recognizable project (always paired with a project_slug)
-  play    — games, entertainment, social media for fun, YouTube/TikTok
-            scrolling, music videos, relaxation (project_slug=null)
-  neutral — system admin, lock screen, settings, generic web search,
-            file management, life logistics, eating (project_slug=null)
+  project_slug — which project this title belongs to, OR null if it doesn't
+                 belong to any of the listed projects. Pick a slug ONLY if
+                 the title clearly references that project (its repo, files,
+                 domain, named entities). When in doubt, return null.
 
-NEVER pair a non-null project_slug with category='play' or 'neutral' —
-that combination is structurally invalid. If you'd be tempted (e.g. a
-casual browse of a project's repo for fun), prefer project_slug=null
-with category='play'/'neutral' over forcing the project label.
+  category     — what kind of activity the title represents:
+                   work    — coding, writing, research, study, focused
+                             productive effort (whether or not it maps to a
+                             project — learning guitar without a "guitar"
+                             project listed is still work=true, slug=null)
+                   play    — games, entertainment, social media for fun,
+                             YouTube/TikTok scrolling, music videos,
+                             relaxation
+                   neutral — system admin, lock screen, settings, generic
+                             web search, file management, life logistics,
+                             eating, brief context-switches
 
-Output STRICT JSON with two keys: project_slug (string OR null) and
-category (one of work/play/neutral). No prose, no markdown, no
+THE TWO AXES ARE INDEPENDENT. A non-null project_slug does NOT force
+category to 'work', and category='work' does NOT require a project_slug.
+Examples of valid combinations:
+
+  ("scrollantir",  "work")    — editing scrollantir's source files
+  ("scrollantir",  "neutral") — editing the .env on a scrollantir branch;
+                                project-adjacent admin still belongs under
+                                the project, but isn't focused work
+  ("school",       "work")    — reading a course PDF, writing a problem set
+  (null,           "work")    — focused effort on something not in the
+                                project list (one-off research deep-dive)
+  (null,           "play")    — Reels, YouTube entertainment, games
+  (null,           "neutral") — system settings, lock screen, generic search
+
+Do NOT invent slugs. If no listed project is a clear match, return null —
+that's the honest answer.
+
+Output STRICT JSON with exactly two keys: project_slug (string OR null) and
+category (one of "work", "play", "neutral"). No prose, no markdown, no
 explanation. Just the JSON object.
 """
 
@@ -221,31 +238,69 @@ def _parse_response(
     *,
     model: str,
 ) -> ClassificationResult:
-    """Parse a JSON response from either provider. Defensive against
-    LLM drift: invalid project_slug → null, invalid category → neutral.
-    Anything that's not parseable JSON raises (caller treats as
-    failure → enqueues retry)."""
-    parsed: Any = json.loads(content)
+    """Parse a JSON response from either provider.
+
+    Coerce-vs-raise per Tenet 2 ("investigate before patching"):
+
+      RAISE (caller re-enqueues; LLM re-samples):
+        - JSON parse failure
+        - response is not an object
+        - missing project_slug or category key
+        - category is junk (not in {work, play, neutral})
+
+        These are model-output noise that re-sampling can fix.
+
+      COERCE (silent fix; re-sampling won't help):
+        - project_slug is a non-empty string but not in the active project
+          list → coerce to None. Re-sampling won't help: the project list
+          is fixed for this call. The honest answer is "no project."
+
+    The two axes (project_slug, category) are independent — we do NOT
+    reconcile them. (slug + non-work) and (null + work) are both valid
+    under the soft tree model.
+    """
+    try:
+        parsed: Any = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ClassifierError(f"classifier emitted non-JSON: {content!r}") from exc
+
     if not isinstance(parsed, dict):
-        raise ValueError(f"classifier response is not an object: {parsed!r}")
-    project_slug = parsed.get("project_slug")
-    category = parsed.get("category")
-    # Tree-model invariant enforcement (matches DB CHECK constraint on
-    # window_titles): project_slug != null IFF category = 'work'.
-    #
-    # 1. Validate project_slug — coerce empty/unknown → null.
-    if not isinstance(project_slug, str) or project_slug not in project_slugs:
-        project_slug = None
-    # 2. Validate category — fall back to 'neutral' for any junk.
+        raise ClassifierError(f"classifier response is not an object: {parsed!r}")
+
+    if "project_slug" not in parsed or "category" not in parsed:
+        raise ClassifierError(
+            f"classifier response missing required keys: {parsed!r}"
+        )
+
+    project_slug = parsed["project_slug"]
+    category = parsed["category"]
+
+    # Category: junk means re-sample. Don't silently default to 'neutral' —
+    # that masked classifier drift in the previous version.
     if category not in _VALID_CATEGORIES:
-        category = "neutral"
-    # 3. Reconcile: if the LLM emitted (slug + non-work) — prefer the
-    #    category and drop the slug. Project hits are noisier than
-    #    category hits, so trust the category. The reverse case
-    #    (category=work but no project) is fine: a one-off research
-    #    tab outside the project list has no project home.
-    if project_slug is not None and category != "work":
+        raise ClassifierError(
+            f"classifier emitted invalid category {category!r} "
+            f"(expected one of {sorted(_VALID_CATEGORIES)})"
+        )
+
+    # project_slug: coerce. Empty string / null → None; unknown slug → None.
+    # Re-sampling won't help; the active-project list doesn't change between
+    # retries, so we accept the honest "no project" answer.
+    if project_slug == "" or project_slug is None:
         project_slug = None
+    elif not isinstance(project_slug, str):
+        raise ClassifierError(
+            f"classifier emitted non-string project_slug: {project_slug!r}"
+        )
+    elif project_slug not in project_slugs:
+        log.info(
+            "classifier emitted unknown project_slug %r — coercing to None "
+            "(active=%s)",
+            project_slug,
+            project_slugs,
+        )
+        project_slug = None
+
     return ClassificationResult(
         project_slug=project_slug,
         category=category,
