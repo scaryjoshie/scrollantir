@@ -170,18 +170,38 @@ class WindowSessionV1Deriver(DeterministicDeriver):
     ) -> list[_WindowEvent]:
         """Pull window/foreground events with their app + title.
 
-        For mac.system.window, `data` carries `{app, title}` —
-        title is the window title (e.g. 'sleep.py — scrollantir').
-        For phone.system.foreground, the event has `{app}` only —
-        we use the app bundle id as both `app` and `title` since
-        Android doesn't expose per-activity titles to the tracker.
+        For mac.system.window, `data` carries `{app, title}` — title
+        is the window title (e.g. 'sleep.py — scrollantir').
+
+        For phone.system.foreground, Android-side `UsageStatsPoller`
+        emits `{app, app_label}` — `app` is the raw package id (e.g.
+        `com.google.android.apps.messaging`), `app_label` is the
+        user-facing display name from `PackageManager.getApplicationLabel`
+        ("Messages"). The deriver picks `app_label` first because raw
+        package ids are unreadable in the dashboard and produce
+        worse-classified rows (the LLM has to guess what
+        `com.google.android.apps.nexuslauncher` means).
+
+        Pre-app-label rows (events before that field shipped) fall
+        through to `app` so the deriver still emits SOMETHING for them.
         """
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, start_ts, source,
                        COALESCE(data->>'app', '') AS app,
-                       COALESCE(data->>'title', data->>'app', '') AS title
+                       -- NULLIF before COALESCE: PostgreSQL's COALESCE
+                       -- treats '' as a present value, so a mac event
+                       -- with title='' (e.g. System Settings) would
+                       -- bypass the fallthrough and emit empty-title
+                       -- chunks. NULLIF coerces empty → NULL so the
+                       -- chain reaches app_label / app properly.
+                       COALESCE(
+                         NULLIF(data->>'title', ''),
+                         NULLIF(data->>'app_label', ''),
+                         NULLIF(data->>'app', ''),
+                         ''
+                       ) AS title
                   FROM public.events
                  WHERE source = ANY(%s)
                    AND start_ts >= %s
