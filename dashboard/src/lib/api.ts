@@ -194,6 +194,23 @@ export function fetchProjectChunksForSpan(
   return pgrst<ProjectChunkRow[]>(url).then((rows) => rows.map(mapChunkRow));
 }
 
+// User-curated projects table. Slug is the stable key the classifier
+// returns and that lives on every TopicChunk; `name` is the
+// human-friendly label the dashboard renders. Archived projects stay
+// in the table so historical chunks still resolve to a name.
+export type Project = {
+  slug: string;
+  name: string;
+  description: string | null;
+  archived_at: string | null;
+};
+
+export function fetchProjects(): Promise<Project[]> {
+  return pgrst<Project[]>(
+    '/projects?select=slug,name,description,archived_at&order=slug.asc',
+  );
+}
+
 // Latest event per device — pulled from the most-recent 200 rows
 // regardless of the picked viz window. Used by the Raw page header
 // to show "is each device still alive?"

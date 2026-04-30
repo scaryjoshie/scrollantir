@@ -32,6 +32,7 @@ import type {
 } from './types';
 import { useTodayLookups } from './lookups';
 import { fetchProjectChunksForSpan } from '@/lib/api';
+import { useProjects, type ProjectsLookup } from '@/lib/useProjects';
 
 const ACTIVITY_LABEL: Record<string, string> = {
   walking: 'Walking',
@@ -162,6 +163,7 @@ function aggregate(
   groupBy: 'category' | 'project' | 'title',
   lockedCategory: TopicCategory | null,
   effectiveMs: (c: TopicChunk) => number,
+  projects?: ProjectsLookup,
 ): { slices: Slice[]; totalMs: number } {
   type Bucket = { ms: number; category: TopicCategory };
   const buckets = new Map<string, Bucket>();
@@ -193,7 +195,11 @@ function aggregate(
     } else {
       const palette = CATEGORY_PALETTES[lockedCategory ?? b.category];
       color = hashWithin(palette, key);
-      label = key;
+      // For project group-by, swap slug → curated `name` so the legend
+      // reads "Scrollantir" instead of "scrollantir". Falls back to the
+      // slug (via byName) when the project isn't in the table — better
+      // to display the slug than an empty cell.
+      label = groupBy === 'project' && projects ? projects.byName(key) : key;
     }
     return { key, label, ms: b.ms, color, category: b.category };
   });
@@ -469,6 +475,7 @@ function SleepDetail({ sleep }: { sleep: import('./types').Sleep }) {
 
 function ChunkDetail({ chunk }: { chunk: TopicChunk }) {
   const { visitById, legById } = useTodayLookups();
+  const projects = useProjects();
   const parentVisit = visitById[chunk.parent_id];
   const parentLeg = parentVisit ? null : legById[chunk.parent_id];
   let chip: string | undefined;
@@ -494,7 +501,7 @@ function ChunkDetail({ chunk }: { chunk: TopicChunk }) {
         />
         {CATEGORY_LABEL[chunk.category]}
         {chunk.project && chunk.project !== 'personal' && chunk.project !== 'misc' && (
-          <> · {chunk.project}</>
+          <> · {projects.byName(chunk.project)}</>
         )}
       </div>
     </div>
@@ -518,6 +525,10 @@ type DrillState =
 
 function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
   const [state, setState] = useState<DrillState>({ level: 'L0' });
+  // Projects table lookup — used to render the L1 project legend with
+  // curated names instead of slugs, and to label the breadcrumb. Cached
+  // forever via React Query so re-mounting on selection change is free.
+  const projects = useProjects();
 
   const { effectiveMs } = useMemo(() => macPrecedence(chunks), [chunks]);
 
@@ -548,8 +559,8 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
       filtered = chunks.filter((c) => c.category === state.category);
       groupBy = 'title';
     }
-    return aggregate(filtered, groupBy, state.category, effectiveMs);
-  }, [chunks, state, effectiveMs]);
+    return aggregate(filtered, groupBy, state.category, effectiveMs, projects);
+  }, [chunks, state, effectiveMs, projects]);
 
   // Click handler for category slice. Auto-skips L1 ONLY when the
   // category has zero real projects to drill into — clicking 'Play'
@@ -626,7 +637,7 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
       {/* Drill panel — appears below on category click. */}
       {state.level !== 'L0' && drill && drill.totalMs > 0 && (
         <div className="mt-6 pt-5 border-t border-line">
-          <Breadcrumb state={state} onPopTo={popTo} />
+          <Breadcrumb state={state} onPopTo={popTo} projects={projects} />
           <div className="mt-3">
             <DonutPanel
               title={undefined}
@@ -649,9 +660,11 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
 function Breadcrumb({
   state,
   onPopTo,
+  projects,
 }: {
   state: DrillState;
   onPopTo: (target: 'L0' | 'L1') => void;
+  projects: ProjectsLookup;
 }) {
   if (state.level === 'L0') return null;
   return (
@@ -674,7 +687,9 @@ function Breadcrumb({
             {CATEGORY_LABEL[state.category]}
           </button>
           <span className="text-ink-subtle">›</span>
-          <span className="text-ink font-semibold">{state.project}</span>
+          <span className="text-ink font-semibold">
+            {projects.byName(state.project)}
+          </span>
         </>
       ) : (
         // L1 OR L2C — both render category as the leaf segment. L2C
