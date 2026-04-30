@@ -160,8 +160,8 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the best feature for visit attribution from a Tilequery
     response (features pre-sorted ascending by distance).
 
-    Priority order, from highest to lowest. Within a tier, the
-    closest match wins (the feature list comes sorted).
+    Priority, from highest to lowest. Within a tier, the closest
+    match wins (the feature list comes sorted).
 
       1. Named building-label POI (`poi_label`, `class=building`).
          These are the labels the Mapbox renderer puts ON a building:
@@ -169,16 +169,23 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
          Outrank tenant POIs even when the tenant is closer — Fran's
          Cafe at 17m loses to Willard at 23m because the user is
          at the dorm, not specifically at the cafe.
-      2. Named feature with a non-'mixed' category (a poi_label
-         with class=education / library / food / etc., or a
-         categorized building like Norris with class=university).
-      3. Any named feature, even if category=mixed.
-      4. Closest feature, named or not — last-resort fallback so a
+      2. Any named non-landuse POI — closest wins. This includes
+         typed POIs (education, food_and_drink, sport_and_leisure,
+         etc.) AND POIs whose class isn't in our category mapping.
+         A previous version sub-ranked typed > untyped, but that
+         picked a 40m "Statistics Department" over a 17m "Blomquist
+         Recreation Center" just because `education` was in the
+         category map and `sport_and_leisure` wasn't. Distance is
+         the better discriminator at this tier.
+      3. Closest feature, named or not — last-resort fallback so a
          visit always lands SOMETHING.
+
+    Landuse polygons (e.g. "Northwestern University") are too coarse
+    to count as named — they cover whole blocks. Excluded from the
+    named tiers (still available as closest-fallback).
     """
     building_pois: list[dict[str, Any]] = []
-    typed_named: list[dict[str, Any]] = []
-    any_named: list[dict[str, Any]] = []
+    named_pois: list[dict[str, Any]] = []
     closest: dict[str, Any] | None = None
     for f in features:
         if not isinstance(f, dict):
@@ -186,27 +193,16 @@ def _pick_best_feature(features: list[dict[str, Any]]) -> dict[str, Any] | None:
         if closest is None:
             closest = f
         name = _name_from_feature(f)
-        if not name:
-            continue
-        # Landuse is too coarse for visit attribution — a named
-        # 'Northwestern University' polygon shouldn't outrank a
-        # building POI inside it. Skip from the named tiers (still
-        # available via the closest-fallback if there's literally
-        # nothing else).
-        if _is_landuse(f):
+        if not name or _is_landuse(f):
             continue
         if _is_building_poi(f):
             building_pois.append(f)
-        elif _category_from_feature(f) != "mixed":
-            typed_named.append(f)
         else:
-            any_named.append(f)
+            named_pois.append(f)
     if building_pois:
         return building_pois[0]
-    if typed_named:
-        return typed_named[0]
-    if any_named:
-        return any_named[0]
+    if named_pois:
+        return named_pois[0]
     return closest
 
 
@@ -303,6 +299,13 @@ _POI_CATEGORY: dict[str, str] = {
     "lodging": "residence",
     "office": "work",
     "shopping": "work",  # closest non-leisure bucket
+    # Recreation / fitness — gym, rec center, climbing wall, etc.
+    # Maps to 'social' as the closest existing category (it's an
+    # out-of-residence activity space; not work, study, or food).
+    "sport_and_leisure": "social",
+    "park_like": "social",
+    "arts_and_entertainment": "social",
+    "religion": "social",
 }
 
 # landuse.class values that should be suppressed (we never want to call
