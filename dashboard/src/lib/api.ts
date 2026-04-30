@@ -159,8 +159,8 @@ function mapChunkRow(r: ProjectChunkRow): TopicChunk {
 
 // Day-window fetcher — kept for any caller that needs all chunks
 // at once (e.g. a future /summary aggregate path that streams). The
-// /today page does NOT use this anymore: it fetches chunks per-visit
-// on selection via fetchProjectChunksForParent below.
+// /today page does NOT use this anymore: it fetches chunks per-span
+// on selection via fetchProjectChunksForSpan below.
 export function fetchProjectChunks(
   fromIso: string,
   toIso: string,
@@ -173,16 +173,23 @@ export function fetchProjectChunks(
   return pgrst<ProjectChunkRow[]>(url).then((rows) => rows.map(mapChunkRow));
 }
 
-// Per-parent fetcher — called when the user selects a visit/leg. ~5–30
-// rows depending on session length vs the 312/day for the whole window.
-// React Query caches per-parent so re-clicks are instant; first click
-// pays one ~120ms RTT.
-export function fetchProjectChunksForParent(
-  parentId: string,
+// Per-span fetcher — called when the user selects a visit/leg. Queries
+// chunks whose start_ts falls within the span's [start, end). Uses the
+// existing (source, start_ts) index → ~1ms regardless of corpus size.
+//
+// PRIOR APPROACH was `?parent_id=eq.<uuid>`, but the view's parent_id
+// is a LATERAL-computed field — filtering by it required computing
+// parent_id for every chunk first, costing O(N) per query as the
+// corpus grew. Time-window queries against the indexed start_ts are
+// trivially indexable. The view's parent_id LATERAL is going away.
+export function fetchProjectChunksForSpan(
+  startIso: string,
+  endIso: string,
 ): Promise<TopicChunk[]> {
   const url =
     `/v_project_chunk_today` +
-    `?parent_id=eq.${encodeURIComponent(parentId)}` +
+    `?start_ts=gte.${encodeURIComponent(startIso)}` +
+    `&start_ts=lt.${encodeURIComponent(endIso)}` +
     `&order=start_ts.asc`;
   return pgrst<ProjectChunkRow[]>(url).then((rows) => rows.map(mapChunkRow));
 }

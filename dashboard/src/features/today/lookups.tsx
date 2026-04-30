@@ -2,9 +2,11 @@
 // Today.tsx and consumed by MapPane / DetailPane / Timeline.
 //
 // project_chunks are NO LONGER passed through here — DetailPane
-// fetches them lazily per-parent on selection (api.ts
-// fetchProjectChunksForParent). That dropped ~10KB of compressed
-// wire traffic on every /today load.
+// fetches them lazily per-span on selection (api.ts
+// fetchProjectChunksForSpan, indexed by start_ts). That dropped
+// ~10KB of compressed wire traffic on every /today load AND
+// avoids the O(N) view-side parent_id lookup that was paid per
+// query under the prior parent_id=eq approach.
 
 import { createContext, useContext, useMemo } from 'react';
 import type { PlaceVisit, TravelLeg } from './types';

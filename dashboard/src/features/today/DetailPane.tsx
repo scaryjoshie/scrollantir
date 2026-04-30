@@ -31,7 +31,7 @@ import type {
   TravelLeg,
 } from './types';
 import { useTodayLookups } from './lookups';
-import { fetchProjectChunksForParent } from '@/lib/api';
+import { fetchProjectChunksForSpan } from '@/lib/api';
 
 const ACTIVITY_LABEL: Record<string, string> = {
   walking: 'Walking',
@@ -342,12 +342,13 @@ function VisitDetail({
   dayStartIso?: string;
 }) {
   const now = useNowTick();
-  // Lazy-fetch chunks for THIS visit on click. ~5–30 rows vs the 312/day
-  // we used to ship eagerly. React Query caches per visit.id so
-  // re-selecting is instant; the first click pays one ~120ms RTT.
+  // Lazy-fetch chunks whose start_ts falls within this visit's span.
+  // Uses the indexed (source, start_ts) — O(log N) regardless of total
+  // chunk corpus. React Query caches per visit.id so re-selecting is
+  // instant; first click pays one ~120ms RTT.
   const chunksQ = useQuery({
-    queryKey: ['chunks-by-parent', visit.id],
-    queryFn: () => fetchProjectChunksForParent(visit.id),
+    queryKey: ['chunks-by-span', visit.id],
+    queryFn: () => fetchProjectChunksForSpan(visit.start_ts, visit.end_ts),
     staleTime: 5 * 60 * 1000,
   });
   const chunks = useMemo(
@@ -391,12 +392,11 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
   const { visitById } = useTodayLookups();
   const from = visitById[leg.data.from_visit_id];
   const to = visitById[leg.data.to_visit_id];
-  // Lazy-fetch chunks for THIS leg on click — same caching policy as
-  // VisitDetail. Walking-while-on-phone produces small chunk lists,
-  // typically just music + map + occasional message app.
+  // Lazy-fetch chunks whose start_ts falls within this leg's span.
+  // Same indexing story as VisitDetail.
   const chunksQ = useQuery({
-    queryKey: ['chunks-by-parent', leg.id],
-    queryFn: () => fetchProjectChunksForParent(leg.id),
+    queryKey: ['chunks-by-span', leg.id],
+    queryFn: () => fetchProjectChunksForSpan(leg.start_ts, leg.end_ts),
     staleTime: 5 * 60 * 1000,
   });
   const chunks = useMemo(
