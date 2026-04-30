@@ -9,6 +9,7 @@ import type { DashboardEvent, Report } from './types';
 import type {
   PlaceVisit,
   Sleep,
+  TopicChunk,
   TravelLeg,
 } from '@/features/today/types';
 
@@ -115,6 +116,41 @@ export function fetchTravelLegs(
     `&order=start_ts.asc`;
   return pgrst<Array<Omit<TravelLeg, 'kind'>>>(url).then((rows) =>
     rows.map((r) => ({ ...r, kind: 'travel_leg' as const })),
+  );
+}
+
+// Project/topic chunks whose span overlaps the window. The view
+// (v_project_chunk_today) returns id, start_ts, end_ts, parent_id,
+// topic, plus a `data` JSONB with category. Flatten category up to
+// the row and tag kind client-side to match the TopicChunk shape.
+type ProjectChunkRow = {
+  id: string;
+  start_ts: string;
+  end_ts: string;
+  parent_id: string | null;
+  topic: string;
+  data: { category: 'work' | 'play' | 'neutral' };
+};
+
+export function fetchProjectChunks(
+  fromIso: string,
+  toIso: string,
+): Promise<TopicChunk[]> {
+  const url =
+    `/v_project_chunk_today` +
+    `?start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&end_ts=gt.${encodeURIComponent(fromIso)}` +
+    `&order=start_ts.asc`;
+  return pgrst<ProjectChunkRow[]>(url).then((rows) =>
+    rows.map((r) => ({
+      kind: 'topic_chunk' as const,
+      id: r.id,
+      parent_id: r.parent_id ?? '',
+      start_ts: r.start_ts,
+      end_ts: r.end_ts,
+      topic: r.topic,
+      category: r.data.category,
+    })),
   );
 }
 

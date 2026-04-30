@@ -138,8 +138,73 @@ FROM public.derived_events de
 WHERE de.source = 'sleep/v1';
 
 
+-- =========================================================================
+-- v_project_chunk_today — project_chunk/v1 rows pre-joined with `projects`
+-- and a server-derived parent_id pointing at the place_visit/travel_leg
+-- whose [start_ts, end_ts] CONTAINS the chunk's midpoint.
+--
+-- The dashboard nests topic chunks under their containing visit/leg
+-- ("topic_chunk" kind, set client-side). Chunks that fall in a gap
+-- (no GPS coverage / pre-onboarding) get parent_id = NULL and render
+-- at the top level.
+--
+-- WHERE-clause is intentionally permissive (source filter only) so
+-- pending / unclassified chunks still surface in a "classifying..."
+-- state. The category COALESCE keeps the dashboard from crashing if
+-- the LLM ever emits an unexpected value.
+-- =========================================================================
+
+CREATE OR REPLACE VIEW public.v_project_chunk_today AS
+SELECT
+  de.id,
+  de.source,
+  de.start_ts,
+  de.end_ts,
+  jsonb_build_object(
+    'project_slug', de.data->>'project_slug',
+    'category',     COALESCE(
+                      NULLIF(de.data->>'category', ''),
+                      'neutral'
+                    ),
+    'device',       de.data->>'device',
+    'app',          de.data->>'app',
+    'title',        de.data->>'title',
+    'classified',   COALESCE((de.data->>'classified')::boolean, false),
+    'overridden',   COALESCE((de.data->>'overridden')::boolean, false)
+  ) AS data,
+  CASE
+    WHEN p.slug IS NULL THEN NULL
+    ELSE jsonb_build_object(
+      'slug',        p.slug,
+      'name',        p.name,
+      'description', p.description,
+      'archived',    (p.archived_at IS NOT NULL)
+    )
+  END AS project,
+  parent.id AS parent_id,
+  COALESCE(
+    NULLIF(de.data->>'project_slug', ''),
+    NULLIF(de.data->>'app', ''),
+    'untitled'
+  ) AS topic
+FROM public.derived_events de
+LEFT JOIN public.projects p
+  ON p.slug = NULLIF(de.data->>'project_slug', '')
+LEFT JOIN LATERAL (
+  SELECT parent_de.id
+    FROM public.derived_events parent_de
+   WHERE parent_de.source IN ('place_visit/v1', 'travel_leg/v1')
+     AND parent_de.start_ts <= de.start_ts + (de.end_ts - de.start_ts) / 2
+     AND parent_de.end_ts   >= de.start_ts + (de.end_ts - de.start_ts) / 2
+   ORDER BY parent_de.start_ts DESC
+   LIMIT 1
+) parent ON TRUE
+WHERE de.source = 'project_chunk/v1';
+
+
 -- Grants: user_role reads via PostgREST.
-GRANT SELECT ON public.v_place_visit_today TO user_role;
-GRANT SELECT ON public.v_travel_leg_today  TO user_role;
-GRANT SELECT ON public.v_sleep_today       TO user_role;
-GRANT SELECT ON public.v_user_active_today TO user_role;
+GRANT SELECT ON public.v_place_visit_today   TO user_role;
+GRANT SELECT ON public.v_travel_leg_today    TO user_role;
+GRANT SELECT ON public.v_sleep_today         TO user_role;
+GRANT SELECT ON public.v_user_active_today   TO user_role;
+GRANT SELECT ON public.v_project_chunk_today TO user_role;

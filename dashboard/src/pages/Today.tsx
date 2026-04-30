@@ -19,6 +19,7 @@ import {
 } from '@/features/today/lookups';
 import {
   fetchPlaceVisits,
+  fetchProjectChunks,
   fetchSleepByWakeDates,
   fetchTravelLegs,
 } from '@/lib/api';
@@ -71,6 +72,10 @@ export default function TodayPage() {
   const legsQ = useQuery({
     queryKey: ['travel_legs', fromIso, toIso],
     queryFn: () => fetchTravelLegs(fromIso, toIso),
+  });
+  const chunksQ = useQuery({
+    queryKey: ['project_chunks', fromIso, toIso],
+    queryFn: () => fetchProjectChunks(fromIso, toIso),
   });
 
   // Find the visit that CONTAINS a given timestamp — used to anchor
@@ -170,7 +175,7 @@ export default function TodayPage() {
     return all;
   }, [visitsQ.data, legsQ.data, wakeMoment, napMoments, fromIso]);
 
-  const lookups = useBuildLookups(visitsQ.data, legsQ.data);
+  const lookups = useBuildLookups(visitsQ.data, legsQ.data, chunksQ.data ?? []);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -193,8 +198,9 @@ export default function TodayPage() {
   );
 
   const subtitle = format(day, 'EEEE');
-  const isLoading = sleepQ.isLoading || visitsQ.isLoading || legsQ.isLoading;
-  const error = sleepQ.error || visitsQ.error || legsQ.error;
+  const isLoading =
+    sleepQ.isLoading || visitsQ.isLoading || legsQ.isLoading || chunksQ.isLoading;
+  const error = sleepQ.error || visitsQ.error || legsQ.error || chunksQ.error;
 
   return (
     <TodayLookupsProvider value={lookups}>

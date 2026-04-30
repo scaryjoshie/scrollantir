@@ -108,6 +108,14 @@ CREATE TABLE public.derived_events (
 
 CREATE INDEX derived_events_source_start ON public.derived_events (source, start_ts);
 CREATE INDEX derived_events_start_desc   ON public.derived_events (start_ts DESC);
+-- Partial index for project_chunk/v1 lookups: the v_project_chunk_today
+-- view filters by source AND uses a LATERAL containment join against
+-- place_visit/v1 + travel_leg/v1 spans. (start_ts, end_ts) restricted
+-- to project_chunk/v1 covers both the WHERE filter and the lateral
+-- midpoint lookup.
+CREATE INDEX derived_events_project_chunk_span
+  ON public.derived_events (start_ts, end_ts)
+  WHERE source = 'project_chunk/v1';
 
 
 -- =========================================================================
