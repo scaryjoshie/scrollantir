@@ -190,12 +190,14 @@ def test_brief_exit_merges_two_stays_into_one(monkeypatch) -> None:
     )
 
     start = UTC(2026, 4, 29, 13, 0)
-    # 30 min at Norris, 5 min away (a coffee run), 25 min back at Norris.
+    # 30 min at Norris, ~2 min away (a quick step outside — well under
+    # the 4-min stay threshold so the away cluster doesn't itself form
+    # a stay), 25 min back at Norris.
     pre = constant_dwell(NORRIS, start=start, duration_minutes=30)
     away_coord = offset_meters(NORRIS, east_m=300.0)
     away = stream(
         start=pre[-1].ts,
-        samples=[(away_coord, 10.0, 60.0)] * 5,
+        samples=[(away_coord, 10.0, 60.0)] * 3,
     )
     post = constant_dwell(
         NORRIS, start=away[-1].ts, duration_minutes=25

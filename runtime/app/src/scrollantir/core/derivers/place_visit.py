@@ -65,7 +65,16 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
     # SPD parameters
     accuracy_max_m: float = 30.0
     dist_threshold_m: float = 40.0
-    time_threshold_min: float = 8.0
+    # Lowered from 8.0 → 4.0 on 2026-04-30 after the user's morning
+    # walk surfaced two real stops the deriver had been suppressing:
+    #   11:13-11:17 (4 min) at Tech building — clustered 5 readings
+    #   within ~25m, clearly a destination not a crosswalk pause
+    #   11:22-11:24+ (2 min and ongoing) at the garage
+    # 8 min was tuned for "long sit-down visits" but missed these.
+    # 4 min still rejects 30s-2min walking pauses (crosswalks, brief
+    # window-stops). Companion `min_points: 3` keeps thin-evidence
+    # clusters out — 3 readings min still required.
+    time_threshold_min: float = 4.0
     gap_threshold_hours: float = 4.0
     min_points: int = 3
 
