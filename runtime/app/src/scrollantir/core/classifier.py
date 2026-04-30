@@ -54,21 +54,28 @@ You are classifying a single window/tab title from a personal time-
 tracking app. The user has provided their active projects below; pick
 the BEST match.
 
-If no specific project fits, return the slug 'personal' as the catch-
-all (it's the user's wildcard bucket — system apps like Finder,
-System Settings, lock screen, Spotify, generic web searches that
-aren't about a specific project, etc. all go there). NEVER return
-null for project_slug — pick the best-fit project, defaulting to
-'personal' when nothing else clearly applies.
+INVARIANT (TREE MODEL): projects are inherently WORK. Non-work activity
+has no project. Concretely:
+  - If the title is clearly working on one of the listed projects:
+    return that project's slug AND category='work'.
+  - Otherwise: return project_slug=null AND category in ('play','neutral').
 
 Categories:
   work    — coding, writing, research, study, focused productive work
-  play    — games, entertainment, social media for fun, relaxation
-  neutral — everything else (logistics, life admin, browsing, eating)
+            on a recognizable project (always paired with a project_slug)
+  play    — games, entertainment, social media for fun, YouTube/TikTok
+            scrolling, music videos, relaxation (project_slug=null)
+  neutral — system admin, lock screen, settings, generic web search,
+            file management, life logistics, eating (project_slug=null)
 
-Output STRICT JSON with two keys: project_slug (string) and category
-(one of work/play/neutral). No prose, no markdown, no explanation.
-Just the JSON object.
+NEVER pair a non-null project_slug with category='play' or 'neutral' —
+that combination is structurally invalid. If you'd be tempted (e.g. a
+casual browse of a project's repo for fun), prefer project_slug=null
+with category='play'/'neutral' over forcing the project label.
+
+Output STRICT JSON with two keys: project_slug (string OR null) and
+category (one of work/play/neutral). No prose, no markdown, no
+explanation. Just the JSON object.
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -223,14 +230,22 @@ def _parse_response(
         raise ValueError(f"classifier response is not an object: {parsed!r}")
     project_slug = parsed.get("project_slug")
     category = parsed.get("category")
-    # Coerce '' / unknown slug → 'personal' if it exists (the user's
-    # wildcard bucket); otherwise null. The prompt instructs the LLM
-    # to default to 'personal' rather than null, but defensive coercion
-    # here catches stale-cache models / off-spec responses.
+    # Tree-model invariant enforcement (matches DB CHECK constraint on
+    # window_titles): project_slug != null IFF category = 'work'.
+    #
+    # 1. Validate project_slug — coerce empty/unknown → null.
     if not isinstance(project_slug, str) or project_slug not in project_slugs:
-        project_slug = "personal" if "personal" in project_slugs else None
+        project_slug = None
+    # 2. Validate category — fall back to 'neutral' for any junk.
     if category not in _VALID_CATEGORIES:
         category = "neutral"
+    # 3. Reconcile: if the LLM emitted (slug + non-work) — prefer the
+    #    category and drop the slug. Project hits are noisier than
+    #    category hits, so trust the category. The reverse case
+    #    (category=work but no project) is fine: a one-off research
+    #    tab outside the project list has no project home.
+    if project_slug is not None and category != "work":
+        project_slug = None
     return ClassificationResult(
         project_slug=project_slug,
         category=category,
