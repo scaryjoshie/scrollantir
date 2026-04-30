@@ -28,11 +28,17 @@ SELECT
     'lat',              (de.data->>'lat')::float8,
     'lng',              (de.data->>'lng')::float8,
     'brief_exit_count', COALESCE((de.data->>'brief_exit_count')::int, 0),
-    -- `is_open` flags the latest visit when the user is still likely
-    -- there (end_ts ≤ open_visit_max_age_min behind the deriver run's
-    -- window end). COALESCE keeps pre-migration rows defaulting to
-    -- closed instead of NULL.
-    'is_open',          COALESCE((de.data->>'is_open')::boolean, false)
+    -- `is_open` is computed at READ time (this view), not stored in
+    -- data. A visit is open iff its end_ts is the global max for
+    -- place_visit/v1 AND that end_ts is within 30 min of NOW().
+    -- Self-corrects on agent crashes / stale data.
+    'is_open',          (
+      de.end_ts = (
+        SELECT MAX(end_ts) FROM public.derived_events
+         WHERE source = 'place_visit/v1'
+      )
+      AND (NOW() - de.end_ts) <= INTERVAL '30 minutes'
+    )
   ) AS data,
   CASE
     WHEN p.id IS NULL THEN NULL
