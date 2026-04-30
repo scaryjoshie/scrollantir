@@ -311,7 +311,16 @@ export default function MapPane({
     const m = mapRef.current;
     if (!m) return;
 
+    // Guards against the once('idle') / once('style.load') callbacks
+    // firing AFTER the user has selected something else. Without this,
+    // the in-flight idle handler resolves against the OLD probe coord
+    // and writes the wrong building into buildingFsRef — visible as a
+    // stale red highlight on a building that no longer matches the
+    // current selection.
+    let cancelled = false;
+
     const apply = () => {
+      if (cancelled) return;
       // 1. Lighting preset from the entry's time-of-day.
       const t = timeForEntry(selected);
       if (t) {
@@ -369,6 +378,7 @@ export default function MapPane({
             lng: target.lng,
           };
           m.once('idle', () => {
+            if (cancelled) return;
             const point = m.project([probe.lng, probe.lat]);
             const features = m.queryRenderedFeatures(point);
             const bldg = features.find(
@@ -458,6 +468,10 @@ export default function MapPane({
 
     if (styleReadyRef.current) apply();
     else m.once('style.load', apply);
+
+    return () => {
+      cancelled = true;
+    };
   }, [selected, lookups]);
 
   if (!TOKEN) {

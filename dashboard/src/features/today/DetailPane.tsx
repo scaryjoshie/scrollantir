@@ -235,7 +235,7 @@ function polarToCart(
   return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
 }
 
-function arcPath(
+function singleArcPath(
   cx: number,
   cy: number,
   outerR: number,
@@ -254,6 +254,30 @@ function arcPath(
     `L ${x1i} ${y1i}`,
     `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x2i} ${y2i}`,
     'Z',
+  ].join(' ');
+}
+
+// Public arc helper. Splits any sweep > 180° into two sub-arcs so
+// SVG `A` never has near-coincident endpoints (which renders as a
+// degenerate sliver or invisible). Two M…Z subpaths concatenated
+// share a single fill — visually one slice. Without this, a 99% slice
+// (sweep ~357°) would either fail to render or render as a thin chord.
+function arcPath(
+  cx: number,
+  cy: number,
+  outerR: number,
+  innerR: number,
+  startAngleDeg: number,
+  endAngleDeg: number,
+): string {
+  const sweep = endAngleDeg - startAngleDeg;
+  if (sweep <= 180) {
+    return singleArcPath(cx, cy, outerR, innerR, startAngleDeg, endAngleDeg);
+  }
+  const mid = startAngleDeg + sweep / 2;
+  return [
+    singleArcPath(cx, cy, outerR, innerR, startAngleDeg, mid),
+    singleArcPath(cx, cy, outerR, innerR, mid, endAngleDeg),
   ].join(' ');
 }
 
@@ -464,14 +488,23 @@ function ChunkDrill({ chunks }: { chunks: TopicChunk[] }) {
   // meaningful to project-bucket (≤1 distinct project_slug in the
   // category) — clicking 'Play' goes straight to titles instead of
   // bouncing through a single-slice "misc" project view.
+  //
+  // CRITICAL: the project count must use `effectiveMs(c) > 0`, not the
+  // raw chunks list. A phone chunk fully covered by a Mac chunk has
+  // effective_ms = 0 (filtered from aggregation), so its project must
+  // not bump the auto-skip count — otherwise L1 opens with a single
+  // visible slice + an invisible zero-time slice the user can't click.
   function onCategoryClick(key: string) {
     const cat = key as TopicCategory;
     const projects = new Set<string>();
     for (const c of chunks) {
       if (c.category !== cat) continue;
+      if (effectiveMs(c) <= 0) continue;
       // Project counts only when it's a real, non-catch-all slug. The
       // 'personal' / 'misc' slug is the wildcard bucket and should NOT
       // count toward "this category has projects worth drilling into."
+      // (Becomes dead code once the personal→null migration lands; the
+      // tree-model invariant means non-work chunks have project=null.)
       if (c.project && c.project !== 'personal' && c.project !== 'misc') {
         projects.add(c.project);
       }
@@ -767,8 +800,7 @@ function Legend({
 
   return (
     <ul
-      className="text-sm flex-1 min-w-0 max-h-[260px] overflow-y-auto"
-      style={{ minWidth: '12rem' }}
+      className="text-sm flex-1 min-w-0 max-h-[260px] overflow-y-auto overflow-x-hidden"
     >
       {visible.map((s) => {
         const pct = Math.round((s.ms / totalMs) * 100);
@@ -781,7 +813,7 @@ function Legend({
               drillable && 'cursor-pointer hover:bg-paper-hover',
               dimmed && 'opacity-50',
             )}
-            style={{ gridTemplateColumns: 'auto 1fr auto auto' }}
+            style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto auto' }}
             onClick={
               drillable && onRowClick ? () => onRowClick(s.key) : undefined
             }
