@@ -23,6 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 # Importing the deriver modules side-effect-registers them in
 # core.derivers.REGISTRY. Add new derivers here as they ship.
+import scrollantir.core.derivers.movement  # noqa: F401
 import scrollantir.core.derivers.place_visit  # noqa: F401
 import scrollantir.core.derivers.project_chunk  # noqa: F401
 import scrollantir.core.derivers.sleep  # noqa: F401

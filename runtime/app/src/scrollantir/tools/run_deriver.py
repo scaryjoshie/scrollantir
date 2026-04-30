@@ -29,6 +29,7 @@ from datetime import datetime
 
 # Importing concrete deriver modules side-effect-registers them in the
 # REGISTRY. Add new derivers here as they ship.
+import scrollantir.core.derivers.movement  # noqa: F401
 import scrollantir.core.derivers.place_visit  # noqa: F401
 import scrollantir.core.derivers.travel_leg  # noqa: F401
 
