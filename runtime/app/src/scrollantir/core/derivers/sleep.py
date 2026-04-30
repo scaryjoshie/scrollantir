@@ -324,6 +324,18 @@ class SleepV1Deriver(DeterministicDeriver):
                  WHERE source = 'user_active/v1'
                    AND start_ts >= %s
                    AND start_ts <  %s
+                   -- Drop ALL mac.system.afk-only spans regardless
+                   -- of event_count. These are macOS PowerNap /
+                   -- DarkWake transitions (lid closed, OS briefly
+                   -- servicing background tasks) firing in isolated
+                   -- bursts without any companion window/foreground
+                   -- activity. Even when 2-3 afk events cluster
+                   -- within gap_within_span_min, there's still no
+                   -- real user interaction backing them. Filtered
+                   -- IN SLEEP, not in user_active, because user_active
+                   -- is reused for summary stats / top-apps masking
+                   -- that may want to know the laptop briefly woke.
+                   AND data->'sources' <> '["mac.system.afk"]'::jsonb
                  ORDER BY start_ts
                 """,
                 (fetch_start, end),
