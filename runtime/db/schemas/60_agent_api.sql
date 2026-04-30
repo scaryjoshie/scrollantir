@@ -109,3 +109,90 @@ BEGIN
   RETURN v_inserted;
 END
 $$;
+
+
+-- =========================================================================
+-- replace_derived_overlap — atomic span-overlap delete+insert.
+--
+-- For derivers whose rows are SPANS that may extend beyond the tick
+-- window (place_visit, sleep, travel_leg, user_active). DELETE keys
+-- on span overlap (start_ts < p_end AND end_ts > p_start) instead of
+-- start_ts in [p_start, p_end). Row insertion accepts start_ts BEFORE
+-- p_start as long as end_ts > p_start.
+--
+-- Why a separate primitive: the original replace_derived_window's
+-- start-in-window semantics are correct for tick-local computations
+-- but break for spans crossing window boundaries. An overnight stay's
+-- start_ts (yesterday 23:35) doesn't get re-derived under window
+-- mode because it's outside today's window; the row goes stale.
+-- Overlap mode lets today's tick re-derive the full extent.
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION agent_api.replace_derived_overlap(
+  p_source TEXT,
+  p_start  TIMESTAMPTZ,
+  p_end    TIMESTAMPTZ,
+  p_rows   JSONB
+) RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, private, pg_temp
+AS $$
+DECLARE
+  v_inserted    INTEGER := 0;
+  v_bad_source  INTEGER;
+  v_out_of_band INTEGER;
+BEGIN
+  IF p_end <= p_start THEN
+    RAISE EXCEPTION 'window end must be > start (% >= %)', p_start, p_end
+      USING ERRCODE = '22023';
+  END IF;
+  IF p_source !~ '^[a-z][a-z0-9_]*/v[1-9][0-9]*$' THEN
+    RAISE EXCEPTION 'invalid p_source: %', p_source USING ERRCODE = '22023';
+  END IF;
+  IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+    RAISE EXCEPTION 'p_rows must be a JSONB array (got %)',
+      COALESCE(jsonb_typeof(p_rows), 'null')
+      USING ERRCODE = '22023';
+  END IF;
+
+  SELECT COUNT(*) INTO v_bad_source
+    FROM jsonb_array_elements(p_rows) AS row
+   WHERE row->>'source' IS DISTINCT FROM p_source;
+  IF v_bad_source > 0 THEN
+    RAISE EXCEPTION '% row(s) have a source != p_source (%)',
+      v_bad_source, p_source USING ERRCODE = '22023';
+  END IF;
+
+  -- Each row's span must overlap [p_start, p_end). Span = [start_ts,
+  -- end_ts]. Overlap iff start_ts < p_end AND end_ts > p_start.
+  SELECT COUNT(*) INTO v_out_of_band
+    FROM jsonb_array_elements(p_rows) AS row
+   WHERE (row->>'start_ts')::timestamptz >= p_end
+      OR (row->>'end_ts')::timestamptz   <= p_start;
+  IF v_out_of_band > 0 THEN
+    RAISE EXCEPTION '% row(s) have a span that does not overlap [%, %)',
+      v_out_of_band, p_start, p_end USING ERRCODE = '22023';
+  END IF;
+
+  DELETE FROM public.derived_events
+   WHERE source = p_source
+     AND start_ts <  p_end
+     AND end_ts   >  p_start;
+
+  INSERT INTO public.derived_events (id, source, start_ts, end_ts, data, provenance)
+  SELECT
+    COALESCE((row->>'id')::uuid, gen_random_uuid()),
+    row->>'source',
+    (row->>'start_ts')::timestamptz,
+    (row->>'end_ts')::timestamptz,
+    COALESCE(row->'data', '{}'::jsonb),
+    row->'provenance'
+  FROM jsonb_array_elements(p_rows) AS row;
+
+  GET DIAGNOSTICS v_inserted = ROW_COUNT;
+  RETURN v_inserted;
+END
+$$;
+
+GRANT EXECUTE ON FUNCTION agent_api.replace_derived_overlap(TEXT, TIMESTAMPTZ, TIMESTAMPTZ, JSONB) TO agent_role;

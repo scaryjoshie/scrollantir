@@ -304,19 +304,17 @@ def test_no_spans_returns_no_rows() -> None:
     assert metrics["active_spans_total"] == 0
 
 
-def test_silence_starting_before_window_is_skipped_not_misreported() -> None:
-    """Audit BLOCKER #3 regression test: a bracketing user_active row
-    starts before window_start (visible via lookback); the silent_run
-    starts at that row's end, BEFORE window_start. The deriver must
-    skip-emit (earlier tick owns it) — and crucially must NOT emit
-    a row with a window_start-clamped onset.
+def test_silence_starting_before_window_is_emitted_under_overlap() -> None:
+    """Under OVERLAP_REPLACE: a sleep whose onset is in lookback but
+    whose wake is in the window IS emitted with its true sleep_start.
+    The framework's overlap-mode delete dedupes against earlier ticks'
+    identically-keyed (wake_local_date, kind, rank) rows.
 
     Sequence:
-      - active span 22:00-23:00 yesterday  ← lookback-only
-      - sleep window starts 04:00 today
-      - active span 07:00-08:00 today      ← in window, the 'wake'
-      - silent_run = (yesterday 23:00, today 07:00) — onset BEFORE
-        window. Skip-emit.
+      - active span 22:00-23:00 yesterday  ← lookback-only bracket
+      - active span 07:00-08:00 today      ← wake-side bracket
+      - silent_run = (yesterday 23:00, today 07:00) — true onset,
+        wake at 07:00 today. END is in window → emit.
     """
     spans = [
         (UTC(2026, 4, 28, 22, 0), UTC(2026, 4, 28, 23, 0)),
@@ -326,12 +324,10 @@ def test_silence_starting_before_window_is_skipped_not_misreported() -> None:
     rows, metrics = deriver.compute(
         None, UTC(2026, 4, 29, 4, 0), UTC(2026, 4, 30, 4, 0)
     )
-    # Skipped because silent_run started before window_start. The
-    # earlier tick (when window_start was at, say, yesterday 21:00)
-    # would have emitted the row when this onset was in-window.
-    assert rows == []
-    # The silence WAS detected (not just empty input), it just got
-    # filtered out by the skip rule:
+    # Emitted with onset before window_start.
+    assert len(rows) == 1
+    assert rows[0].start_ts == UTC(2026, 4, 28, 23, 0)
+    assert rows[0].end_ts == UTC(2026, 4, 29, 7, 0)
     assert metrics["silent_runs_long"] == 1
 
 

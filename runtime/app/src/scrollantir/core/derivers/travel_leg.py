@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from . import register
-from .base import DerivedRow, DeterministicDeriver
+from .base import DerivedRow, DeterministicDeriver, IdempotencyMode
 from .stay_points import haversine_m
 
 if TYPE_CHECKING:
@@ -82,6 +82,9 @@ class TravelLegV1Deriver(DeterministicDeriver):
 
     SOURCE = SOURCE
     INPUTS = ("phone.location.reading", "phone.activity.state", "place_visit/v1")
+    # Span deriver — a leg between two visits where prev.end_ts is
+    # before window_start should still emit if leg_end is in window.
+    IDEMPOTENCY_MODE = IdempotencyMode.OVERLAP_REPLACE
 
     path_accuracy_max_m: float = 50.0
 
@@ -110,9 +113,9 @@ class TravelLegV1Deriver(DeterministicDeriver):
             if leg_end <= leg_start:
                 metrics["legs_skipped_no_gap"] += 1
                 continue
-            # leg.start_ts must lie in the deriver's window so the
-            # replace_window guard doesn't reject the row.
-            if leg_start < start or leg_start >= end:
+            # OVERLAP_REPLACE: leg span must overlap window. leg_end
+            # must be > start_window AND leg_start must be < end_window.
+            if leg_end <= start or leg_start >= end:
                 metrics["legs_skipped_out_of_window"] += 1
                 continue
 
@@ -180,18 +183,21 @@ class TravelLegV1Deriver(DeterministicDeriver):
         start: datetime,
         end: datetime,
     ) -> list[_VisitRef]:
-        """Pull place_visit/v1 rows in the window, ordered by start_ts."""
+        """Pull place_visit/v1 rows whose span overlaps the window
+        (start_ts < window_end AND end_ts > window_start). Ordered by
+        start_ts. Overlap-fetch lets us bracket legs that bridge a
+        visit ending pre-window with a visit starting in-window."""
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, start_ts, end_ts
                   FROM public.derived_events
                  WHERE source = 'place_visit/v1'
-                   AND start_ts >= %s
                    AND start_ts <  %s
+                   AND end_ts   >  %s
                  ORDER BY start_ts
                 """,
-                (start, end),
+                (end, start),
             )
             return [
                 _VisitRef(id=row[0], start_ts=row[1], end_ts=row[2])

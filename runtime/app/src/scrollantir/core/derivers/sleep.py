@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover — runtime is Python 3.9+
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 from . import register
-from .base import DerivedRow, DeterministicDeriver
+from .base import DerivedRow, DeterministicDeriver, IdempotencyMode
 
 if TYPE_CHECKING:
     import psycopg
@@ -69,6 +69,8 @@ class SleepV1Deriver(DeterministicDeriver):
 
     SOURCE = SOURCE
     INPUTS = ("user_active/v1",)
+    # Span deriver — overnight sleeps onset before window_start.
+    IDEMPOTENCY_MODE = IdempotencyMode.OVERLAP_REPLACE
 
     # Hard floor for ANY sleep candidate. Below this we don't emit at
     # all — per user, "not sleep if less than 90 min".
@@ -155,14 +157,13 @@ class SleepV1Deriver(DeterministicDeriver):
 
         rows: list[DerivedRow] = []
         for wake_date, group in by_day.items():
-            # Skip rows whose wake_ts < window_start — an earlier tick
-            # owns them. Without this, the rolling-window deriver would
-            # spuriously re-emit yesterday's sleep every tick.
-            in_window = [
-                (s, e) for (s, e) in group
-                if e >= start  # wake_ts inside / after start
-                and s >= start  # AND silence starts inside window too
-            ]
+            # Under OVERLAP_REPLACE the agent_api accepts rows whose
+            # start_ts is before window_start as long as their span
+            # overlaps the window. So the only filter we need is
+            # "wake_ts > window_start" (the silence's END is in or
+            # after window). Sleeps whose entire span is in lookback
+            # don't overlap and would be rejected by agent_api.
+            in_window = [(s, e) for (s, e) in group if e > start]
             if not in_window:
                 continue
 

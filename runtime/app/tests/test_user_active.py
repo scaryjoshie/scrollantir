@@ -157,21 +157,36 @@ def test_mixed_phone_mac_span_classifies_as_both() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_span_starting_before_window_is_skipped() -> None:
-    """Span first event = 09:55, window starts 10:00 → span belongs to
-    earlier tick. Skip emit. Without lookback we'd never see this span;
-    WITH lookback we see it but skip emitting (the prior tick's row
-    is already in the table). Mirrors place_visit's pattern."""
+def test_span_starting_in_lookback_is_emitted_with_true_start() -> None:
+    """Under OVERLAP_REPLACE: a span whose first event is in lookback
+    (before window_start) but whose span extends into the window IS
+    emitted, with its true start_ts. The framework's overlap-mode
+    delete handles dedup against earlier ticks' identically-keyed rows."""
     deriver = _StubFetcher([
-        _evt(UTC(2026, 4, 29, 9, 55)),
-        _evt(UTC(2026, 4, 29, 10, 1)),  # within 7m → same span
-        # Then a clean second span entirely inside the window.
-        _evt(UTC(2026, 4, 29, 11, 0)),
+        _evt(UTC(2026, 4, 29, 9, 55)),  # before window_start (10:00)
+        _evt(UTC(2026, 4, 29, 10, 1)),  # in window, within 7m of prev
+        _evt(UTC(2026, 4, 29, 11, 0)),  # separate span entirely in window
     ])
     rows, metrics = deriver.compute(
         None, UTC(2026, 4, 29, 10, 0), UTC(2026, 4, 29, 12, 0)
     )
-    # Only the 11:00 span is emitted; the 9:55-rooted one is skipped.
+    # Two spans: one bridging lookback→window, one purely in window.
+    assert len(rows) == 2
+    assert rows[0].start_ts == UTC(2026, 4, 29, 9, 55)
+    assert rows[1].start_ts == UTC(2026, 4, 29, 11, 0)
+    assert metrics["spans_skipped_pre_window"] == 0
+
+
+def test_span_entirely_in_lookback_is_skipped() -> None:
+    """A span whose entire (start, end) is before window_start has no
+    overlap with the window — agent_api would reject it. Skip."""
+    deriver = _StubFetcher([
+        _evt(UTC(2026, 4, 29, 9, 30)),  # ends at 9:35 (5m fade), still pre-window
+        _evt(UTC(2026, 4, 29, 11, 0)),  # in window
+    ])
+    rows, metrics = deriver.compute(
+        None, UTC(2026, 4, 29, 10, 0), UTC(2026, 4, 29, 12, 0)
+    )
     assert len(rows) == 1
     assert rows[0].start_ts == UTC(2026, 4, 29, 11, 0)
     assert metrics["spans_skipped_pre_window"] == 1

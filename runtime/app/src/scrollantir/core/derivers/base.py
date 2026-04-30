@@ -30,8 +30,30 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+
+class IdempotencyMode(str, Enum):
+    """How `DeterministicDeriver.run` reconciles its output with
+    existing rows in `derived_events`.
+
+    WINDOW_REPLACE (default): rows must have `start_ts ∈ [start, end)`.
+      Old rows with start_ts in window are deleted; new rows inserted.
+      Right for tick-local derivations (single-event-anchored
+      derivations, point-in-time computations).
+
+    OVERLAP_REPLACE: rows are SPANS that may have `start_ts < start`
+      as long as their span overlaps the window. Old rows whose span
+      overlaps are deleted; new rows inserted including possibly-
+      pre-window onsets. Right for span derivers (place_visit,
+      travel_leg, user_active, sleep) where overnight stays etc.
+      cross window boundaries.
+    """
+
+    WINDOW_REPLACE = "window_replace"
+    OVERLAP_REPLACE = "overlap_replace"
 
 # psycopg is a runtime dep but only needed inside concrete derivers when
 # they actually run. Importing it lazily keeps `from .stay_points import
@@ -108,7 +130,12 @@ class Deriver(ABC):
 class DeterministicDeriver(Deriver):
     """A deriver that's a pure function of its inputs — no LLM, no
     user prompts. Subclasses implement `compute`; the base class
-    handles the `replace_derived_window` round-trip."""
+    handles the agent_api round-trip via the appropriate idempotency
+    mode."""
+
+    # Default to tick-local replacement. Span derivers override to
+    # OVERLAP_REPLACE so onset-before-window rows can be re-derived.
+    IDEMPOTENCY_MODE: IdempotencyMode = IdempotencyMode.WINDOW_REPLACE
 
     @abstractmethod
     def compute(
@@ -122,6 +149,10 @@ class DeterministicDeriver(Deriver):
         Returns `(rows, metrics)` — `rows` may be empty (the window
         gets cleared but nothing replaces it); `metrics` is free-form
         and surfaces back in `DeriverResult.metrics`.
+
+        Under OVERLAP_REPLACE mode, rows MAY have `start_ts < start`
+        as long as their span overlaps the window — the framework's
+        skip-pre-window logic is no longer needed in subclasses.
         """
 
     def run(
@@ -131,16 +162,22 @@ class DeterministicDeriver(Deriver):
         end: datetime,
     ) -> DeriverResult:
         log.info(
-            "deriver=%s window=[%s, %s) starting",
+            "deriver=%s mode=%s window=[%s, %s) starting",
             self.SOURCE,
+            self.IDEMPOTENCY_MODE.value,
             start.isoformat(),
             end.isoformat(),
         )
         rows, metrics = self.compute(conn, start, end)
         payload = json.dumps([r.to_jsonb() for r in rows])
+        rpc = (
+            "agent_api.replace_derived_overlap"
+            if self.IDEMPOTENCY_MODE == IdempotencyMode.OVERLAP_REPLACE
+            else "agent_api.replace_derived_window"
+        )
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT agent_api.replace_derived_window(%s, %s, %s, %s::jsonb)",
+                f"SELECT {rpc}(%s, %s, %s, %s::jsonb)",
                 (self.SOURCE, start, end, payload),
             )
             row = cur.fetchone()

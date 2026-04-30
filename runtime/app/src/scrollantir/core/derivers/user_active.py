@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from . import register
-from .base import DerivedRow, DeterministicDeriver
+from .base import DerivedRow, DeterministicDeriver, IdempotencyMode
 
 if TYPE_CHECKING:
     import psycopg
@@ -68,6 +68,9 @@ class UserActiveV1Deriver(DeterministicDeriver):
         "mac.system.window",
         "mac.system.afk",
     )
+    # Span deriver — activity spans can begin before window_start
+    # (a focus session that started 20m before this tick fires).
+    IDEMPOTENCY_MODE = IdempotencyMode.OVERLAP_REPLACE
 
     # Two events count as the same span if their timestamps are within
     # this many minutes of each other. Set to 7 (vs the more obvious 5)
@@ -131,11 +134,13 @@ class UserActiveV1Deriver(DeterministicDeriver):
                 # Edge case: every event was outside the window.
                 continue
 
-            # Skip spans that started before window_start — an earlier
-            # tick owns them. Without this, replace_derived_window
-            # would not see (and not delete) the prior tick's row,
-            # so we'd insert a duplicate.
-            if span_start < start:
+            # Skip spans that are ENTIRELY in lookback — they don't
+            # overlap our window, so OVERLAP_REPLACE would reject them.
+            # Spans that started in lookback but extend into the
+            # window are emitted with their true start_ts; the
+            # framework's overlap-mode delete handles dedup against
+            # earlier ticks' rows.
+            if span_end <= start:
                 skipped_pre_window += 1
                 if len(skipped_pre_window_ids) < 5:
                     skipped_pre_window_ids.append(first_ts.isoformat())

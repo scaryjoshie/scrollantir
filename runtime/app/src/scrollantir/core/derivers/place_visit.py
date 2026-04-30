@@ -37,7 +37,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from . import register
 from ..osm import OSMFeature, lookup_nearest_feature
 from ..places_repo import upsert_place
-from .base import DerivedRow, DeterministicDeriver
+from .base import DerivedRow, DeterministicDeriver, IdempotencyMode
 from .stay_points import GPSReading, extract_stay_points, merge_brief_exits
 
 if TYPE_CHECKING:
@@ -59,6 +59,8 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
 
     SOURCE = SOURCE
     INPUTS = ("phone.location.reading",)
+    # Span deriver — overnight stays cross window boundaries.
+    IDEMPOTENCY_MODE = IdempotencyMode.OVERLAP_REPLACE
 
     # SPD parameters
     accuracy_max_m: float = 30.0
@@ -141,12 +143,10 @@ class PlaceVisitV1Deriver(DeterministicDeriver):
         }
 
         for stay, brief_count in merged:
-            # Stays whose start_ts is before the deriver window belong
-            # to an earlier run that already wrote them. Skip emitting
-            # — replace_window only deletes rows with start_ts >= start
-            # so the existing row stays intact, and skipping prevents
-            # the agent_api guard from rejecting an out-of-band row.
-            if stay.start_ts < start:
+            # Stays whose end_ts is at or before window_start are entirely
+            # in lookback territory; they don't overlap our window so
+            # OVERLAP_REPLACE wouldn't accept them and we shouldn't emit.
+            if stay.end_ts <= start:
                 metrics["stays_pre_window_skipped"] += 1
                 continue
             place_id = None
