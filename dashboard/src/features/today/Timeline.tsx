@@ -162,6 +162,7 @@ function Row({
   // updates without a full refetch. Cheap: one timer per timeline.
   const now = useNowTick();
   const isOpenVisit = entry.kind === 'place_visit' && entry.data.is_open;
+  const isTrackingGap = entry.kind === 'tracking_gap';
 
   // Outer row: glyph | (title + duration on top row, time range below)
   let glyph: string;
@@ -196,6 +197,15 @@ function Row({
       timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
       duration = fmtDuration(entry.start_ts, entry.end_ts);
     }
+  } else if (entry.kind === 'tracking_gap') {
+    // Synthetic "no events arrived" row. Title softens near sleep
+    // ("Possibly back to sleep") because that's the most common
+    // benign cause; the underlying gap reason remains unknown by
+    // construction, so DetailPane spells out all the possibilities.
+    glyph = '🌫️';
+    title = entry.adjacent_to_sleep ? 'Possibly back to sleep' : 'Tracking gap';
+    timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
+    duration = fmtDuration(entry.start_ts, entry.end_ts);
   } else if (entry.kind === 'sleep') {
     // Sleep span: nights cross midnight; clip onset display to today's
     // day boundary the same way visits do, but keep duration as the
@@ -245,6 +255,10 @@ function Row({
             'relative shrink-0 w-8 h-8 rounded-full grid place-items-center text-base',
             'bg-paper border border-line',
             isSelected && 'border-accent',
+            // Subdued opacity for tracking_gap so it reads as data
+            // rather than alert. Tenet 1: don't hide the hole, but
+            // don't shout about it either.
+            isTrackingGap && !isSelected && 'opacity-60',
           )}
         >
           {glyph}
@@ -266,7 +280,11 @@ function Row({
             <span
               className={cn(
                 'text-sm font-medium truncate',
-                isSelected ? 'text-accent' : 'text-ink',
+                isSelected
+                  ? 'text-accent'
+                  : isTrackingGap
+                  ? 'text-ink-subtle italic font-normal'
+                  : 'text-ink',
               )}
             >
               {title}

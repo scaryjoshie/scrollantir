@@ -190,6 +190,12 @@ function targetForSelection(
     if (containing) return visitTarget(containing, 50);
     return null;
   }
+  if (entry.kind === 'tracking_gap') {
+    // Synthetic gap has no spatial anchor — there were no events,
+    // so we don't know where the user was. Return null so the map
+    // stays put on whatever was previously selected (or default).
+    return null;
+  }
   // moment
   if (entry.lat != null && entry.lng != null) {
     return {

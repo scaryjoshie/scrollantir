@@ -154,4 +154,32 @@ export type Moment = {
   source_hint?: string; // e.g. 'sleep/v1'
 };
 
-export type TimelineEntry = PlaceVisit | TravelLeg | TopicChunk | Moment | Sleep;
+// Synthetic entry inserted by Today.tsx between two real entries when
+// the silence between them exceeds TRACKING_GAP_THRESHOLD_MS. It IS NOT
+// emitted by any deriver — it's a UI-only honest representation of
+// "nothing arrived here." Tenet 1: don't hide a hole, render it.
+//
+// Cause is unknown by construction (Doze mode, laptop off, off-grid,
+// or a real silent stretch). Detail copy says so explicitly rather
+// than guessing. `adjacent_to_sleep` softens the title near a sleep
+// span — the most common cause of a real (non-tracking-failure) gap
+// is the user going back to bed for an hour after a brief wake.
+export type TrackingGap = {
+  kind: 'tracking_gap';
+  id: string; // synthetic, e.g. `gap-${prevEnd}-${nextStart}`
+  start_ts: string; // when previous entry ended
+  end_ts: string;   // when next entry started
+  // True if the previous OR next entry is kind='sleep'. Drives the
+  // "Possibly back to sleep" softened title without ASSUMING that's
+  // what happened — the detail copy still names tracking failure as
+  // an equally plausible cause.
+  adjacent_to_sleep?: boolean;
+};
+
+export type TimelineEntry =
+  | PlaceVisit
+  | TravelLeg
+  | TopicChunk
+  | Moment
+  | Sleep
+  | TrackingGap;
