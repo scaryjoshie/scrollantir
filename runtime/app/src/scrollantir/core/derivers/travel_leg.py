@@ -86,7 +86,14 @@ class TravelLegV1Deriver(DeterministicDeriver):
     # before window_start should still emit if leg_end is in window.
     IDEMPOTENCY_MODE = IdempotencyMode.OVERLAP_REPLACE
 
-    path_accuracy_max_m: float = 50.0
+    # Loosened from 50 → 75 per location audit 2026-04-30. Median
+    # post-attestation accuracy is ~20m and p95 is 51-72m; the old
+    # 50m cap was dropping the high-accuracy-noise tail without
+    # meaningful benefit. Especially affects readings near a
+    # destination (the "leg ends 70m short of the building" issue),
+    # where the phone often inflates accuracy as it transitions
+    # from outdoor GPS to indoor.
+    path_accuracy_max_m: float = 75.0
 
     def compute(
         self,
@@ -210,10 +217,17 @@ class TravelLegV1Deriver(DeterministicDeriver):
         leg_start: datetime,
         leg_end: datetime,
     ) -> tuple[list[list[float]], list[str]]:
-        """GPS readings in `[leg_start, leg_end)`, accuracy-filtered.
+        """GPS readings in `[leg_start, leg_end]`, accuracy-filtered.
 
-        Returns `(path, source_event_ids)` where `path` is an ordered
-        list of `[lng, lat]` tuples (Mapbox order, matches
+        End is INCLUSIVE so the visit's first GPS reading (the one
+        that anchored SPD on `nxt.start_ts`) lands in this leg's
+        path as its final point. Per the location audit
+        2026-04-30: without this, the leg path consistently ended
+        ~70m short of the destination because the close-in
+        boundary reading was assigned exclusively to the visit.
+
+        Returns `(path, source_event_ids)` where `path` is an
+        ordered list of `[lng, lat]` tuples (Mapbox order, matches
         `dashboard/.../types.ts:64`).
         """
         with conn.cursor() as cur:
@@ -225,7 +239,7 @@ class TravelLegV1Deriver(DeterministicDeriver):
                   FROM public.events
                  WHERE source = 'phone.location.reading'
                    AND start_ts >= %s
-                   AND start_ts <  %s
+                   AND start_ts <= %s
                    AND COALESCE((data->>'accuracy_m')::float8, 9999.0)
                        <= %s
                  ORDER BY start_ts
