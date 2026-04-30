@@ -108,9 +108,21 @@ Sources: a4f5bba (rename), a423b67 (display names), afdfd0f #3 (slim view), a555
 - "Cool effect" animations: scale-in panel transition, slice pulse, fade. Use `framer-motion`.
 - Sources: ae62840 (basic design), aa09a38 (hierarchical drill UX), pending a9177fe (SQL views).
 
-### Phase F — App icon ingestion (in design)
-- Awaiting plan from aff729699e9da939d.
-- Goal: lazy-fetched, cached, cheap-on-wire icons attached to `apps.icon` (or sibling table).
+### Phase F — App icon ingestion (designed, awaiting impl)
+- Plan in (aff7296): base64 in `apps.icon` data URL. Android pushes via one-shot `system.app_icon` event from `UsageStatsPoller` first time package is seen per service run. Server-side hourly `app_icon_backfill` deriver fetches favicons for null icons. Add `icon_source`, `icon_fetched_at`, `icon_fetch_attempts` (cap at 5).
+- Mac side blocked on mac-extension foreground watcher existing (gap noted; v1 falls back to category glyph).
+- Best-effort, NOT on critical path; runs async post-Phase C.
+
+### Phase G — Chunk coalesce (deriver-level cleanup)
+**Investigation findings** (2026-04-30): 2062 chunks since 4/29, **78% under 30s**, **median 5.1s**. Sample shows empty-title chunks (0–9s) alternating with real "Scrollantir" chunks — focus flicker (Spotlight, dock, menu bar) splitting one continuous activity into many slivers.
+
+Fixes (both at `project_chunk/v1` deriver):
+1. **Drop empty-title chunks** entirely — no classification signal, just noise.
+2. **Coalesce consecutive same-(app, title, project, category) chunks** with inter-chunk gap < 60s. The deriver should emit "scrollantir VS Code 9:30–10:15" not 47 micro-chunks.
+
+Effort: medium. Changes to `project_chunk.py` deriver. Should follow Phase B because the (slug, category) reconciliation matters for what counts as "same key" for coalescing.
+
+Side bug visible from same query: chunks tagged `(scrollantir, neutral)` despite tree-model invariant — Phase B fixes structurally.
 
 ---
 
