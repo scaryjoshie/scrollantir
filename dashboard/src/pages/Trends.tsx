@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import PageHeader from '@/components/PageHeader';
 import EmptyState from '@/components/EmptyState';
 import { humanizeMs } from '@/components/Donut';
+import { BarChart, type BarItem } from '@/components/BarChart';
 import { startOfLocalDay } from '@/components/DatePicker';
 import { cn } from '@/lib/cn';
 import {
@@ -320,15 +321,16 @@ function Swatch({
 }
 
 // ---------------------------------------------------------------------
-// Project ranking — top projects across the period, with per-day
-// micro-bars showing how the time was distributed.
+// Project ranking — top projects across the period, rendered as a
+// shared horizontal BarChart so /summary and /trends look identical
+// where they overlap. Chunk count rides along as the row caption.
 // ---------------------------------------------------------------------
 
 function ProjectRanking({ projects }: { projects: ProjectActivity[] }) {
   const grouped = useMemo(() => {
     const m = new Map<
       string,
-      { name: string; total_s: number; chunks: number; perDay: Map<string, number> }
+      { name: string; total_s: number; chunks: number }
     >();
     for (const p of projects) {
       const cur =
@@ -337,11 +339,9 @@ function ProjectRanking({ projects }: { projects: ProjectActivity[] }) {
           name: p.project_name ?? p.project_slug,
           total_s: 0,
           chunks: 0,
-          perDay: new Map<string, number>(),
         };
       cur.total_s += p.total_s;
       cur.chunks += p.chunk_count;
-      cur.perDay.set(p.local_date, p.total_s);
       m.set(p.project_slug, cur);
     }
     return Array.from(m.entries())
@@ -357,46 +357,51 @@ function ProjectRanking({ projects }: { projects: ProjectActivity[] }) {
     );
   }
 
-  const maxS = grouped[0].total_s;
+  const items: BarItem[] = grouped.map((p) => ({
+    key: p.slug,
+    label: p.name,
+    value: p.total_s,
+    color: hashColor(PROJECT_PALETTE, p.slug),
+    tooltip: `${humanizeMs(p.total_s * 1000)} · ${p.chunks} chunk${p.chunks === 1 ? '' : 's'}`,
+    caption: `${p.chunks} ${p.chunks === 1 ? 'chunk' : 'chunks'}`,
+  }));
+
   return (
-    <ul className="space-y-2">
-      {grouped.map((p) => {
-        const pctOfMax = maxS > 0 ? (p.total_s / maxS) * 100 : 0;
-        const color = hashColor(PROJECT_PALETTE, p.slug);
-        return (
-          <li
-            key={p.slug}
-            className="grid items-center gap-x-3"
-            style={{ gridTemplateColumns: 'minmax(80px, 0.4fr) 1fr auto auto' }}
-          >
-            <span className="text-sm text-ink truncate" title={p.name}>
-              {p.name}
-            </span>
-            <div className="h-3 rounded-full bg-paper-panel border border-line overflow-hidden">
-              <div
-                className="h-full rounded-full"
-                style={{ width: `${pctOfMax}%`, background: color }}
-              />
-            </div>
-            <span className="text-xs text-ink-subtle tabular-nums w-16 text-right">
-              {humanizeMs(p.total_s * 1000)}
-            </span>
-            <span className="text-xs text-ink-subtle tabular-nums w-12 text-right">
-              {p.chunks}{' '}
-              <span className="text-ink-subtle">{p.chunks === 1 ? 'chunk' : 'chunks'}</span>
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+    <BarChart
+      orientation="horizontal"
+      items={items}
+      valueFormat={(s) => humanizeMs(s * 1000)}
+    />
   );
 }
 
 // ---------------------------------------------------------------------
-// Sleep trend — bar per day showing duration; "No sleep recorded"
-// for days where the deriver didn't produce a night row. Tracking
-// gaps don't count against quality.
+// Sleep trend — vertical BarChart of nightly sleep duration. Shares
+// the same component (and the same SLEEP_COLOR palette) as /summary
+// so the two pages render a night identically. Tracking gaps render
+// as dashed empty placeholders rather than vanishing (Tenet 1).
 // ---------------------------------------------------------------------
+
+// Sleep palette — duplicated here AND on /summary intentionally. The
+// hex strings are the canonical "undisrupted = green, disrupted =
+// amber" pair; if either page diverges in the future, callers should
+// reconcile to the same palette rather than introducing a third hue.
+const SLEEP_COLOR = {
+  ok: '#7DB98A',
+  disrupted: '#D9A35C',
+} as const;
+
+// 8h reference matches /summary. See Tenet 4 — we can't tie a target
+// to one user without a study, so the explicit "reference" framing
+// (rather than a personal target) is the honest path.
+const SLEEP_REFERENCE_S = 8 * 3600;
+
+function fmtSleep(s: number): string {
+  if (s <= 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
 
 function SleepTrend({
   spine,
@@ -405,10 +410,32 @@ function SleepTrend({
   spine: string[];
   byDate: Map<string, DailySummary>;
 }) {
-  // Target / reference scale: 8h = full bar. The user's actual mean
-  // would be a magic number tied to one observation; 8h is a familiar
-  // point of reference and will not lie.
-  const REFERENCE_S = 8 * 3600;
+  const items: BarItem[] = useMemo(
+    () =>
+      spine.map((date) => {
+        const row = byDate.get(date);
+        const sleepS = row?.sleep_main_s ?? 0;
+        const disrupted = row?.sleep_disrupted_count ?? 0;
+        const dayLabel = format(parseISO(date), 'EEE');
+        const dateLabel = format(parseISO(date), 'M/d');
+        const tooltip =
+          sleepS > 0
+            ? `${fmtSleep(sleepS)}` +
+              (disrupted > 0
+                ? ` · ${disrupted} disruption${disrupted > 1 ? 's' : ''}`
+                : '')
+            : 'No sleep recorded';
+        return {
+          key: date,
+          label: dayLabel,
+          sublabel: dateLabel,
+          value: sleepS,
+          color: disrupted === 0 ? SLEEP_COLOR.ok : SLEEP_COLOR.disrupted,
+          tooltip,
+        };
+      }),
+    [spine, byDate],
+  );
 
   const anySleep = spine.some((d) => (byDate.get(d)?.sleep_main_s ?? 0) > 0);
   if (!anySleep) {
@@ -420,58 +447,23 @@ function SleepTrend({
   }
 
   return (
-    <div
-      className="grid gap-2"
-      style={{ gridTemplateColumns: `repeat(${spine.length}, minmax(0, 1fr))` }}
-    >
-      {spine.map((date) => {
-        const row = byDate.get(date);
-        const dayLabel = format(parseISO(date), 'EEE');
-        const dateLabel = format(parseISO(date), 'M/d');
-        const sleepS = row?.sleep_main_s ?? 0;
-
-        if (sleepS === 0) {
-          return (
-            <div key={date} className="flex flex-col items-center gap-1.5 min-w-0">
-              <div className="w-full h-[80px] rounded-md bg-paper-panel border border-dashed border-line flex items-center justify-center">
-                <span className="text-[10px] text-ink-subtle italic">none</span>
-              </div>
-              <div className="text-[11px] text-ink-subtle">{dayLabel}</div>
-              <div className="text-[10px] text-ink-subtle">{dateLabel}</div>
-            </div>
-          );
-        }
-
-        const fillPct = Math.min(100, (sleepS / REFERENCE_S) * 100);
-        const h = Math.floor(sleepS / 3600);
-        const m = Math.round((sleepS % 3600) / 60);
-        const dur = m === 0 ? `${h}h` : `${h}h${m}m`;
-        const disrupted = row?.sleep_disrupted_count ?? 0;
-
-        return (
-          <div key={date} className="flex flex-col items-center gap-1.5 min-w-0">
-            <div
-              className="w-full h-[80px] rounded-md bg-paper-panel overflow-hidden border border-line flex flex-col-reverse"
-              title={`${dur}${disrupted > 0 ? ` · ${disrupted} disruption${disrupted > 1 ? 's' : ''}` : ''}`}
-            >
-              <div
-                style={{
-                  height: `${fillPct}%`,
-                  background: disrupted === 0 ? '#7DB98A' : '#D9A35C',
-                }}
-              />
-            </div>
-            <div className="text-[10px] text-ink tabular-nums font-medium">{dur}</div>
-            <div className="text-[11px] text-ink-subtle">{dayLabel}</div>
-            <div className="text-[10px] text-ink-subtle">{dateLabel}</div>
-          </div>
-        );
-      })}
-      <div className="col-span-full flex items-center gap-x-4 mt-2 text-xs text-ink-muted">
-        <Swatch color="#7DB98A" label="Undisrupted" />
-        <Swatch color="#D9A35C" label="Disrupted" />
-        <span className="text-[10px] text-ink-subtle ml-auto">
-          Bar fills at 8h reference
+    <div className="space-y-3">
+      <BarChart
+        orientation="vertical"
+        items={items}
+        // Scale to 10h — leaves headroom above the 8h reference line so
+        // a long night doesn't peg the top. /summary uses the same scale.
+        maxValue={10 * 3600}
+        referenceValue={SLEEP_REFERENCE_S}
+        height={80}
+        valueFormat={fmtSleep}
+        emptyLabel="none"
+      />
+      <div className="flex items-center gap-x-4 text-xs text-ink-muted">
+        <Swatch color={SLEEP_COLOR.ok} label="Undisrupted" />
+        <Swatch color={SLEEP_COLOR.disrupted} label="Disrupted" />
+        <span className="ml-auto text-[10px] text-ink-subtle">
+          Dashed line at 8h reference
         </span>
       </div>
     </div>
