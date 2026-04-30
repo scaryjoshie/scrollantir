@@ -236,7 +236,7 @@ Pick a different day, or wait for the deriver to run.`}
           )}
         </aside>
 
-        <div className="grid grid-rows-[1fr_1fr] min-h-0">
+        <div className="grid grid-rows-[2fr_3fr] min-h-0">
           <div className="relative border-b border-line bg-paper-soft min-h-0">
             <MapPane selected={selected} />
           </div>

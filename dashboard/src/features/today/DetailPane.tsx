@@ -87,30 +87,52 @@ function chunkMs(c: TopicChunk): number {
 
 type TopicAgg = { topic: string; category: TopicCategory; ms: number };
 
-// Per-place-category synthetic baseline ratios. Stand-in until we have
-// 14 days of history; the eventual real baseline is the user's median
-// work/play split for visits to this place category over the window.
-const BASELINE_RATIOS: Record<string, { work: number; neutral: number; play: number }> = {
-  residence: { work: 0.45, neutral: 0.10, play: 0.45 },
-  food:      { work: 0.30, neutral: 0.40, play: 0.30 },
-  class:     { work: 0.95, neutral: 0.05, play: 0.00 },
-  study:     { work: 0.85, neutral: 0.05, play: 0.10 },
-  social:    { work: 0.05, neutral: 0.20, play: 0.75 },
-  work:      { work: 0.90, neutral: 0.05, play: 0.05 },
-  mixed:     { work: 0.60, neutral: 0.10, play: 0.30 },
-};
-
-function baselineFor(
-  visit: PlaceVisit,
-  totalMs: number,
-): Record<TopicCategory, number> {
-  const cat = visit.place?.category ?? 'mixed';
-  const r = BASELINE_RATIOS[cat] ?? BASELINE_RATIOS.mixed;
-  return {
-    work: Math.round(totalMs * r.work),
-    neutral: Math.round(totalMs * r.neutral),
-    play: Math.round(totalMs * r.play),
-  };
+// Mac-precedence aggregation: phone time is only counted during
+// minutes when no Mac chunk overlaps. Without this, watching YouTube
+// on phone while working on Mac double-counts the same wall-clock
+// time and the donut total exceeds the visit's wall-clock duration.
+//
+// Algorithm: build the merged Mac-coverage interval set; for each
+// phone chunk, subtract the overlap with any Mac interval; aggregate
+// per topic with the adjusted phone duration.
+function aggregateWithMacPrecedence(
+  chunks: TopicChunk[],
+): { topics: TopicAgg[]; totalMs: number } {
+  const macIntervals: Array<[number, number]> = chunks
+    .filter((c) => c.device === 'mac')
+    .map((c) => [parseISO(c.start_ts).getTime(), parseISO(c.end_ts).getTime()]);
+  // Merge overlapping/adjacent Mac intervals (sorted by start).
+  macIntervals.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const iv of macIntervals) {
+    const last = merged[merged.length - 1];
+    if (last && iv[0] <= last[1]) last[1] = Math.max(last[1], iv[1]);
+    else merged.push([iv[0], iv[1]]);
+  }
+  // For a phone chunk, return its duration MINUS any minutes
+  // overlapping with the merged Mac coverage.
+  function phoneEffectiveMs(c: TopicChunk): number {
+    const cs = parseISO(c.start_ts).getTime();
+    const ce = parseISO(c.end_ts).getTime();
+    let effective = ce - cs;
+    for (const [ms, me] of merged) {
+      if (me <= cs || ms >= ce) continue; // no overlap
+      effective -= Math.min(me, ce) - Math.max(ms, cs);
+      if (effective <= 0) return 0;
+    }
+    return effective;
+  }
+  const byTopic = new Map<string, TopicAgg>();
+  for (const c of chunks) {
+    const ms = c.device === 'phone' ? phoneEffectiveMs(c) : chunkMs(c);
+    if (ms <= 0) continue;
+    const existing = byTopic.get(c.topic);
+    if (existing) existing.ms += ms;
+    else byTopic.set(c.topic, { topic: c.topic, category: c.category, ms });
+  }
+  const topics = Array.from(byTopic.values()).sort((a, b) => b.ms - a.ms);
+  const totalMs = topics.reduce((s, t) => s + t.ms, 0);
+  return { topics, totalMs };
 }
 
 export default function DetailPane({
@@ -167,18 +189,7 @@ function VisitDetail({
     .filter((c) => c.parent_id === visit.id)
     .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
 
-  const byTopic = new Map<string, TopicAgg>();
-  for (const c of chunks) {
-    const existing = byTopic.get(c.topic);
-    const ms = chunkMs(c);
-    if (existing) existing.ms += ms;
-    else byTopic.set(c.topic, { topic: c.topic, category: c.category, ms });
-  }
-  const topics = Array.from(byTopic.values()).sort((a, b) => b.ms - a.ms);
-
-  const totals: Record<TopicCategory, number> = { work: 0, play: 0, neutral: 0 };
-  for (const t of topics) totals[t.category] += t.ms;
-  const totalMs = totals.work + totals.play + totals.neutral;
+  const { topics, totalMs } = aggregateWithMacPrecedence(chunks);
 
   // For an open overnight visit (started before today's day boundary),
   // clip the displayed start to dayStartIso. Otherwise a Willard stay
@@ -222,24 +233,21 @@ function VisitDetail({
       ) : (
         <div className="mt-4 text-sm text-ink-subtle">No activity recorded.</div>
       )}
-
-      {totalMs > 0 && (
-        <div className="mt-6">
-          <SpectrumBar
-            totals={totals}
-            totalMs={totalMs}
-            baseline={baselineFor(visit, totalMs)}
-          />
-        </div>
-      )}
     </div>
   );
 }
 
 function LegDetail({ leg }: { leg: TravelLeg }) {
-  const { visitById } = useTodayLookups();
+  const { visitById, topicChunks } = useTodayLookups();
   const from = visitById[leg.data.from_visit_id];
   const to = visitById[leg.data.to_visit_id];
+  // Chunks parented to this leg — "what apps/projects were active
+  // while travelling." Walking with Spotify and a podcast still
+  // accumulates time on those projects, just like working at a desk.
+  const chunks = topicChunks
+    .filter((c) => c.parent_id === leg.id)
+    .sort((a, b) => (a.start_ts < b.start_ts ? -1 : 1));
+  const { topics, totalMs } = aggregateWithMacPrecedence(chunks);
   return (
     <div className="px-6 py-5">
       <Header
@@ -254,6 +262,12 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
         {Math.round(leg.data.distance_m)} m straight-line ·{' '}
         {leg.data.reading_count} GPS sample{leg.data.reading_count === 1 ? '' : 's'}
       </div>
+      {topics.length > 0 && totalMs > 0 && (
+        <div className="mt-5 flex items-center gap-7">
+          <Donut topics={topics} totalMs={totalMs} size={148} />
+          <Legend topics={topics} totalMs={totalMs} />
+        </div>
+      )}
     </div>
   );
 }
@@ -478,106 +492,3 @@ function Legend({
   );
 }
 
-function SpectrumBar({
-  totals,
-  totalMs,
-  baseline,
-}: {
-  totals: Record<TopicCategory, number>;
-  totalMs: number;
-  baseline?: Record<TopicCategory, number>;
-}) {
-  const baselineTotal = baseline
-    ? baseline.work + baseline.neutral + baseline.play
-    : 0;
-
-  return (
-    <div className="space-y-4">
-      <SpectrumRow
-        label="Today"
-        totals={totals}
-        totalMs={totalMs}
-        muted={false}
-      />
-      {baseline && baselineTotal > 0 && (
-        <SpectrumRow
-          label="Typical"
-          totals={baseline}
-          totalMs={baselineTotal}
-          muted
-        />
-      )}
-    </div>
-  );
-}
-
-function SpectrumRow({
-  label,
-  totals,
-  totalMs,
-  muted,
-}: {
-  label: string;
-  totals: Record<TopicCategory, number>;
-  totalMs: number;
-  muted: boolean;
-}) {
-  const order: TopicCategory[] = ['work', 'neutral', 'play'];
-  const segs = order
-    .map((k) => ({ key: k, ms: totals[k] }))
-    .filter((s) => s.ms > 0);
-
-  return (
-    <div>
-      <div
-        className={cn(
-          'text-xs uppercase tracking-wider font-semibold mb-1.5',
-          muted ? 'text-ink-subtle' : 'text-ink',
-        )}
-      >
-        {label}
-      </div>
-      <div
-        className={cn(
-          'flex rounded-full overflow-hidden',
-          muted ? 'h-2 bg-paper-hover/60' : 'h-3.5 bg-paper-hover',
-        )}
-      >
-        {segs.map((s) => (
-          <div
-            key={s.key}
-            style={{
-              width: `${(s.ms / totalMs) * 100}%`,
-              background: CATEGORY_BAR[s.key],
-              opacity: muted ? 0.45 : 1,
-            }}
-            title={`${CATEGORY_LABEL[s.key]} ${humanize(s.ms)}`}
-          />
-        ))}
-      </div>
-      <div
-        className={cn(
-          'flex flex-wrap items-center gap-x-4 gap-y-1 text-xs tabular-nums mt-2',
-          muted ? 'text-ink-subtle' : 'text-ink-muted',
-        )}
-      >
-        {order.map((k) =>
-          totals[k] > 0 ? (
-            <span key={k} className="flex items-center gap-1.5">
-              <span
-                className="inline-block w-1.5 h-1.5 rounded-full"
-                style={{
-                  background: CATEGORY_BAR[k],
-                  opacity: muted ? 0.5 : 1,
-                }}
-              />
-              <span>
-                {CATEGORY_LABEL[k]} {humanize(totals[k])}
-              </span>
-            </span>
-          ) : null,
-        )}
-      </div>
-    </div>
-  );
-}

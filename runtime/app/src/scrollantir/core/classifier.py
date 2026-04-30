@@ -52,16 +52,23 @@ class ClassifierError(Exception):
 _SYSTEM_PROMPT = """\
 You are classifying a single window/tab title from a personal time-
 tracking app. The user has provided their active projects below; pick
-the BEST match (or null if none fit) and a productivity category.
+the BEST match.
+
+If no specific project fits, return the slug 'personal' as the catch-
+all (it's the user's wildcard bucket — system apps like Finder,
+System Settings, lock screen, Spotify, generic web searches that
+aren't about a specific project, etc. all go there). NEVER return
+null for project_slug — pick the best-fit project, defaulting to
+'personal' when nothing else clearly applies.
 
 Categories:
   work    — coding, writing, research, study, focused productive work
   play    — games, entertainment, social media for fun, relaxation
   neutral — everything else (logistics, life admin, browsing, eating)
 
-Output STRICT JSON with two keys: project_slug (string or null) and
-category (one of work/play/neutral). No prose, no markdown, no
-explanation. Just the JSON object.
+Output STRICT JSON with two keys: project_slug (string) and category
+(one of work/play/neutral). No prose, no markdown, no explanation.
+Just the JSON object.
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -216,9 +223,12 @@ def _parse_response(
         raise ValueError(f"classifier response is not an object: {parsed!r}")
     project_slug = parsed.get("project_slug")
     category = parsed.get("category")
-    # Coerce '' / unknown slug → null (treated as "no project").
+    # Coerce '' / unknown slug → 'personal' if it exists (the user's
+    # wildcard bucket); otherwise null. The prompt instructs the LLM
+    # to default to 'personal' rather than null, but defensive coercion
+    # here catches stale-cache models / off-spec responses.
     if not isinstance(project_slug, str) or project_slug not in project_slugs:
-        project_slug = None
+        project_slug = "personal" if "personal" in project_slugs else None
     if category not in _VALID_CATEGORIES:
         category = "neutral"
     return ClassificationResult(

@@ -117,6 +117,11 @@ export type TopicChunk = {
   end_ts: string;
   topic: string;
   category: TopicCategory;
+  // Which device the foreground was on. The donut applies Mac-
+  // precedence: phone time only counts during periods when no Mac
+  // chunk overlaps, so concurrent Mac+phone foreground doesn't
+  // double-count vs the visit's wall-clock duration.
+  device?: 'mac' | 'phone';
 };
 
 // Singular point-in-time entry for the timeline (e.g. wake = end of the

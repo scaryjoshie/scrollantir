@@ -129,7 +129,10 @@ type ProjectChunkRow = {
   end_ts: string;
   parent_id: string | null;
   topic: string;
-  data: { category: 'work' | 'play' | 'neutral' };
+  data: {
+    category: 'work' | 'play' | 'neutral';
+    device?: 'mac' | 'phone';
+  };
 };
 
 export function fetchProjectChunks(
@@ -150,6 +153,7 @@ export function fetchProjectChunks(
       end_ts: r.end_ts,
       topic: r.topic,
       category: r.data.category,
+      device: r.data.device,
     })),
   );
 }
