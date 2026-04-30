@@ -49,6 +49,31 @@ const CATEGORY_LABEL: Record<TopicCategory, string> = {
   neutral: 'Neutral',
 };
 
+// Place-category display labels used on the Visit chip. The deriver
+// emits lowercase enum values; the chip renders them capitalized.
+// `mixed` becomes "Mixed-use" — the literal "mixed" reads as a debug
+// token rather than a label. Unknown values pass through verbatim
+// (capitalized) so a future place_category enum extension still
+// renders something readable.
+const PLACE_CATEGORY_CHIP: Record<string, string> = {
+  class: 'Class',
+  residence: 'Residence',
+  food: 'Food',
+  study: 'Study',
+  social: 'Social',
+  work: 'Work',
+  mixed: 'Mixed-use',
+};
+
+function categoryChip(category: string | null | undefined): string | undefined {
+  if (!category) return undefined;
+  return PLACE_CATEGORY_CHIP[category] ?? capitalize(category);
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
 // Top-level category palette (L0 only).
 const CATEGORY_BAR: Record<TopicCategory, string> = {
   work: '#5CB084',
@@ -88,6 +113,16 @@ function fmtTime(iso: string): string {
 
 function fmtDuration(startIso: string, endIso: string): string {
   return humanize(parseISO(endIso).getTime() - parseISO(startIso).getTime());
+}
+
+// "0.2 km" / "1.4 km" / "120 m". The user thinks "I walked 0.2 km",
+// not "the straight-line distance was 200 m" — drop the "straight-line"
+// qualifier and the GPS-sample debug detail entirely. Sub-100m legs
+// still read in meters because "0.0 km" rounds away the signal.
+function fmtDistance(distanceM: number): string {
+  const m = Math.round(distanceM);
+  if (m < 100) return `${m} m`;
+  return `${(m / 1000).toFixed(1)} km`;
 }
 
 function useNowTick(intervalMs = 30_000): number {
@@ -389,7 +424,7 @@ function VisitDetail({
       <Header
         title={placeLabels.display(visit.place?.name)}
         subtitle={subtitle}
-        chip={visit.place?.category}
+        chip={categoryChip(visit.place?.category)}
         live={visit.data.is_open}
       />
       <ChunkDrill chunks={chunks} />
@@ -427,8 +462,7 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
         chip={ACTIVITY_LABEL[leg.data.dominant_activity]}
       />
       <div className="text-xs text-ink-subtle mt-3">
-        {Math.round(leg.data.distance_m)} m straight-line ·{' '}
-        {leg.data.reading_count} GPS sample{leg.data.reading_count === 1 ? '' : 's'}
+        {fmtDistance(leg.data.distance_m)}
       </div>
       <ChunkDrill chunks={chunks} />
     </div>
