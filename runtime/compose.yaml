@@ -140,6 +140,15 @@ services:
       # If unset, OSM lookups silently no-op and visits emit with
       # place_id = NULL — the deriver still runs.
       MAPBOX_API_TOKEN: ${MAPBOX_API_TOKEN:-}
+      # LLM classifier credentials. Cerebras primary, Groq fallback.
+      # If both are unset the classifier_job logs an error per tick
+      # but the agent (and deriver chain) keep running. Without these,
+      # classification_queue accumulates and project_chunk rows get
+      # NULL project_slug.
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      CEREBRAS_MODEL: ${CEREBRAS_MODEL:-llama3.1-8b}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.1-8b-instant}
     command:
       - python
       - -m
