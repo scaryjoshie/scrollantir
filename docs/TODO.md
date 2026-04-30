@@ -150,21 +150,19 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 
 ## ⏳ Open — not yet think-tanked
 
-### 🐞 Active bug — place_visit sync (4/30)
+### Diagnosed: place_visit sync (4/30) — deriver was right, dashboard was honest-but-mysterious
 
-User reported phone-walked at ~3:57 AM but dashboard shows last visit ending 1:01 AM. Investigation:
-- Raw events: phone.location.reading from 03:30 → 03:57 AM at coords clearly west of Willard (~870m). User stationary at (42.05189, -87.68114) for ~4 min.
-- Deriver tick at 04:40 CT: `stays_detected: 10`, `stays_after_merge: 9`, `rows_after_long_gap_merge: 7`, `stays_pre_window_skipped: 2`. So 9 stays were valid but only 7 emitted.
-- LONG-GAP-MERGE collapsed 2 stays incorrectly. The 3:54 AM stay (at non-Willard coords) got merged into the 21:13-01:01 Willard visit.
+User reported "phone walked at 4 AM but dashboard ends at 1 AM."
 
-Likely cause: `_merge_same_place_long_gaps` keys on `place_id`, and the 3:54 AM coords might be matching Willard's polygon via OSM picker (Willard is a large residence; nearby coords could match its building feature). When 12h apart but same `place_id`, the 12h-merge fires and loses the new stay.
+**Root cause:** the user's 3:54-3:57 AM stationary period (~3 min) is BELOW the SPD `time_threshold_min: float = 8.0` floor. The deriver correctly does NOT emit a stay (3 min stops are usually walking pauses, not arrivals; lowering would flood the dataset with false positives). Without a destination visit, no travel_leg can be emitted either (legs require visit-to-visit).
 
-Fix candidates:
-1. Re-investigate same-place merge: only collapse when there's NO travel_leg evidence in between (the prior synthesis-audit noted this).
-2. Tighten the OSM picker's match radius for residential buildings.
-3. Add a "stay_centroid distance from prior stay" check before merging.
+**The "merged into Willard" hypothesis was wrong.** Re-checking: `_merge_same_place_long_gaps` keys on identical `place_id`. The 3:54 coords (42.05189, -87.68114) are 870m from Willard — way outside the OSM picker's 50m radius. The picker would assign NULL or a different `place_id` there. Long-gap-merge stops at NULL = NULL, so no merge fires. The 2 dropped stays (`stays_detected: 10` → `rows_after_long_gap_merge: 7` after pre-window-skip of 2) are likely the genuinely-too-brief ones at the walk's start/end being detected as candidate-stays but failing the 8-min dwell when the dust settles.
 
-Real bug; not blocking morning review but should be tracked.
+**Fix shipped:** dashboard side, commit `10d2e60`. Today's view now emits a trailing tracking-gap entry from the last visit's end → now if it exceeds 30 min. The user sees explicit "Tracking gap (no events derived)" instead of an apparent silence. The deriver stays conservative (correct).
+
+**Future considerations (not urgent):**
+- A "live state" indicator from raw activity events would compensate when the deriver hasn't caught up. Different feature.
+- If user has a real destination at 3-min stays (uncommon — short bathroom break, brief stop), they'd be missed. Acceptable for v1.
 
 ### Data quality cleanup (real findings from earlier in session)
 - **Norris Center duplicate place rows** — two rows <2m apart for the same building. Flagged in the data-quality audit; never resolved. Need a dedupe pass on `places` keyed by (lat, lng, name) within ~5m radius.
