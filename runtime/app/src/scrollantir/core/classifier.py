@@ -112,9 +112,24 @@ _USER_PROMPT_TEMPLATE = """\
 Active projects (slug — description):
 {projects_block}
 
-Window title: {title!r}
+Context:
+{context_block}
 
 Classify."""
+
+
+# Display labels for the context fields. Keep them short and natural;
+# the LLM gets a more useful signal from "Browser tab host: localhost"
+# than from a raw key. Order is intentional: device → app → tab/host
+# → container → title (most generic to most specific). Title last
+# means it stays the "headline" of the prompt.
+_CONTEXT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("device", "Device"),
+    ("app", "App"),
+    ("url_host", "Browser tab host"),
+    ("zen_container", "Zen browser container (profile)"),
+    ("title", "Window/tab title"),
+)
 
 
 def _format_projects(projects: list[tuple[str, str | None]]) -> str:
@@ -129,10 +144,36 @@ def _format_projects(projects: list[tuple[str, str | None]]) -> str:
     return "\n".join(lines)
 
 
+def _format_context(context: dict[str, Any] | None, title: str) -> str:
+    """Render the context dict as readable lines for the prompt.
+
+    Always includes title (so a context=None caller still gets a
+    meaningful prompt). Skips fields that are missing or blank — we
+    don't want "Browser tab host: None" leaking into the model's
+    reasoning when the field was never populated.
+    """
+    merged: dict[str, Any] = {"title": title}
+    if context:
+        merged.update(context)
+    lines: list[str] = []
+    for key, label in _CONTEXT_FIELDS:
+        value = merged.get(key)
+        if value is None or value == "":
+            continue
+        lines.append(f"  {label}: {value}")
+    if not lines:
+        # Defensive: if every field is empty (shouldn't happen — title
+        # is always present), at least surface the raw title repr so
+        # the prompt isn't empty.
+        lines.append(f"  Window/tab title: {title!r}")
+    return "\n".join(lines)
+
+
 def classify(
     title: str,
     projects: list[tuple[str, str | None]] | list[str],
     *,
+    context: dict[str, Any] | None = None,
     timeout_s: float = 5.0,
 ) -> ClassificationResult:
     """Classify one title via Cerebras → Groq fallback chain.
@@ -141,6 +182,13 @@ def classify(
     slugs are accepted for backward compatibility (description=None).
     Description plumbs into the LLM prompt so the model can
     disambiguate between similarly-shaped slugs.
+
+    `context` is an optional dict of extra signals the caller has
+    already gathered (device, app, zen_container, url_host). Whichever
+    fields are present get rendered into the prompt; missing keys are
+    skipped silently. The deriver builds this from the
+    window_session row + the most-recent overlapping browser tab event;
+    see project_chunk._build_context.
 
     Raises `ClassifierError` if both providers fail. Caller handles
     retry policy via `classification_queue`'s backoff.
@@ -152,7 +200,7 @@ def classify(
     project_slugs = [slug for slug, _ in normalized]
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         projects_block=_format_projects(normalized),
-        title=title,
+        context_block=_format_context(context, title),
     )
     last_error: Exception | None = None
     for provider in _provider_chain():
