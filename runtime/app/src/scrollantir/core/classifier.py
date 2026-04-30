@@ -65,13 +65,26 @@ Return TWO INDEPENDENT FIELDS:
                    work    — coding, writing, research, study, focused
                              productive effort (whether or not it maps to a
                              project — learning guitar without a "guitar"
-                             project listed is still work=true, slug=null)
-                   play    — games, entertainment, social media for fun,
-                             YouTube/TikTok scrolling, music videos,
-                             relaxation
+                             project listed is still work=true, slug=null).
+                             Communication tools (Slack, Discord, Zoom)
+                             default to WORK when the conversation /
+                             channel context looks work-shaped (DM with
+                             a colleague, a project channel, a meeting).
+                             Discord is often work calls, NOT play.
+                   play    — entertainment media consumption, games,
+                             reading content that's clearly not productive.
+                             Examples: YouTube videos for fun (not lectures),
+                             TikTok / Reels / Shorts, Netflix, Spotify
+                             leisure listening, video games, non-productive
+                             reddit (humor, drama, trends), non-productive
+                             twitter (memes, drama). Use your intuition —
+                             a Karpathy lecture on YouTube is work; a
+                             cat-fail compilation is play.
                    neutral — system admin, lock screen, settings, generic
                              web search, file management, life logistics,
-                             eating, brief context-switches
+                             eating, brief context-switches, communication
+                             tools when context is unclear (a Slack
+                             notification glance, an unread DM badge).
 
 THE TWO AXES ARE INDEPENDENT. A non-null project_slug does NOT force
 category to 'work', and category='work' does NOT require a project_slug.

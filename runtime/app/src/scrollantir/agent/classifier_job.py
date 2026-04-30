@@ -17,6 +17,7 @@ enough that 1 RPS is comfortable.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from scrollantir.core.classifier import (
@@ -30,8 +31,12 @@ log = logging.getLogger("scrollantir.agent.classifier")
 
 
 # How many pending titles to drain per tick. Cap so a backlog doesn't
-# starve the deriver tick.
-BATCH_SIZE = 20
+# starve the deriver tick AND so we stay under provider rate limits.
+# Cerebras + Groq free tiers throttle around ~30 RPM combined. With
+# inter-call sleep of INTER_CALL_SLEEP_S, batch * 60/tick / sleep
+# stays well under that.
+BATCH_SIZE = 10
+INTER_CALL_SLEEP_S = 0.7  # ~14 calls/min/provider — safely below RPM caps
 
 # Backoff schedule (seconds) keyed on retry count. After the last
 # entry, the row stays at `next_attempt_at` with the last error and
@@ -56,7 +61,9 @@ def run_classifier_tick() -> None:
                 return
             ok = 0
             failed = 0
-            for title, retries in queue:
+            for i, (title, retries) in enumerate(queue):
+                if i > 0:
+                    time.sleep(INTER_CALL_SLEEP_S)
                 try:
                     result = classify(title, projects)
                     _write_classification(conn, title, result)
