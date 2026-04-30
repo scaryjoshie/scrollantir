@@ -1,10 +1,23 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Activity, FileText, Settings as SettingsIcon, Sun } from 'lucide-react';
+import {
+  Activity,
+  FileText,
+  Gauge,
+  Settings as SettingsIcon,
+  Sun,
+  TrendingUp,
+} from 'lucide-react';
 import { cn } from '@/lib/cn';
 
+// /summary + /trends sit between /today (per-session drill) and
+// /reports (LLM narratives). The order is roughly "what's happening
+// right now" → "today's narrative" → "how today rolls up" → "how the
+// week looks" → "agent-written summaries."
 const NAV = [
   { to: '/', label: 'Raw', icon: Activity, end: true },
   { to: '/today', label: 'Today', icon: Sun },
+  { to: '/summary', label: 'At a glance', icon: Gauge },
+  { to: '/trends', label: 'Trends', icon: TrendingUp },
   { to: '/reports', label: 'Reports', icon: FileText },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;

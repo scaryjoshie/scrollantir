@@ -240,6 +240,75 @@ export function fetchUnnamedPlaceMeta(): Promise<PlaceMeta[]> {
   return pgrst<PlaceMeta[]>(url);
 }
 
+// =====================================================================
+// /summary + /trends fetchers
+// =====================================================================
+//
+// Both pages read from per-day aggregate views computed on-read in
+// migration 0017. Wire payload is small (one row per local-date),
+// so we fetch a window via PostgREST `local_date=gte.X&local_date=lt.Y`.
+//
+// "Local date" is America/Chicago — same TZ the views hardcode and the
+// sleep deriver uses. When that becomes settings-driven, the dashboard
+// follows.
+
+// Per-day summary row. All `_s` fields are SECONDS. Multiply by 1000
+// when handing to the donut (which expects ms).
+export type DailySummary = {
+  local_date: string;            // 'YYYY-MM-DD'
+  awake_s: number;
+  mac_active_s: number;
+  phone_active_s: number;
+  phone_effective_s: number;     // mac-precedence applied
+  work_effective_s: number;
+  play_effective_s: number;
+  neutral_effective_s: number;
+  free_s: number;                // awake − (work + neutral); play counts as free
+  sleep_main_s: number;
+  sleep_disrupted_count: number;
+  place_visit_count: number;
+  distinct_places: number;
+  travel_distance_m: number;
+  first_active_ts: string | null;
+  last_active_ts: string | null;
+};
+
+// Per-(day, project) row from v_project_activity.
+export type ProjectActivity = {
+  local_date: string;
+  project_slug: string;
+  project_name: string | null;   // null when slug is unknown to projects table
+  total_s: number;               // mac-precedence applied
+  chunk_count: number;
+};
+
+// Fetch daily summary rows whose local_date is in [fromDate, toDate].
+// fromDate / toDate are 'YYYY-MM-DD' strings. Inclusive on both ends so
+// a single-day fetch passes the same string for both.
+export function fetchDailySummary(
+  fromDate: string,
+  toDate: string,
+): Promise<DailySummary[]> {
+  const url =
+    `/v_daily_summary` +
+    `?local_date=gte.${encodeURIComponent(fromDate)}` +
+    `&local_date=lte.${encodeURIComponent(toDate)}` +
+    `&order=local_date.asc`;
+  return pgrst<DailySummary[]>(url);
+}
+
+export function fetchProjectActivity(
+  fromDate: string,
+  toDate: string,
+): Promise<ProjectActivity[]> {
+  const url =
+    `/v_project_activity` +
+    `?local_date=gte.${encodeURIComponent(fromDate)}` +
+    `&local_date=lte.${encodeURIComponent(toDate)}` +
+    `&order=local_date.asc,total_s.desc`;
+  return pgrst<ProjectActivity[]>(url);
+}
+
 // Latest event per device — pulled from the most-recent 200 rows
 // regardless of the picked viz window. Used by the Raw page header
 // to show "is each device still alive?"
