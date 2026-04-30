@@ -91,9 +91,13 @@ def test_phone_foreground_emits_span() -> None:
     assert rows[0].data["title"] == "com.discord"
 
 
-def test_lookback_only_span_skipped() -> None:
-    """A span entirely in lookback (end_ts < window_start) doesn't
-    overlap the window and is skipped."""
+def test_lookback_span_extends_into_window_is_emitted() -> None:
+    """A foreground span that started in lookback but whose end_ts is
+    IN window (because the user kept it foregrounded until the next
+    change happened in-window) IS emitted. Span end = next-span start,
+    not last_event + fade — so a window held for 90 min straddling
+    lookback and window contributes its full extent.
+    """
     rows, m = _Stub([
         _ev(UTC(2026, 4, 30, 9, 0), "VS Code", "old"),
         _ev(UTC(2026, 4, 30, 9, 2), "VS Code", "old"),
@@ -102,7 +106,24 @@ def test_lookback_only_span_skipped() -> None:
         None, UTC(2026, 4, 30, 10, 0), UTC(2026, 4, 30, 11, 0)
     )
     titles = [r.data["title"] for r in rows]
-    assert titles == ["in window"]
+    assert titles == ["old", "in window"]
+    # "old" span ends at 10:30 — the foreground transition is when
+    # "old" stopped being active.
+    assert rows[0].start_ts == UTC(2026, 4, 30, 9, 0)
+    assert rows[0].end_ts == UTC(2026, 4, 30, 10, 30)
+    assert m["spans_skipped_pre_window"] == 0
+
+
+def test_lookback_only_span_with_no_successor_skipped() -> None:
+    """A span entirely in lookback with NO in-window successor uses
+    fade for its end_ts (last_event + 1m). If that's still before
+    window_start, the span has no overlap and is skipped."""
+    rows, m = _Stub([
+        _ev(UTC(2026, 4, 30, 9, 30), "VS Code", "old"),
+    ]).compute(
+        None, UTC(2026, 4, 30, 10, 0), UTC(2026, 4, 30, 11, 0)
+    )
+    assert rows == []
     assert m["spans_skipped_pre_window"] == 1
 
 

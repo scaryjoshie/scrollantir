@@ -113,11 +113,22 @@ class WindowSessionV1Deriver(DeterministicDeriver):
 
         rows: list[DerivedRow] = []
         skipped = 0
-        for span in spans:
+        for i, span in enumerate(spans):
             first = span[0]
             last = span[-1]
             span_start = first.ts
-            span_end = min(end, last.ts + fade)
+            # A foreground window is active from when it gains focus
+            # until ANOTHER window takes focus. Span end = NEXT span's
+            # start (not last_event + fade) so chunks don't overlap.
+            # Using fade for non-final spans created an overlap of
+            # `fade − inter-event-gap` between every pair of adjacent
+            # spans — chunks summed to more than wall-clock duration.
+            # Fade only applies to the LAST span (no successor; we
+            # don't yet know when this window stopped being active).
+            if i + 1 < len(spans):
+                span_end = min(end, spans[i + 1][0].ts)
+            else:
+                span_end = min(end, last.ts + fade)
             if span_start >= end:
                 continue
             # Drop spans entirely in lookback (no overlap with window).
