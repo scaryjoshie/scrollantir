@@ -136,6 +136,11 @@ type ProjectChunkRow = {
     title?: string | null;
     app?: string | null;
   };
+  // Phase-B view (0015) lifts a slim project object to the row top
+  // level: `{slug, name}` or NULL. Optional in the type because the
+  // dashboard ships before the migration is guaranteed to land in
+  // every environment.
+  project?: { slug: string; name: string } | null;
 };
 
 function mapChunkRow(r: ProjectChunkRow): TopicChunk {
@@ -152,7 +157,8 @@ function mapChunkRow(r: ProjectChunkRow): TopicChunk {
     // those are NULL. Either way, treat null/empty/'personal' as "no
     // project" — the dashboard's drill auto-skip simplifies to checking
     // `c.project != null`.
-    project: r.data.project_slug || null,
+    project: r.project?.slug ?? r.data.project_slug ?? null,
+    project_name: r.project?.name ?? null,
     title: r.data.title || r.data.app || r.topic,
   };
 }
@@ -209,6 +215,29 @@ export function fetchProjects(): Promise<Project[]> {
   return pgrst<Project[]>(
     '/projects?select=slug,name,description,archived_at&order=slug.asc',
   );
+}
+
+// Place metadata side-channel. The `v_place_visit_today` view exposes
+// `name + category + centroid` only — but unnamed OSM polygons land in
+// the table with names like `building:7088849`, and the only way to
+// produce a friendly fallback ("Unnamed dormitory") is to read
+// `metadata->mapbox->type`. Fetched once per session; cached forever.
+export type PlaceMeta = {
+  name: string;
+  metadata: { mapbox?: Record<string, unknown> } | null;
+};
+
+export function fetchUnnamedPlaceMeta(): Promise<PlaceMeta[]> {
+  // Only the placeholder-named rows need a fallback. PostgREST `like`
+  // uses `*` as the wildcard. The `:` separator (between layer and
+  // OSM id) is a plain literal — no escaping needed. Three layer
+  // prefixes cover every fallback name produced by `_fallback_name`
+  // in places_repo.py.
+  const url =
+    `/places` +
+    `?select=name,metadata` +
+    `&or=(name.like.building:*,name.like.landuse:*,name.like.poi_label:*)`;
+  return pgrst<PlaceMeta[]>(url);
 }
 
 // Latest event per device — pulled from the most-recent 200 rows

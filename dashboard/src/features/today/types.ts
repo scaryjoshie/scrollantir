@@ -125,6 +125,10 @@ export type TopicChunk = {
   // `project != null IFF category = 'work'`). The drill panel skips
   // L1 (project pie) for categories with no real projects.
   project: string | null;
+  // Curated project display name from public.projects.name. Pre-Phase-B
+  // views don't emit this — falls back to NULL, and the dashboard
+  // resolves slug→name via useProjects() instead.
+  project_name?: string | null;
   // Exact window/tab title — the L2 drill key.
   title: string;
   // Which device the foreground was on. The donut applies Mac-

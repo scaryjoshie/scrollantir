@@ -33,6 +33,7 @@ import type {
 import { useTodayLookups } from './lookups';
 import { fetchProjectChunksForSpan } from '@/lib/api';
 import { useProjects, type ProjectsLookup } from '@/lib/useProjects';
+import { usePlaceLabels } from '@/lib/usePlaceLabels';
 
 const ACTIVITY_LABEL: Record<string, string> = {
   walking: 'Walking',
@@ -349,6 +350,7 @@ function VisitDetail({
   dayStartIso?: string;
 }) {
   const now = useNowTick();
+  const placeLabels = usePlaceLabels();
   // Lazy-fetch chunks whose start_ts falls within this visit's span.
   // Uses the indexed (source, start_ts) — O(log N) regardless of total
   // chunk corpus. React Query caches per visit.id so re-selecting is
@@ -385,7 +387,7 @@ function VisitDetail({
   return (
     <div className="px-6 py-5 h-full overflow-y-auto">
       <Header
-        title={visit.place?.name ?? 'Unknown place'}
+        title={placeLabels.display(visit.place?.name)}
         subtitle={subtitle}
         chip={visit.place?.category}
         live={visit.data.is_open}
@@ -397,6 +399,7 @@ function VisitDetail({
 
 function LegDetail({ leg }: { leg: TravelLeg }) {
   const { visitById } = useTodayLookups();
+  const placeLabels = usePlaceLabels();
   const from = visitById[leg.data.from_visit_id];
   const to = visitById[leg.data.to_visit_id];
   // Lazy-fetch chunks whose start_ts falls within this leg's span.
@@ -416,7 +419,7 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
   return (
     <div className="px-6 py-5 h-full overflow-y-auto">
       <Header
-        title={`${from?.place?.name ?? '?'} → ${to?.place?.name ?? '?'}`}
+        title={`${placeLabels.display(from?.place?.name)} → ${placeLabels.display(to?.place?.name)}`}
         subtitle={`${fmtTime(leg.start_ts)} – ${fmtTime(leg.end_ts)} · ${fmtDuration(
           leg.start_ts,
           leg.end_ts,
@@ -476,10 +479,11 @@ function SleepDetail({ sleep }: { sleep: import('./types').Sleep }) {
 function ChunkDetail({ chunk }: { chunk: TopicChunk }) {
   const { visitById, legById } = useTodayLookups();
   const projects = useProjects();
+  const placeLabels = usePlaceLabels();
   const parentVisit = visitById[chunk.parent_id];
   const parentLeg = parentVisit ? null : legById[chunk.parent_id];
   let chip: string | undefined;
-  if (parentVisit) chip = parentVisit.place?.name;
+  if (parentVisit) chip = placeLabels.display(parentVisit.place?.name);
   else if (parentLeg) chip = ACTIVITY_LABEL[parentLeg.data.dominant_activity];
   const palette = CATEGORY_PALETTES[chunk.category];
   const accent = hashWithin(palette, chunk.title);

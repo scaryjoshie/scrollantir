@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import { cn } from '@/lib/cn';
+import { usePlaceLabels } from '@/lib/usePlaceLabels';
 import type { TimelineEntry, TopicCategory } from './types';
 
 const CATEGORY_GLYPH: Record<string, string> = {
@@ -118,6 +119,9 @@ function Row({
   onSelect: (id: string) => void;
   dayStartIso: string;
 }) {
+  // Place-label resolver: rewrites raw `building:1234` placeholder
+  // names to "Unnamed dormitory" / etc. using cached metadata.
+  const placeLabels = usePlaceLabels();
   if (entry.kind === 'topic_chunk') {
     return (
       <li className="relative ml-6 border-l border-line">
@@ -171,7 +175,7 @@ function Row({
     duration = '';
   } else if (entry.kind === 'place_visit') {
     glyph = CATEGORY_GLYPH[entry.place?.category ?? 'mixed'] ?? '📍';
-    title = entry.place?.name ?? 'Unknown place';
+    title = placeLabels.display(entry.place?.name);
     // Visit started before today's day boundary (e.g. overnight stay
     // that began 23:35 yesterday). Display clips to dayStartIso so
     // the timeline reads as the user's lived day, not the raw
