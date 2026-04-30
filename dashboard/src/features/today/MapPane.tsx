@@ -196,6 +196,12 @@ function targetForSelection(
     // stays put on whatever was previously selected (or default).
     return null;
   }
+  if (entry.kind === 'user_active') {
+    // user_active is a primitive activity span — we know the device
+    // was being used, but NOT where. Same null-anchor treatment as
+    // tracking_gap: leave the map on the previous selection.
+    return null;
+  }
   // moment
   if (entry.lat != null && entry.lng != null) {
     return {

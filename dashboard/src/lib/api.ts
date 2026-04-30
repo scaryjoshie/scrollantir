@@ -11,6 +11,7 @@ import type {
   Sleep,
   TopicChunk,
   TravelLeg,
+  UserActiveSpan,
 } from '@/features/today/types';
 
 const USER = (import.meta.env.VITE_DASHBOARD_USER as string) || 'josh';
@@ -100,6 +101,27 @@ export function fetchSleepByWakeDates(dates: string[]): Promise<Sleep[]> {
     `&order=end_ts.asc`;
   return pgrst<Array<Omit<Sleep, 'kind'>>>(url).then((rows) =>
     rows.map((r) => ({ ...r, kind: 'sleep' as const })),
+  );
+}
+
+// User-active primitive spans whose [start_ts, end_ts] overlaps the
+// window. The /today timeline renders these ONLY when not covered by a
+// place_visit — that's the "device was active but we didn't derive a
+// visit" case (e.g. a 3-minute stop below the 8-min dwell threshold,
+// or simply unsynced location data behind active phone use). Letting
+// these surface fixes the false-"Tracking gap" UX that appeared when
+// raw activity existed but no visit-level summary did.
+export function fetchUserActive(
+  fromIso: string,
+  toIso: string,
+): Promise<UserActiveSpan[]> {
+  const url =
+    `/v_user_active_today` +
+    `?start_ts=lt.${encodeURIComponent(toIso)}` +
+    `&end_ts=gt.${encodeURIComponent(fromIso)}` +
+    `&order=start_ts.asc`;
+  return pgrst<Array<Omit<UserActiveSpan, 'kind'>>>(url).then((rows) =>
+    rows.map((r) => ({ ...r, kind: 'user_active' as const })),
   );
 }
 
