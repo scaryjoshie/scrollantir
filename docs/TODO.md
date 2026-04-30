@@ -31,13 +31,28 @@ Last updated: 2026-04-30 (mid-session).
 
 - **Device-pie drill** (paused mid-flight). User asked: clicking the device pie should drill into top apps for that device, with single drill panel below. **Pausing** until the cross-device `app_slug` data layer lands (Phase B+) so we drill on the same canonical app identity as everywhere else.
 
+## 🔄 Rollback policy
+
+Every shipped change in this branch has a documented undo path in the table below. Before merging this branch to main, the policy is:
+
+1. **Commits are atomic** — one logical change per commit. Reverts are precise.
+2. **Migrations have explicit `migrate:down`** — even when one-way data loss is unavoidable (e.g. JSONB repointings), the down block restores schema-level state.
+3. **Compose / Caddy config edits** are reversible by `git revert` + scp + restart. No data state involved.
+4. **Production-touching changes** (DB migrations, runtime/app code rsync) get tracked here BEFORE applying so the rollback recipe is pre-written, not improvised under pressure.
+5. **Branch lives durably** — work stays on `donut-drilldown` until full validation; if a phase needs unwinding, branch reset is a clean option.
+
 ## ✅ This-session shipped (since TODO created)
 
-| Commit | Item |
-|---|---|
-| 8687106 | Initial TODO file |
-| 2c6998f | Caddy zstd + gzip — 102KB → 10KB on chunks payload (-90%) |
-| e234e4f | Lazy-fetch project_chunks per visit on click + TopicChunk.project nullable |
+| Commit | Item | Rollback |
+|---|---|---|
+| 8687106 | Initial TODO file | `git revert 8687106` (low-risk; doc only) |
+| 2c6998f | Caddy zstd + gzip — 102KB → 10KB on chunks payload (-90%) | `git revert 2c6998f` + scp Caddyfile + restart caddy. Reversible without data loss. |
+| e234e4f | Lazy-fetch project_chunks per visit on click + TopicChunk.project nullable | `git revert e234e4f`. Frontend-only; refresh dashboard after. NOTE: TopicChunk.project becoming nullable is a TYPE change — reverting alone won't compile if other code (post-Phase-B) starts relying on null. |
+| ebf2e46 | window_session NULLIF for empty-title fallthrough | `git revert ebf2e46` + rsync + agent restart. Reverts to old behavior where System Settings → blank title chunks. |
+| 5f0c8f8 | Phase B drafts (0014, 0015, classifier.py prompt + validator) | NOT YET DEPLOYED. Rollback = `git revert 5f0c8f8` while still local-only. If migrations get applied, rollback path is the explicit `migrate:down` block in each SQL file (re-inserts personal project, restores 0013 view). Can't restore the JSONB project_slug repointings — one-way data loss. |
+| ebe9fe4 | Phase G investigation findings | Doc only. `git revert`. |
+| aa413e2 | TODO Phase A done + Phase B playbook | Doc only. |
+| 4f55eb8 | TODO Phase G retired | Doc only. |
 
 ---
 
@@ -127,7 +142,17 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 
 ## ⏳ Open — not yet think-tanked
 
+### Data quality cleanup (real findings from earlier in session)
+- **Norris Center duplicate place rows** — two rows <2m apart for the same building. Flagged in the data-quality audit; never resolved. Need a dedupe pass on `places` keyed by (lat, lng, name) within ~5m radius.
+- **Unnamed OSM places** (`building:275854338`, etc.) — old rows remain in `places` table from before the OSM picker fix. Auto-rejected by new picker but stale rows clutter `/places`-style queries. One-shot DELETE migration.
+- **Phone tracking blackouts** — observed 11.5h dark window on 4/29 (03:49 → 15:25 CT) that masked actual sleep. Phone-side root cause unknown — Doze mode? Permission revoked? Service killed? Needs Android-side investigation by user. Non-trivial reliability issue.
+- **GPS attestation gate over-aggressive on indoor↔outdoor transitions** — caused the 12-min Blom→Plex gap. The three-gate filter (commit 6dd1cad) drops fixes the user knows are real, near building entrances. May need to allow lower-quality fixes during activity transitions.
+
+### Other open items
 - **Subcategory auto-detection** — School chunks could auto-tag into class-specific sub-projects (e.g. "STAT 348 lecture" → `school-stat348`). User noted: "this changes pretty frequently, so automating would be optimal."
+- **Android `getClassName()` spike** — could disambiguate within-app screens (Slack channel list vs DM, Messages contact vs convo). Surfaced by the 2026-04-30 empty-title investigation. Currently we use `app_label` ("Slack") only; class name might give richer signal at near-zero ingest cost.
+- **`ContentDetectorService` extension** — already runs on Android for Reels detection. Has full accessibility tree access; could optionally extract URL bars / message thread names / search query text. Privacy-sensitive — defer until clearly needed.
+- **Document the `_collapse_overlaps` and "hold the tail" disciplines in mac-forwarder** — they paper over aw-server quirks that future maintainers (or post-AW migrations) will hit. Add comment explaining the upstream behavior.
 - **Single-command Docker deploy** — user's stated long-term goal: "ideally deployed with docker in like 1 command."
 - **TZ-aware deriver thresholds** — sleep deriver hardcoded `America/Chicago`; breaks when traveling.
 - **Per-user tunable thresholds** — sleep `night_floor_min`, gap settings, etc. currently class attributes; should live in a settings table once we move past v1.
