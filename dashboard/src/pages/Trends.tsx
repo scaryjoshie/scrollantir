@@ -382,14 +382,13 @@ function ProjectRanking({ projects }: { projects: ProjectActivity[] }) {
 // as dashed empty placeholders rather than vanishing (Tenet 1).
 // ---------------------------------------------------------------------
 
-// Sleep palette — duplicated here AND on /summary intentionally. The
-// hex strings are the canonical "undisrupted = green, disrupted =
-// amber" pair; if either page diverges in the future, callers should
-// reconcile to the same palette rather than introducing a third hue.
-const SLEEP_COLOR = {
-  ok: '#7DB98A',
-  disrupted: '#D9A35C',
-} as const;
+// Sleep bar color. We previously used a two-color "undisrupted/disrupted"
+// palette keyed on sleep.disrupted_count, but the underlying signal
+// ("brief user_active span absorbed into a silent run") doesn't actually
+// mean the sleep was disrupted in any human-meaningful sense — checking
+// the time, glancing at a notification, etc. all incremented it.
+// Dropped 2026-04-30 per user feedback. Single hue now.
+const SLEEP_COLOR = '#7DB98A';
 
 // 8h reference matches /summary. See Tenet 4 — we can't tie a target
 // to one user without a study, so the explicit "reference" framing
@@ -415,22 +414,16 @@ function SleepTrend({
       spine.map((date) => {
         const row = byDate.get(date);
         const sleepS = row?.sleep_main_s ?? 0;
-        const disrupted = row?.sleep_disrupted_count ?? 0;
         const dayLabel = format(parseISO(date), 'EEE');
         const dateLabel = format(parseISO(date), 'M/d');
         const tooltip =
-          sleepS > 0
-            ? `${fmtSleep(sleepS)}` +
-              (disrupted > 0
-                ? ` · ${disrupted} disruption${disrupted > 1 ? 's' : ''}`
-                : '')
-            : 'No sleep recorded';
+          sleepS > 0 ? fmtSleep(sleepS) : 'No sleep recorded';
         return {
           key: date,
           label: dayLabel,
           sublabel: dateLabel,
           value: sleepS,
-          color: disrupted === 0 ? SLEEP_COLOR.ok : SLEEP_COLOR.disrupted,
+          color: SLEEP_COLOR,
           tooltip,
         };
       }),
@@ -459,9 +452,7 @@ function SleepTrend({
         valueFormat={fmtSleep}
         emptyLabel="none"
       />
-      <div className="flex items-center gap-x-4 text-xs text-ink-muted">
-        <Swatch color={SLEEP_COLOR.ok} label="Undisrupted" />
-        <Swatch color={SLEEP_COLOR.disrupted} label="Disrupted" />
+      <div className="flex items-center text-xs text-ink-muted">
         <span className="ml-auto text-[10px] text-ink-subtle">
           Dashed line at 8h reference
         </span>

@@ -177,9 +177,7 @@ export default function SummaryPage() {
               }
               hint={
                 agg.sleep_main_s > 0
-                  ? agg.sleep_disrupted > 0
-                    ? `${agg.sleep_disrupted} disruption${agg.sleep_disrupted > 1 ? 's' : ''}`
-                    : 'No disruptions'
+                  ? `${pct(agg.sleep_main_s, 8 * 3600)} of 8h reference`
                   : range === 'today' ? 'Tonight not yet derived' : '—'
               }
               accent={agg.sleep_main_s === 0 ? 'muted' : 'plain'}
@@ -406,12 +404,12 @@ function ProjectBars({
 // (Tenet 1) rather than vanishing from the row.
 // ---------------------------------------------------------------------
 
-// Sleep palette — same hex as /trends so disrupted vs. undisrupted
-// reads identically across the two pages.
-const SLEEP_COLOR = {
-  ok: '#7DB98A',         // no disruptions
-  disrupted: '#D9A35C',  // at least one
-} as const;
+// Sleep bar color. Previously two-color "undisrupted/disrupted" keyed on
+// sleep.disrupted_count, but the underlying signal (brief user_active
+// span absorbed into a silent run) doesn't actually mean the sleep was
+// disrupted — checking the time, glancing at a notification, etc. all
+// incremented it. Dropped 2026-04-30 per user feedback.
+const SLEEP_COLOR = '#7DB98A';
 
 // 8h reference matches /trends (`SleepTrend.REFERENCE_S`). A familiar
 // point of comparison rather than an observed-data magic number; see
@@ -437,22 +435,16 @@ function SleepStrip({
   const items: BarItem[] = useMemo(
     () =>
       rows.map((r) => {
-        const disrupted = r.sleep_disrupted_count;
         const dayLabel = format(parseISO(r.local_date), 'EEE');
         const dateLabel = format(parseISO(r.local_date), 'M/d');
         const tooltip =
-          r.sleep_main_s > 0
-            ? `${fmtSleep(r.sleep_main_s)}` +
-              (disrupted > 0
-                ? ` · ${disrupted} disruption${disrupted > 1 ? 's' : ''}`
-                : '')
-            : 'No sleep recorded';
+          r.sleep_main_s > 0 ? fmtSleep(r.sleep_main_s) : 'No sleep recorded';
         return {
           key: r.local_date,
           label: dayLabel,
           sublabel: dateLabel,
           value: r.sleep_main_s,
-          color: disrupted === 0 ? SLEEP_COLOR.ok : SLEEP_COLOR.disrupted,
+          color: SLEEP_COLOR,
           tooltip,
         };
       }),
@@ -482,21 +474,7 @@ function SleepStrip({
         valueFormat={fmtSleep}
         emptyLabel="none"
       />
-      <div className="flex items-center gap-x-4 text-xs text-ink-muted">
-        <span className="inline-flex items-center gap-1.5">
-          <span
-            className="inline-block w-3 h-3 rounded-sm"
-            style={{ background: SLEEP_COLOR.ok }}
-          />
-          Undisrupted
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span
-            className="inline-block w-3 h-3 rounded-sm"
-            style={{ background: SLEEP_COLOR.disrupted }}
-          />
-          Disrupted
-        </span>
+      <div className="flex items-center text-xs text-ink-muted">
         <span className="ml-auto text-[10px] text-ink-subtle">
           Dashed line at 8h reference
         </span>

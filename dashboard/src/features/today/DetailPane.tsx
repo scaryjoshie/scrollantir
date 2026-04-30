@@ -429,15 +429,6 @@ function SleepDetail({ sleep }: { sleep: import('./types').Sleep }) {
         <div className="text-ink tabular-nums">
           {sleep.provenance.wake_local_time?.slice(0, 5) ?? fmtTime(sleep.end_ts)}
         </div>
-        <div className="text-ink-subtle">Disruptions</div>
-        <div className="text-ink tabular-nums">
-          {sleep.provenance.disrupted_count}
-          {sleep.provenance.disrupted_count > 0 && (
-            <span className="text-ink-subtle">
-              {' '}(brief activity merged into the silence)
-            </span>
-          )}
-        </div>
         <div className="text-ink-subtle">Confidence</div>
         <div className="text-ink tabular-nums">
           {Math.round(sleep.data.confidence * 100)}%
