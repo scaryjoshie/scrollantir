@@ -118,15 +118,22 @@ export default function TodayPage() {
 
   // Naps render as separate Moments inside the day. Each nap's
   // wake_ts is the Moment's anchor; the user can click to inspect.
+  // Duration formatted as "Xh Ym" (matching the timeline's humanize
+  // convention) — `${X}m` alone gets misread as "meters" because
+  // travel legs use "m" for distance.
   const napMoments: Moment[] = useMemo(() => {
     return todayNaps.map((nap) => {
       const localTime = nap.provenance.wake_local_time?.slice(0, 5) ?? '';
-      const dur = Math.round(nap.provenance.duration_minutes);
+      const totalMin = Math.round(nap.provenance.duration_minutes);
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      const dur =
+        h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h ${m}m`;
       return {
         kind: 'moment',
         id: `nap-${dayKey}-${nap.provenance.rank}`,
         ts: nap.end_ts,
-        label: localTime ? `Napped ${dur}m, woke at ${localTime}` : 'Nap',
+        label: localTime ? `Napped ${dur}, woke at ${localTime}` : 'Nap',
         glyph: '😴',
         source_hint: 'sleep/v1',
       };
@@ -142,15 +149,33 @@ export default function TodayPage() {
       ...spans,
       ...napMoments,
     ];
-    // Sort by ts (Moments) or start_ts (spans) so naps slot in
-    // chronologically with visits/legs.
+    // Sort by EFFECTIVE start within today: a span that began
+    // yesterday but continues into today (e.g. overnight Willard with
+    // start_ts = 23:35 yesterday) anchors at the day boundary, NOT
+    // at its true start_ts. Without this, the wake Moment at 8:26 AM
+    // would render AFTER the cross-day Willard visit (which sorts
+    // first because its raw start_ts is yesterday). Conceptually
+    // wake-up is the first thing that happens today; the visit's
+    // effective "today start" is wake-up.
+    //
+    // Tie-break: when a Moment lands at the same time as a span's
+    // effective start, the Moment renders first.
+    const effectiveStart = (e: TimelineEntry): string => {
+      if (e.kind === 'moment') return e.ts;
+      return e.start_ts < fromIso ? fromIso : e.start_ts;
+    };
     all.sort((a, b) => {
-      const ta = a.kind === 'moment' ? a.ts : a.start_ts;
-      const tb = b.kind === 'moment' ? b.ts : b.start_ts;
-      return ta < tb ? -1 : 1;
+      const ta = effectiveStart(a);
+      const tb = effectiveStart(b);
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      // Same effective time: Moments first (the wake/nap anchor reads
+      // before the span it overlaps with).
+      if (a.kind === 'moment' && b.kind !== 'moment') return -1;
+      if (b.kind === 'moment' && a.kind !== 'moment') return 1;
+      return 0;
     });
     return all;
-  }, [visitsQ.data, legsQ.data, wakeMoment, napMoments]);
+  }, [visitsQ.data, legsQ.data, wakeMoment, napMoments, fromIso]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 
@@ -207,6 +232,7 @@ Pick a different day, or wait for the deriver to run.`}
               entries={entries}
               selectedId={selectedId}
               onSelect={setSelectedId}
+              dayStartIso={fromIso}
             />
           )}
         </aside>

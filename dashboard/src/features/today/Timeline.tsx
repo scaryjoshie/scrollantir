@@ -79,10 +79,16 @@ export default function Timeline({
   entries,
   selectedId,
   onSelect,
+  dayStartIso,
 }: {
   entries: TimelineEntry[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  // The day's start (= wake_ts when sleep was detected, otherwise
+  // the fallback boundary). Spans whose true start_ts is before this
+  // get rendered with their start clipped to dayStartIso, plus a
+  // "(continued)" hint, so the day-narrative reads cleanly.
+  dayStartIso: string;
 }) {
   return (
     <div className="py-3">
@@ -93,6 +99,7 @@ export default function Timeline({
             entry={e}
             isSelected={e.id === selectedId}
             onSelect={onSelect}
+            dayStartIso={dayStartIso}
           />
         ))}
       </ol>
@@ -104,10 +111,12 @@ function Row({
   entry,
   isSelected,
   onSelect,
+  dayStartIso,
 }: {
   entry: TimelineEntry;
   isSelected: boolean;
   onSelect: (id: string) => void;
+  dayStartIso: string;
 }) {
   if (entry.kind === 'topic_chunk') {
     return (
@@ -163,12 +172,22 @@ function Row({
   } else if (entry.kind === 'place_visit') {
     glyph = CATEGORY_GLYPH[entry.place?.category ?? 'mixed'] ?? '📍';
     title = entry.place?.name ?? 'Unknown place';
+    // Visit started before today's day boundary (e.g. overnight stay
+    // that began 23:35 yesterday). Display clips to dayStartIso so
+    // the timeline reads as the user's lived day, not the raw
+    // start_ts. Duration ALSO clips so a 16h cross-day visit
+    // doesn't dominate the rendered range.
+    const startedBeforeToday = entry.start_ts < dayStartIso;
+    const displayStart = startedBeforeToday ? dayStartIso : entry.start_ts;
     if (entry.data.is_open) {
-      // Live render: "Since 3:25 PM" + duration counted to `now`.
-      // end_ts is the last GPS reading (≤30 min stale by design),
-      // not "now"; using it for duration would understate.
-      timeRange = `Since ${fmtTime(entry.start_ts)}`;
-      duration = humanize(now - parseISO(entry.start_ts).getTime());
+      // Live: "Since X" + count to now.
+      timeRange = startedBeforeToday
+        ? `Since ${fmtTime(displayStart)} (continued)`
+        : `Since ${fmtTime(entry.start_ts)}`;
+      duration = humanize(now - parseISO(displayStart).getTime());
+    } else if (startedBeforeToday) {
+      timeRange = `${fmtTime(displayStart)} – ${fmtTime(entry.end_ts)} (continued)`;
+      duration = fmtDuration(displayStart, entry.end_ts);
     } else {
       timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
       duration = fmtDuration(entry.start_ts, entry.end_ts);
