@@ -25,8 +25,11 @@ import {
 
 // Fallback day boundary when no sleep row exists for the displayed
 // day. Used pre-derive (fresh DB) and on days the deriver couldn't
-// confidently detect sleep. Sleep takes priority when present.
-const FALLBACK_DAY_BOUNDARY_HOUR = 4;
+// confidently detect 'night'-class sleep. Sleep takes priority when
+// present. Midnight (00:00) per user preference — better than 04:00
+// for nights where the user genuinely went to bed at e.g. 02:00 and
+// the deriver hasn't classified it yet.
+const FALLBACK_DAY_BOUNDARY_HOUR = 0;
 
 function fallbackDayStart(day: Date): Date {
   const d = new Date(day);
