@@ -271,6 +271,86 @@ CREATE TRIGGER places_set_updated_at
 
 
 -- =========================================================================
+-- public.projects
+-- User-curated list of active projects. Slug is the stable key the
+-- LLM classifier returns and the dashboard renders. Archive (don't
+-- delete) when a project ends so historical project_chunk rows still
+-- resolve. User can edit name/description; slug is immutable once
+-- assigned (rename = create new + archive old).
+-- =========================================================================
+
+CREATE TABLE public.projects (
+  slug          TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  description   TEXT,
+  archived_at   TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (slug ~ '^[a-z][a-z0-9_-]*$')
+);
+
+CREATE TRIGGER projects_set_updated_at
+  BEFORE UPDATE ON public.projects
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+-- =========================================================================
+-- public.window_titles
+-- Classification cache, keyed on the EXACT window title string.
+-- The first time a title is seen, project_chunk/v1 enqueues it for
+-- LLM classification; subsequent hits read straight from this table.
+-- A user override sets `overridden_at` and pins the row regardless
+-- of future re-classification attempts. project_slug is nullable —
+-- a title may not belong to any project (random browsing, etc.).
+-- =========================================================================
+
+CREATE TABLE public.window_titles (
+  title           TEXT PRIMARY KEY,
+  project_slug    TEXT REFERENCES public.projects(slug),
+  -- TopicCategory: 'work' | 'play' | 'neutral'. The "is this
+  -- productive?" axis, orthogonal to project membership. A YouTube
+  -- tab classifies as 'work' (Karpathy lecture) or 'play' (TikTok)
+  -- with the same project_slug nullable.
+  category        TEXT NOT NULL CHECK (category IN ('work', 'play', 'neutral')),
+  classified_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- 'cerebras:llama3.1-8b' / 'groq:llama3-8b-8192' / 'manual' (user
+  -- override). Lets us re-classify rows that were tagged by an older
+  -- model without scrubbing the cache.
+  model           TEXT NOT NULL,
+  -- User override timestamp; set when the user manually corrects a
+  -- classification via the dashboard. Pinned rows are never
+  -- re-classified by the agent.
+  overridden_at   TIMESTAMPTZ
+);
+
+CREATE INDEX window_titles_project ON public.window_titles (project_slug)
+  WHERE project_slug IS NOT NULL;
+
+
+-- =========================================================================
+-- public.classification_queue
+-- Pending titles waiting for LLM classification. The classifier job
+-- pulls rows here every minute, calls Cerebras (with Groq fallback),
+-- writes to window_titles on success, and either deletes or
+-- increments retries on failure. Durable so a Cerebras outage
+-- doesn't lose progress.
+-- =========================================================================
+
+CREATE TABLE public.classification_queue (
+  title         TEXT PRIMARY KEY,
+  enqueued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  retries       INT NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  -- Cooldown after a failure — `retries` doubles the wait. The job
+  -- skips rows whose `next_attempt_at > NOW()`.
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (retries >= 0)
+);
+
+CREATE INDEX classification_queue_due ON public.classification_queue (next_attempt_at);
+
+
+-- =========================================================================
 -- private.tokens
 -- Bearer-token credential store. Stores sha256(plaintext); plaintext
 -- never lives server-side. Revocable via revoked_at.

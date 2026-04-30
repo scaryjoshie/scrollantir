@@ -24,10 +24,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 # Importing the deriver modules side-effect-registers them in
 # core.derivers.REGISTRY. Add new derivers here as they ship.
 import scrollantir.core.derivers.place_visit  # noqa: F401
+import scrollantir.core.derivers.project_chunk  # noqa: F401
 import scrollantir.core.derivers.sleep  # noqa: F401
 import scrollantir.core.derivers.travel_leg  # noqa: F401
 import scrollantir.core.derivers.user_active  # noqa: F401
+import scrollantir.core.derivers.window_session  # noqa: F401
 
+from scrollantir.agent.classifier_job import run_classifier_tick
 from scrollantir.core.db import close_after, connect_agent
 from scrollantir.core.derivers import REGISTRY
 
@@ -53,17 +56,28 @@ WINDOW_HOURS_BY_SOURCE: dict[str, int] = {
     "travel_leg/v1": 24,
     "user_active/v1": 36,
     "sleep/v1": 36,
+    "window_session/v1": 24,
+    "project_chunk/v1": 24,
 }
 DEFAULT_ROLLING_WINDOW_HOURS = 24
 
 # Order matters: travel_leg reads place_visit rows; sleep reads
-# user_active rows. Each deriver runs over its own per-source window.
+# user_active rows; project_chunk reads window_session rows. Each
+# deriver runs over its own per-source window.
 DERIVER_CHAIN: tuple[str, ...] = (
     "place_visit/v1",
     "travel_leg/v1",
     "user_active/v1",
     "sleep/v1",
+    "window_session/v1",
+    "project_chunk/v1",
 )
+
+# Classifier job runs more often than the deriver tick — when a new
+# title arrives in the queue, we want it classified within ~1 min so
+# subsequent project_chunk ticks see the resolution. Cheap: a tick
+# with an empty queue is one SELECT.
+CLASSIFIER_INTERVAL_S = 60
 
 
 def run_recent_derivers() -> None:
@@ -113,13 +127,21 @@ def main() -> None:
         id="derivers",
         coalesce=True,
         max_instances=1,
-        # First fire shortly after start so a fresh boot catches up
-        # without waiting a full interval.
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
     )
+    sched.add_job(
+        run_classifier_tick,
+        IntervalTrigger(seconds=CLASSIFIER_INTERVAL_S),
+        id="classifier",
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
+    )
     log.info(
-        "scheduler starting — derivers run every %d min, windows=%s",
+        "scheduler starting — derivers every %d min, classifier every %ds, "
+        "windows=%s",
         DERIVER_INTERVAL_MINUTES,
+        CLASSIFIER_INTERVAL_S,
         WINDOW_HOURS_BY_SOURCE,
     )
     try:
