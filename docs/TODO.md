@@ -144,7 +144,7 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 
 ### Data quality cleanup (real findings from earlier in session)
 - **Norris Center duplicate place rows** — two rows <2m apart for the same building. Flagged in the data-quality audit; never resolved. Need a dedupe pass on `places` keyed by (lat, lng, name) within ~5m radius.
-- **Unnamed OSM places** (`building:275854338`, etc.) — old rows remain in `places` table from before the OSM picker fix. Auto-rejected by new picker but stale rows clutter `/places`-style queries. One-shot DELETE migration.
+- **Unnamed OSM places** (`building:275854338`, etc.) — INVESTIGATED 2026-04-30, NOT a deletion candidate. They're real Northwestern buildings whose Mapbox features have polygon + type (parking/dormitory/university) but no public name. 3 such rows total, 0 references in derived_events. Created during the 4/29 OSM picker iteration but never retained as visit ancestors. Better fix: dashboard renders them with a category-aware fallback label ("Unnamed dormitory") when encountered, instead of `building:NNN`. Don't delete.
 - **Phone tracking blackouts** — observed 11.5h dark window on 4/29 (03:49 → 15:25 CT) that masked actual sleep. Phone-side root cause unknown — Doze mode? Permission revoked? Service killed? Needs Android-side investigation by user. Non-trivial reliability issue.
 - **GPS attestation gate over-aggressive on indoor↔outdoor transitions** — caused the 12-min Blom→Plex gap. The three-gate filter (commit 6dd1cad) drops fixes the user knows are real, near building entrances. May need to allow lower-quality fixes during activity transitions.
 
