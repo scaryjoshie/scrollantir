@@ -1,6 +1,8 @@
 # Scrollantir TODO
 
-Living roadmap of everything raised in collaboration with Claude. Status legend:
+Living roadmap of everything raised in collaboration with Claude.
+
+**Companion: `docs/TENETS.md`** — durable principles. Read first when in doubt. Status legend:
 
 - ✅ shipped
 - 🟢 in progress (code being written)
@@ -148,6 +150,15 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 - **Phone tracking blackouts** — observed 11.5h dark window on 4/29 (03:49 → 15:25 CT) that masked actual sleep. Phone-side root cause unknown — Doze mode? Permission revoked? Service killed? Needs Android-side investigation by user. Non-trivial reliability issue.
 - **GPS attestation gate over-aggressive on indoor↔outdoor transitions** — caused the 12-min Blom→Plex gap. The three-gate filter (commit 6dd1cad) drops fixes the user knows are real, near building entrances. May need to allow lower-quality fixes during activity transitions.
 
+### Patches-without-understanding sweep (queued post-Phase-B)
+From audit (a4c976) 2026-04-30 + verifying queries:
+- **Drop `'personal'/'misc'` string guards** in `DetailPane.tsx` (3 sites) — dies post-Phase-B.
+- **Drop view-level COALESCE for `places.category`** — verified never NULL in practice (0/14 rows).
+- **Re-evaluate `activity → 'walking'` fallback** in `travel_leg.py:140-148` — once we have vehicle / cycle data (current 8/8 legs are walking; can't distinguish fallback firing from real).
+- **Drop dead branches** — `len(durations) <= 1` (only ==1 reachable), `if span_start >= end: continue` after lookback fetch, `try { setFeatureState } catch` (Mapbox v3+ stable).
+- **Don't drop yet — needs more data** — sleep `disrupted_count` heuristic + `confidence /2.0` factor (1 sleep row so far; let week accumulate).
+- **Surface unread metrics** — `osm_errors`, `activity_unknown_legs`, `spans_skipped_pre_window` are emitted but nothing reads them. Pipe one to console log so we can audit fallback firings.
+
 ### Other open items
 - **Subcategory auto-detection** — School chunks could auto-tag into class-specific sub-projects (e.g. "STAT 348 lecture" → `school-stat348`). User noted: "this changes pretty frequently, so automating would be optimal."
 - **Android `getClassName()` spike** — could disambiguate within-app screens (Slack channel list vs DM, Messages contact vs convo). Surfaced by the 2026-04-30 empty-title investigation. Currently we use `app_label` ("Slack") only; class name might give richer signal at near-zero ingest cost.
@@ -165,6 +176,21 @@ If row-count grows pathologically (e.g. mac.system.window starts firing every 10
 - **`replace_derived_overlap` RPC tests** — only stub-fetch tests exercise the framework.
 
 ---
+
+## 🟡 User-confirmed direction (2026-04-30)
+
+These reflect the user's explicit guidance from the architecture + UX conversation; they're priority direction-setters even if not yet ticketed work.
+
+- **Sleep should render as a span on the timeline, not just a Moment.** The deriver already produces a span `[onset, wake]` — the dashboard is collapsing it to a wake-time icon. Surface the duration. UX work, not deriver work.
+- **Classifier prompt + context completeness is high-priority.** User: "are the prompts actually good? Are we passing all the information that the agent needs?" Currently we pass: (title, active projects). We have but DON'T pass: device, app, zen container, url host, prior-chunk context. Phase D (classifier context, ab886e0) addresses this — bump up priority.
+- **Tree-model invariant is too strict.** Should allow personal projects that are non-work (learning guitar, hobby coding). Replace `project_slug != null IFF category = 'work'` with a softer model: a project has a default category but chunks can override. **Re-think Phase B's CHECK constraint** — see new tenet on never-discarding-data.
+- **At-a-glance is the answer for "how was my day."** Multiple sub-views (today summary, trends, comparisons). Not just one page.
+- **Drop the priority of a "manual correction" UI.** User: "I would not worry about correction right now. I would just worry about... are the prompts actually good?"
+- **Map: keep but don't over-invest.** It's visual flavor, not load-bearing.
+- **Per-task hierarchy (project → task → titles) is over-engineering for v1.** Defer.
+- **Multi-device adapter abstraction: nice-to-have only.** Single user for now.
+- **Indexes on `derived_events` need review** — big shared table is OK if indexed for the queries we actually run.
+- **Brainstorm new derived tables** that would unlock new questions.
 
 ## ❓ Open questions / undecided
 
