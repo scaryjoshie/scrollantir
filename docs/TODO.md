@@ -47,14 +47,20 @@ Every shipped change in this branch has a documented undo path in the table belo
 
 | Commit | Item | Rollback |
 |---|---|---|
-| 8687106 | Initial TODO file | `git revert 8687106` (low-risk; doc only) |
-| 2c6998f | Caddy zstd + gzip — 102KB → 10KB on chunks payload (-90%) | `git revert 2c6998f` + scp Caddyfile + restart caddy. Reversible without data loss. |
-| e234e4f | Lazy-fetch project_chunks per visit on click + TopicChunk.project nullable | `git revert e234e4f`. Frontend-only; refresh dashboard after. NOTE: TopicChunk.project becoming nullable is a TYPE change — reverting alone won't compile if other code (post-Phase-B) starts relying on null. |
-| ebf2e46 | window_session NULLIF for empty-title fallthrough | `git revert ebf2e46` + rsync + agent restart. Reverts to old behavior where System Settings → blank title chunks. |
-| 5f0c8f8 | Phase B drafts (0014, 0015, classifier.py prompt + validator) | NOT YET DEPLOYED. Rollback = `git revert 5f0c8f8` while still local-only. If migrations get applied, rollback path is the explicit `migrate:down` block in each SQL file (re-inserts personal project, restores 0013 view). Can't restore the JSONB project_slug repointings — one-way data loss. |
-| ebe9fe4 | Phase G investigation findings | Doc only. `git revert`. |
-| aa413e2 | TODO Phase A done + Phase B playbook | Doc only. |
-| 4f55eb8 | TODO Phase G retired | Doc only. |
+| 2c6998f | Caddy zstd + gzip — 102KB → 10KB chunks payload | `git revert 2c6998f` + scp Caddyfile + restart caddy. |
+| e234e4f | Lazy-fetch project_chunks per visit on click | superseded by 34bd573. |
+| ebf2e46 | window_session NULLIF for empty-title fallthrough | `git revert` + rsync + restart agent. |
+| 5f0c8f8 | Phase B drafts (initial strict-IFF version) | superseded by 854e33d soft model. |
+| 34bd573 | lazy-fetch by time window (drops O(N) parent_id query) | `git revert`. Time-window queries against indexed start_ts replace LATERAL parent_id filter; 38ms → 0.18ms. |
+| b732ca2 | Sleep render-as-span | `git revert`. Drops the wake Moment, sleep is a kind=sleep TimelineEntry now. |
+| 52ba7c9 | Drop unused derived_events_start_desc index | `git revert` then re-CREATE INDEX (migrate:down has the SQL). |
+| 854e33d | Phase B revised — soft tree model | drafts only at this commit. |
+| 7574cd6 | Project slugs render as curated names via useProjects() | `git revert`. |
+| 98cf0be | Unnamed OSM polygons → "Unnamed dormitory" via usePlaceLabels() | `git revert`. |
+| 1637cf5 | Friendly leg distance + "Mixed-use" chip | `git revert`. |
+| 9599905 | Tracking-gap rows in timeline (30-min threshold) | `git revert`. |
+| 76ffd31 | **Phase B EXECUTED** — pre-29 wipe, 0014-0016 applied, classifier rewritten, reclass running | DB rollback: `migrate:down 0016 → 0015 → 0014`. Pre-29 events DELETED — irreversible (per user one-time auth). Classifier code rollback: `git revert 76ffd31` + rsync. Cache TRUNCATE'd — re-runs naturally repopulate. |
+| 25ac7a3 | Phase D migration 0018 draft (classifier context schema) | NOT applied. Drafts only. |
 
 ---
 
