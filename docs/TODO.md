@@ -177,6 +177,27 @@ From audit (a4c976) 2026-04-30 + verifying queries:
 
 ---
 
+## 🚨 P0 — `parent_id=eq.<uuid>` is O(N²) (regression from commit e234e4f)
+
+The lazy-fetch I just shipped relies on `?parent_id=eq.<uuid>` against `v_project_chunk_today`. The view computes `parent_id` via a LATERAL join; filtering by parent_id requires computing it for every row first. **38ms today, growing quadratically.**
+
+Fix: materialize `parent_id` into `data` at write time in `project_chunk.py`, add JSONB partial index, drop the LATERAL from the view. Bundle with Phase B since both touch project_chunk.
+
+## 🔴 PHASE B INVERSION — tree-model strict-IFF was wrong
+
+The agent (a042036) found 67 `neutral+project` and 27 `play+project` rows in the live cache — the strict IFF was always fiction. User pushed back on the strictness too. New direction:
+
+- **Decouple `project_slug` from `category`.** Allow `(scrollantir, neutral)` for project-adjacent admin. Allow `(personal_project, work)` for "learning guitar is focused effort."
+- **Don't ship the CHECK constraint** in 0014 (it would invalidate 94 existing live rows).
+- **Add `projects.default_category`** — each project carries its presumed flavor. Soft binding, not structural.
+- **Drop the `_parse_response` reconcile step** at classifier.py:247 — was masking the real model.
+- **Drop `personal` from the classifier's project list entirely.** Don't pass it; let `project_slug=null` be the answer for non-project chunks. (Honest representation.)
+
+**Phase B drafts (0014, 0015, classifier.py) need rework before applying.** The current drafts assume strict IFF. New plan:
+- 0014 just deletes the personal project (no CHECK constraint). FK cascade pre-emptively NULLs window_titles.project_slug='personal' refs.
+- 0015 view stays but drops the category coercion (no longer needed; whatever the classifier emits is the truth).
+- classifier.py drops `personal` from the project list, drops the reconcile step, splits coerce-vs-raise per Tenet 2.
+
 ## 🟡 User-confirmed direction (2026-04-30)
 
 These reflect the user's explicit guidance from the architecture + UX conversation; they're priority direction-setters even if not yet ticketed work.

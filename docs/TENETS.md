@@ -68,7 +68,22 @@ The data model is good when it's simple: events flow in, derivers compute spans,
 
 If a new feature seems to need 4 new tables, ask first whether it could fit existing structures. Most do.
 
-## 10. Surface the metrics we emit
+## 10. Simulate the user's view before shipping data
+
+Before any data lands in the dashboard, mentally render it as the user would see it. Ask: "would this be useful? Would I know what's going on?"
+
+`com.instagram.reels` is technically correct but unpolished — the user has to do work to translate it to "Instagram Reels." `building:7088849` is technically correct but unpolished — the user sees a meaningless OSM ID. `scrollantir` is technically correct but unpolished — the user named their project "Scrollantir."
+
+Concretely:
+- Display names, not slugs / IDs / package names. (`projects.name`, not `projects.slug`. App display names, not bundle IDs. Place names, not `building:NNN`.)
+- User-facing time labels read naturally ("2h 15m", "8:26 AM"), not technical (1700-formats, ISO timestamps).
+- Tooltips and chips are written as English, not codes ("Walking" not "walking", "Foster-Walker Complex" not "foster-walker").
+- Empty states say something true but useful ("No activity recorded for this visit" beats "0 chunks").
+- Numbers have units. Distances need "m" or "km", durations need "min" or "h", percentages need "%".
+
+If a piece of data renders as a code/slug/ID anywhere a user can see it, that's a polish bug — file it. The user should never need to know the difference between `slug` and `name`.
+
+## 11. Surface the metrics we emit
 
 Per-tick metrics (`osm_errors`, `null_place_visits`, `activity_unknown_legs`, `spans_skipped_pre_window`, etc.) are emitted to nowhere. If we don't read them, fallbacks paired with them silently grow. Either pipe them to a place a human looks (agent stdout, a small dashboard panel, a daily summary log) or drop both the metric and the fallback.
 
