@@ -212,7 +212,7 @@ Pick a different day, or wait for the deriver to run.`}
             <MapPane selected={selected} />
           </div>
           <div className="bg-paper-panel min-h-0 overflow-y-auto">
-            <DetailPane entry={selected} />
+            <DetailPane entry={selected} dayStartIso={fromIso} />
           </div>
         </div>
       </div>

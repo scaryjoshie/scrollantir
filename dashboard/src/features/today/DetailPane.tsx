@@ -113,7 +113,18 @@ function baselineFor(
   };
 }
 
-export default function DetailPane({ entry }: { entry: TimelineEntry | null }) {
+export default function DetailPane({
+  entry,
+  dayStartIso,
+}: {
+  entry: TimelineEntry | null;
+  // The displayed day's start (always local 00:00 in current
+  // implementation). Visits whose true start_ts lies before this get
+  // their "Since X" subtitle + live duration clipped to dayStartIso so
+  // a still-open overnight stay reads as "Since 12:00 AM (continued) ·
+  // 7h ongoing" rather than "Since 11:35 PM · 16h ongoing".
+  dayStartIso?: string;
+}) {
   if (!entry) {
     return (
       <div className="px-6 py-5 text-sm text-ink-subtle">
@@ -133,7 +144,8 @@ export default function DetailPane({ entry }: { entry: TimelineEntry | null }) {
       </div>
     );
   }
-  if (entry.kind === 'place_visit') return <VisitDetail visit={entry} />;
+  if (entry.kind === 'place_visit')
+    return <VisitDetail visit={entry} dayStartIso={dayStartIso} />;
   if (entry.kind === 'travel_leg') return <LegDetail leg={entry} />;
   return <ChunkDetail chunk={entry} />;
 }
@@ -142,7 +154,13 @@ export default function DetailPane({ entry }: { entry: TimelineEntry | null }) {
 // Visit detail — donut + legend, then spectrum bar
 // ---------------------------------------------------------------------
 
-function VisitDetail({ visit }: { visit: PlaceVisit }) {
+function VisitDetail({
+  visit,
+  dayStartIso,
+}: {
+  visit: PlaceVisit;
+  dayStartIso?: string;
+}) {
   const { topicChunks } = useTodayLookups();
   const now = useNowTick();
   const chunks = topicChunks
@@ -162,13 +180,26 @@ function VisitDetail({ visit }: { visit: PlaceVisit }) {
   for (const t of topics) totals[t.category] += t.ms;
   const totalMs = totals.work + totals.play + totals.neutral;
 
+  // For an open overnight visit (started before today's day boundary),
+  // clip the displayed start to dayStartIso. Otherwise a Willard stay
+  // that began 23:35 last night reads as "Since 11:35 PM · 16h ongoing"
+  // — confusing — instead of "Since 12:00 AM (continued) · 7h ongoing".
+  // Mirrors the Timeline (commit 159db7b) clipping logic.
+  const startedBeforeToday =
+    !!dayStartIso && visit.start_ts < dayStartIso;
+  const displayStart = startedBeforeToday ? dayStartIso! : visit.start_ts;
+
   // Open visits show "Since 3:25 PM · 2h 15m · ongoing" with the
   // duration counted live to `now`. Closed visits show the canonical
   // start–end range.
   const subtitle = visit.data.is_open
-    ? `Since ${fmtTime(visit.start_ts)} · ${humanize(
-        now - parseISO(visit.start_ts).getTime(),
-      )} · ongoing`
+    ? startedBeforeToday
+      ? `Since ${fmtTime(displayStart)} (continued) · ${humanize(
+          now - parseISO(displayStart).getTime(),
+        )} · ongoing`
+      : `Since ${fmtTime(visit.start_ts)} · ${humanize(
+          now - parseISO(visit.start_ts).getTime(),
+        )} · ongoing`
     : `${fmtTime(visit.start_ts)} – ${fmtTime(visit.end_ts)} · ${fmtDuration(
         visit.start_ts,
         visit.end_ts,
