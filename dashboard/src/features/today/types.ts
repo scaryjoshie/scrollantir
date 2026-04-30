@@ -115,8 +115,17 @@ export type TopicChunk = {
   parent_id: string; // place_visit.id OR travel_leg.id
   start_ts: string;
   end_ts: string;
+  // `topic` is the view's coalesced label (project_slug → app → 'untitled');
+  // kept for the chunk-detail header. The drill-down donut uses `project`
+  // and `title` separately so it can re-group at each level.
   topic: string;
   category: TopicCategory;
+  // The classifier's project assignment (slug). `'personal'` is the
+  // wildcard catch-all; classifier defaults there when nothing else
+  // fits, so older un-classified rows also surface there.
+  project: string;
+  // Exact window/tab title — the L2 drill key.
+  title: string;
   // Which device the foreground was on. The donut applies Mac-
   // precedence: phone time only counts during periods when no Mac
   // chunk overlaps, so concurrent Mac+phone foreground doesn't

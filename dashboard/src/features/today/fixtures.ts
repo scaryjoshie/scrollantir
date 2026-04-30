@@ -377,10 +377,12 @@ const leg_norris_eve_to_home: TravelLeg = {
 };
 
 // ---------------------------------------------------------------------
-// Topic chunks within each visit
+// Topic chunks within each visit. Defaults for `project` + `title`
+// (added 2026-04-30 when those fields became required on TopicChunk)
+// are injected via the trailing .map below so each literal stays terse.
 // ---------------------------------------------------------------------
 
-const topicChunks: TopicChunk[] = [
+const topicChunks: TopicChunk[] = ([
   // Home morning — wake-up scroll, then a bit of project work
   {
     kind: 'topic_chunk',
@@ -602,7 +604,11 @@ const topicChunks: TopicChunk[] = [
     topic: 'Spotify',
     category: 'neutral',
   },
-];
+] as Array<Omit<TopicChunk, 'project' | 'title'>>).map((c) => ({
+  ...c,
+  project: 'personal',
+  title: c.topic,
+}));
 
 // ---------------------------------------------------------------------
 // Moments

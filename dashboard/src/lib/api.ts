@@ -132,6 +132,9 @@ type ProjectChunkRow = {
   data: {
     category: 'work' | 'play' | 'neutral';
     device?: 'mac' | 'phone';
+    project_slug?: string | null;
+    title?: string | null;
+    app?: string | null;
   };
 };
 
@@ -154,6 +157,12 @@ export function fetchProjectChunks(
       topic: r.topic,
       category: r.data.category,
       device: r.data.device,
+      // Default unclassified rows to the 'personal' wildcard — matches the
+      // classifier's null→personal coercion so the dashboard never has to
+      // render an "uncategorized" bucket. `title` falls back through app
+      // → topic so even pre-classifier rows get a stable L2 label.
+      project: r.data.project_slug || 'personal',
+      title: r.data.title || r.data.app || r.topic,
     })),
   );
 }
