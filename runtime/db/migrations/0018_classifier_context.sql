@@ -27,9 +27,17 @@
 
 BEGIN;
 
--- 1. window_titles: TRUNCATE so the PK swap can land. Cache loss is
--- expected and self-healing — every chunk's context will hit the
--- queue on the next deriver tick.
+-- 1. TRUNCATE both tables so the PK swap can land.
+--
+-- window_titles: cache loss is expected and self-healing — every
+--   chunk's context will hit the queue on the next deriver tick.
+-- classification_queue: ALSO truncated. This loses any pending retry
+--   state from a prior Cerebras outage (per 30_tables.sql header,
+--   the queue is meant to be durable). Acceptable here because the
+--   deriver re-enqueues on next tick (project_chunk.py looks up by
+--   context_key, misses, INSERT ON CONFLICT DO NOTHING). If a queue
+--   had genuinely-stuck rows we'd lose their retries history; that's
+--   a one-time exception for this schema swap.
 TRUNCATE public.window_titles, public.classification_queue;
 
 ALTER TABLE public.window_titles
