@@ -150,4 +150,4 @@ export type Moment = {
   source_hint?: string; // e.g. 'sleep/v1'
 };
 
-export type TimelineEntry = PlaceVisit | TravelLeg | TopicChunk | Moment;
+export type TimelineEntry = PlaceVisit | TravelLeg | TopicChunk | Moment | Sleep;

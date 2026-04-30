@@ -8,10 +8,8 @@ import Timeline from '@/features/today/Timeline';
 import MapPane from '@/features/today/MapPane';
 import DetailPane from '@/features/today/DetailPane';
 import type {
-  Moment,
-  PlaceVisit,
+  Sleep,
   TimelineEntry,
-  TravelLeg,
 } from '@/features/today/types';
 import {
   TodayLookupsProvider,
@@ -25,9 +23,10 @@ import {
 
 // Day window is strictly local 00:00 → 24:00. Visits/legs that span
 // midnight render on BOTH days, clipped to each day's window by the
-// timeline's display logic. Sleep is shown as Moments (wake / nap)
-// inside the day but does NOT shift the day boundary — the wake
-// happens AT 8:26 AM, sized within an unchanging 00-24 frame.
+// timeline's display logic. Sleep renders as a span on the timeline
+// (kind='sleep'), anchored at wake-time so a night that started at
+// 23:48 yesterday appears in today's narrative at the 8:26 AM wake,
+// not at the top.
 function dayWindow(day: Date): { fromIso: string; toIso: string } {
   const from = new Date(day);
   from.setHours(0, 0, 0, 0);
@@ -77,102 +76,42 @@ export default function TodayPage() {
   // caches per parent_id so re-selection is instant. Drops ~10KB
   // of compressed wire on every /today load.
 
-  // Find the visit that CONTAINS a given timestamp — used to anchor
-  // wake/nap Moments at the place the user was sleeping. Without
-  // this, clicking a Moment leaves the map at its prior location
-  // (or Chicago default) because Moments render with no coords.
-  const findContainingVisit = (ts: string): PlaceVisit | undefined =>
-    (visitsQ.data ?? []).find(
-      (v) => v.start_ts <= ts && ts <= v.end_ts,
-    );
-
-  const wakeMoment: Moment | null = useMemo(() => {
-    if (!todayNight) return null;
-    const localTime = todayNight.provenance.wake_local_time?.slice(0, 5) ?? '';
-    const containing = findContainingVisit(todayNight.end_ts);
-    return {
-      kind: 'moment',
-      id: `wake-${dayKey}`,
-      ts: todayNight.end_ts,
-      label: localTime ? `Woke up at ${localTime}` : 'Woke up',
-      glyph: '☀️',
-      source_hint: 'sleep/v1',
-      // Anchor at the place the user woke up — prefer the OSM POI
-      // centroid (inside the building) for the highlight, falling
-      // back to the visit's stay-centroid.
-      lat: containing?.place?.centroid_lat ?? containing?.data.lat,
-      lng: containing?.place?.centroid_lng ?? containing?.data.lng,
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todayNight, dayKey, visitsQ.data]);
-
-  // Naps render as separate Moments inside the day. Each nap's
-  // wake_ts is the Moment's anchor; the user can click to inspect.
-  // Duration formatted as "Xh Ym" (matching the timeline's humanize
-  // convention) — `${X}m` alone gets misread as "meters" because
-  // travel legs use "m" for distance.
-  const napMoments: Moment[] = useMemo(() => {
-    return todayNaps.map((nap) => {
-      const localTime = nap.provenance.wake_local_time?.slice(0, 5) ?? '';
-      const totalMin = Math.round(nap.provenance.duration_minutes);
-      const h = Math.floor(totalMin / 60);
-      const m = totalMin % 60;
-      const dur =
-        h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h ${m}m`;
-      // Anchor at the place the nap happened (place.centroid_lat/lng
-      // when available, falling back to the stay-centroid). Without
-      // this the map keeps the previous selection's coords on click.
-      const containing = findContainingVisit(nap.end_ts);
-      return {
-        kind: 'moment',
-        id: `nap-${dayKey}-${nap.provenance.rank}`,
-        ts: nap.end_ts,
-        label: localTime ? `Napped ${dur}, woke at ${localTime}` : 'Nap',
-        glyph: '😴',
-        source_hint: 'sleep/v1',
-        lat: containing?.place?.centroid_lat ?? containing?.data.lat,
-        lng: containing?.place?.centroid_lng ?? containing?.data.lng,
-      };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todayNaps, dayKey, visitsQ.data]);
-
   const entries: TimelineEntry[] = useMemo(() => {
     const visits = visitsQ.data ?? [];
     const legs = legsQ.data ?? [];
-    const spans: Array<PlaceVisit | TravelLeg> = [...visits, ...legs];
-    const all: TimelineEntry[] = [
-      ...(wakeMoment ? [wakeMoment] : []),
-      ...spans,
-      ...napMoments,
-    ];
-    // Sort by EFFECTIVE start within today: a span that began
-    // yesterday but continues into today (e.g. overnight Willard with
-    // start_ts = 23:35 yesterday) anchors at the day boundary, NOT
-    // at its true start_ts. Without this, the wake Moment at 8:26 AM
-    // would render AFTER the cross-day Willard visit (which sorts
-    // first because its raw start_ts is yesterday). Conceptually
-    // wake-up is the first thing that happens today; the visit's
-    // effective "today start" is wake-up.
+    const sleeps: Sleep[] = [];
+    if (todayNight) sleeps.push(todayNight);
+    sleeps.push(...todayNaps);
+
+    const all: TimelineEntry[] = [...visits, ...legs, ...sleeps];
+
+    // Sort by EFFECTIVE position within today.
     //
-    // Tie-break: when a Moment lands at the same time as a span's
-    // effective start, the Moment renders first.
+    // For most entries, that's the start_ts (or fromIso clip if the
+    // span began before today, e.g. an overnight Willard visit).
+    //
+    // For sleep entries (kind='sleep'), anchor at end_ts (the wake
+    // time) instead — a 'night' sleep starts yesterday at 23:48 but
+    // the user reads it as "woke up at 8:26", which is when it
+    // appears in their day. This also keeps the night-sleep row
+    // adjacent to the morning chunk that follows it, instead of
+    // pinning to the top.
     const effectiveStart = (e: TimelineEntry): string => {
       if (e.kind === 'moment') return e.ts;
+      if (e.kind === 'sleep') return e.end_ts;
       return e.start_ts < fromIso ? fromIso : e.start_ts;
     };
     all.sort((a, b) => {
       const ta = effectiveStart(a);
       const tb = effectiveStart(b);
       if (ta !== tb) return ta < tb ? -1 : 1;
-      // Same effective time: Moments first (the wake/nap anchor reads
-      // before the span it overlaps with).
-      if (a.kind === 'moment' && b.kind !== 'moment') return -1;
-      if (b.kind === 'moment' && a.kind !== 'moment') return 1;
+      // Tie-break: Moments / sleep lead the span at the same time.
+      if (a.kind !== 'place_visit' && b.kind === 'place_visit') return -1;
+      if (b.kind !== 'place_visit' && a.kind === 'place_visit') return 1;
       return 0;
     });
     return all;
-  }, [visitsQ.data, legsQ.data, wakeMoment, napMoments, fromIso]);
+  }, [visitsQ.data, legsQ.data, todayNight, todayNaps, fromIso]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 

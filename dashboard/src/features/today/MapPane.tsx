@@ -178,6 +178,18 @@ function targetForSelection(
     if (leg) return legTarget(leg, lookups);
     return null;
   }
+  if (entry.kind === 'sleep') {
+    // Anchor at the place that contains the wake_ts — that's where
+    // the user was sleeping. (Naps mid-day work the same way.) Falls
+    // through to null if no containing visit (rare; e.g. cold-start
+    // before place_visits derive).
+    const wake = entry.end_ts;
+    const containing = Object.values(lookups.visitById).find(
+      (v) => v.start_ts <= wake && wake <= v.end_ts,
+    );
+    if (containing) return visitTarget(containing, 50);
+    return null;
+  }
   // moment
   if (entry.lat != null && entry.lng != null) {
     return {

@@ -192,6 +192,28 @@ function Row({
       timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
       duration = fmtDuration(entry.start_ts, entry.end_ts);
     }
+  } else if (entry.kind === 'sleep') {
+    // Sleep span: nights cross midnight; clip onset display to today's
+    // day boundary the same way visits do, but keep duration as the
+    // full lived span — the user slept for 8h 38m, not 8h 26m.
+    const totalMin = Math.round(entry.provenance.duration_minutes);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    const dur = h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h ${m}m`;
+    if (entry.data.kind === 'nap') {
+      glyph = '😴';
+      title = `Napped ${dur}`;
+      timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
+    } else {
+      glyph = '🌙';
+      title = `Slept ${dur}`;
+      const startedBeforeToday = entry.start_ts < dayStartIso;
+      const displayStart = startedBeforeToday ? dayStartIso : entry.start_ts;
+      timeRange = startedBeforeToday
+        ? `${fmtTime(displayStart)} – ${fmtTime(entry.end_ts)} (continued)`
+        : `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
+    }
+    duration = dur;
   } else {
     // travel_leg
     glyph = ACTIVITY_GLYPH[entry.data.dominant_activity] ?? '🚶';

@@ -327,6 +327,7 @@ export default function DetailPane({
     return <VisitDetail key={entry.id} visit={entry} dayStartIso={dayStartIso} />;
   if (entry.kind === 'travel_leg')
     return <LegDetail key={entry.id} leg={entry} />;
+  if (entry.kind === 'sleep') return <SleepDetail key={entry.id} sleep={entry} />;
   return <ChunkDetail chunk={entry} />;
 }
 
@@ -421,6 +422,47 @@ function LegDetail({ leg }: { leg: TravelLeg }) {
         {leg.data.reading_count} GPS sample{leg.data.reading_count === 1 ? '' : 's'}
       </div>
       <ChunkDrill chunks={chunks} />
+    </div>
+  );
+}
+
+function SleepDetail({ sleep }: { sleep: import('./types').Sleep }) {
+  const totalMin = Math.round(sleep.provenance.duration_minutes);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const dur = h === 0 ? `${m} min` : m === 0 ? `${h}h` : `${h}h ${m}m`;
+  const isNap = sleep.data.kind === 'nap';
+  return (
+    <div className="px-6 py-5 h-full overflow-y-auto">
+      <Header
+        title={isNap ? `Napped ${dur}` : `Slept ${dur}`}
+        subtitle={`${fmtTime(sleep.start_ts)} – ${fmtTime(sleep.end_ts)} · ${dur}`}
+        glyph={isNap ? '😴' : '🌙'}
+      />
+      <div className="mt-4 grid grid-cols-2 gap-y-2 gap-x-6 text-sm">
+        <div className="text-ink-subtle">Onset</div>
+        <div className="text-ink tabular-nums">{fmtTime(sleep.start_ts)}</div>
+        <div className="text-ink-subtle">Wake</div>
+        <div className="text-ink tabular-nums">
+          {sleep.provenance.wake_local_time?.slice(0, 5) ?? fmtTime(sleep.end_ts)}
+        </div>
+        <div className="text-ink-subtle">Disruptions</div>
+        <div className="text-ink tabular-nums">
+          {sleep.provenance.disrupted_count}
+          {sleep.provenance.disrupted_count > 0 && (
+            <span className="text-ink-subtle">
+              {' '}(brief activity merged into the silence)
+            </span>
+          )}
+        </div>
+        <div className="text-ink-subtle">Confidence</div>
+        <div className="text-ink tabular-nums">
+          {Math.round(sleep.data.confidence * 100)}%
+        </div>
+      </div>
+      <div className="mt-3 text-xs text-ink-subtle">
+        From <Mono>sleep/v1</Mono>
+      </div>
     </div>
   );
 }
