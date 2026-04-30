@@ -57,16 +57,7 @@ const TRACKING_GAP_THRESHOLD_MS = 30 * 60 * 1000;
 //
 // The returned entries are inserted inline so the chronological sort
 // reads naturally without re-sorting.
-function synthesizeTrackingGaps(
-  entries: TimelineEntry[],
-  // If the displayed day IS today (i.e. dayEndIso > now), emit a
-  // trailing gap from the last entry's end to NOW so the user sees
-  // "phone walked at 3 AM but nothing's been derived yet" as an
-  // explicit gap instead of a silent absence. nowIso comes from
-  // the host page's now-tick; pass null on past days.
-  nowIso: string | null,
-  dayEndIso: string,
-): TimelineEntry[] {
+function synthesizeTrackingGaps(entries: TimelineEntry[]): TimelineEntry[] {
   const out: TimelineEntry[] = [];
   for (let i = 0; i < entries.length; i++) {
     const cur = entries[i];
@@ -87,29 +78,6 @@ function synthesizeTrackingGaps(
       adjacent_to_sleep: cur.kind === 'sleep' || next.kind === 'sleep',
     };
     out.push(gap);
-  }
-  // Trailing gap on today's view: from the last entry's end to now,
-  // if the gap exceeds threshold AND the displayed day is today.
-  // Without this, a user staring at /today after a derivation lag
-  // sees "ended at 1 AM" with no signal that the deriver hasn't
-  // caught up to live activity.
-  if (nowIso && nowIso < dayEndIso && entries.length > 0) {
-    const last = entries[entries.length - 1];
-    if (last.kind !== 'topic_chunk' && last.kind !== 'tracking_gap') {
-      const lastEnd = entryEnd(last);
-      if (lastEnd) {
-        const gapMs = Date.parse(nowIso) - Date.parse(lastEnd);
-        if (gapMs >= TRACKING_GAP_THRESHOLD_MS) {
-          out.push({
-            kind: 'tracking_gap',
-            id: `gap-trailing-${lastEnd}`,
-            start_ts: lastEnd,
-            end_ts: nowIso,
-            adjacent_to_sleep: last.kind === 'sleep',
-          });
-        }
-      }
-    }
   }
   return out;
 }
@@ -208,16 +176,13 @@ export default function TodayPage() {
       return 0;
     });
     // Synthesize 'tracking_gap' entries for stretches of silence
-    // between consecutive entries AND a trailing gap on today's view
-    // if the deriver hasn't caught up. Done AFTER sort so the gaps
-    // are inserted in chronological position. Chunks aren't fetched
-    // at the day level (DetailPane fetches per-parent), so the input
+    // between consecutive entries. Done AFTER sort so the gaps are
+    // inserted in chronological position. Chunks aren't fetched at
+    // the day level (DetailPane fetches per-parent), so the input
     // here is naturally chunk-free — the topic_chunk skip in the
     // helper is defensive in case the data flow changes.
-    const isToday = new Date().toISOString() < toIso;
-    const nowIso = isToday ? new Date().toISOString() : null;
-    return synthesizeTrackingGaps(all, nowIso, toIso);
-  }, [visitsQ.data, legsQ.data, todayNight, todayNaps, fromIso, toIso]);
+    return synthesizeTrackingGaps(all);
+  }, [visitsQ.data, legsQ.data, todayNight, todayNaps, fromIso]);
 
   const lookups = useBuildLookups(visitsQ.data, legsQ.data);
 
@@ -276,7 +241,6 @@ Pick a different day, or wait for the deriver to run.`}
               selectedId={selectedId}
               onSelect={setSelectedId}
               dayStartIso={fromIso}
-              dayEndIso={toIso}
             />
           )}
         </aside>

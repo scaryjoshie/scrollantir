@@ -81,7 +81,6 @@ export default function Timeline({
   selectedId,
   onSelect,
   dayStartIso,
-  dayEndIso,
 }: {
   entries: TimelineEntry[];
   selectedId: string | null;
@@ -91,13 +90,6 @@ export default function Timeline({
   // rendered with their start clipped to dayStartIso, plus a
   // "(continued)" hint, so the day-narrative reads cleanly.
   dayStartIso: string;
-  // Symmetric: the displayed day's end (always local 24:00). Spans
-  // that bleed into tomorrow get their end clipped here with a
-  // "(continues)" hint. Without this, yesterday's view shows a
-  // visit ending "1:01 AM" — which is technically true but reads
-  // as a day-boundary violation since the day "should" end at
-  // midnight.
-  dayEndIso: string;
 }) {
   return (
     <div className="py-3">
@@ -109,7 +101,6 @@ export default function Timeline({
             isSelected={e.id === selectedId}
             onSelect={onSelect}
             dayStartIso={dayStartIso}
-            dayEndIso={dayEndIso}
           />
         ))}
       </ol>
@@ -122,13 +113,11 @@ function Row({
   isSelected,
   onSelect,
   dayStartIso,
-  dayEndIso,
 }: {
   entry: TimelineEntry;
   isSelected: boolean;
   onSelect: (id: string) => void;
   dayStartIso: string;
-  dayEndIso: string;
 }) {
   // Place-label resolver: rewrites raw `building:1234` placeholder
   // names to "Unnamed dormitory" / etc. using cached metadata.
@@ -188,32 +177,25 @@ function Row({
   } else if (entry.kind === 'place_visit') {
     glyph = CATEGORY_GLYPH[entry.place?.category ?? 'mixed'] ?? '📍';
     title = placeLabels.display(entry.place?.name);
-    // Cross-day clipping (symmetric on both ends):
-    //   - Started yesterday → start clips to dayStartIso, "(continued)"
-    //   - Ends tomorrow     → end clips to dayEndIso, "(continues)"
-    // Duration uses the clipped span so a 16h cross-day visit doesn't
-    // dominate either day's rendered total.
+    // Visit started before today's day boundary (e.g. overnight stay
+    // that began 23:35 yesterday). Display clips to dayStartIso so
+    // the timeline reads as the user's lived day, not the raw
+    // start_ts. Duration ALSO clips so a 16h cross-day visit
+    // doesn't dominate the rendered range.
     const startedBeforeToday = entry.start_ts < dayStartIso;
-    const endsAfterToday = entry.end_ts > dayEndIso;
     const displayStart = startedBeforeToday ? dayStartIso : entry.start_ts;
-    const displayEnd = endsAfterToday ? dayEndIso : entry.end_ts;
-    const continuationSuffix = startedBeforeToday
-      ? endsAfterToday
-        ? ' (all day)'
-        : ' (continued)'
-      : endsAfterToday
-        ? ' (continues)'
-        : '';
     if (entry.data.is_open) {
-      // Live: "Since X" + count to now (or to dayEndIso if today's view
-      // was set in the past — defensive).
+      // Live: "Since X" + count to now.
       timeRange = startedBeforeToday
-        ? `Since ${fmtTime(displayStart)}${continuationSuffix}`
+        ? `Since ${fmtTime(displayStart)} (continued)`
         : `Since ${fmtTime(entry.start_ts)}`;
       duration = humanize(now - parseISO(displayStart).getTime());
+    } else if (startedBeforeToday) {
+      timeRange = `${fmtTime(displayStart)} – ${fmtTime(entry.end_ts)} (continued)`;
+      duration = fmtDuration(displayStart, entry.end_ts);
     } else {
-      timeRange = `${fmtTime(displayStart)} – ${fmtTime(displayEnd)}${continuationSuffix}`;
-      duration = fmtDuration(displayStart, displayEnd);
+      timeRange = `${fmtTime(entry.start_ts)} – ${fmtTime(entry.end_ts)}`;
+      duration = fmtDuration(entry.start_ts, entry.end_ts);
     }
   } else if (entry.kind === 'tracking_gap') {
     // Synthetic "no events arrived" row. Title softens near sleep
