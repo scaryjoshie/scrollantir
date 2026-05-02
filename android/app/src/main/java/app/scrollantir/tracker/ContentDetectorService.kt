@@ -1,3 +1,16 @@
+/*
+ * Copyright (C) 2026 Joshua Lee
+ *
+ * This file is licensed under the GNU General Public License v3.0 or later
+ * (SPDX-License-Identifier: GPL-3.0-or-later) because it is derived from
+ * DigiPaws (https://github.com/nethical6/digipaws), which is GPL-3.0
+ * licensed. The detection patterns (target packages, resource IDs, view-tree
+ * walking heuristic) follow DigiPaws' approach; see /CREDITS.md for detail.
+ *
+ * The rest of the scrollantir project is MIT-licensed (see /LICENSE); this
+ * file is the GPL-3.0 island within it.
+ */
+
 package app.scrollantir.tracker
 
 import android.accessibilityservice.AccessibilityService

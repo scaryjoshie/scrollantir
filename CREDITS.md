@@ -17,8 +17,9 @@ as signals of app-version drift informed this implementation.
 Our code is not a line-for-line port, but the heuristic is the same and
 the resource IDs we probe were identified by inspecting DigiPaws' detectors
 (which are actively maintained against current YouTube/Instagram/TikTok UIs).
-If you open-source scrollantir, the detector file should carry a GPL-3.0
-header or the project should be relicensed GPL-3.0 compatible.
+Because of this derivation, `ContentDetectorService.kt` carries a
+GPL-3.0-or-later header and is the only GPL-licensed file in the repo —
+the rest of scrollantir remains MIT (see [LICENSE](LICENSE)).
 
 ## ActivityWatch
 
