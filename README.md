@@ -4,6 +4,9 @@ A personal "palantir for yourself" time-tracker. Structured activity events
 from phone and Mac, owned end-to-end, with Postgres as the source of truth
 and a derivation pipeline that turns raw events into a readable day timeline.
 
+![Scrollantir Today view — place visits down the left, map of the day's
+locations top right, category + device breakdowns below.](docs/screenshots/today.png)
+
 ## Status
 
 Single-user personal project. Not production-ready: no multi-user support,
